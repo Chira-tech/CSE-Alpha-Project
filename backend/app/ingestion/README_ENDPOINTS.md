@@ -161,27 +161,71 @@ ex-rights date lives:
 ```
 No `dType` key on this family — use `title` instead. Note the **initial
 disclosure has the subscription price but no dates; the dates record has
-the ex-date but no subscription price**. A fully-populated rights-issue
-draft (ratio + subscription price + ex-date, everything TERP needs except
-the market's own cum-rights price) requires correlating both
-announcements for the same company issued close together in time — not
-implemented this session; `corporate_actions_loader.build_draft` produces
-a partial draft from whichever record it's given and lists what's missing
-in `notes` for the human reviewer.
+the ex-date but no subscription price**.
+
+### Share splits / sub-divisions — same two-announcement pattern, verified
+Confirmed on Lanka Tiles (TILE.N0000, Feb 2021) and First Capital Holdings
+(CFVF.N0000, Feb–Apr 2022): `getAnnouncementById` on the initial
+`SUB-DIVISION OF SHARES` announcement returns `dType: "ShareSplits"` with
+**exact share counts** — the most reliable ratio source of anything this
+loader handles:
+```json
+{"reqBaseAnnouncement": {"id":13681,"dType":"ShareSplits","symbol":"CFVF",
+  "votingExistingNumOfShares":101250000,"votingResultingNumOfShares":"405000000",
+  "votingProportion":"1 : 4","tradingCommencement":null}}
+```
+(`votingResultingNumOfShares` is a **string** in the API response even
+though it's numeric — not a typo, handled as `str | int` in the schema.)
+The follow-up `SUB-DIVISION OF SHARES (DATES)` announcement (via
+`getGeneralAnnouncementById`, same 204-then-fallback pattern as rights
+issues) carries the actual effective date as **`tradingCommencement`, not
+`xr`** — `xr` was null on every split example seen, unlike rights issues
+where it's the primary date field:
+```json
+{"reqBaseAnnouncement": {"id":14032,"title":"SUB-DIVISION OF SHARES (DATES)",
+  "symbol":"CFVF","xr":null,"tradingCommencement":1650565800000,
+  "tradingSuspended":1649615400000,"votingProportion":null}}
+```
+**The ratio convention is different from rights issues and this is the
+easiest mistake to make if you write this loader from memory rather than
+from a live example**: a rights issue's "N:M" means *N new shares per M
+held* (additive), verified via `parse_share_ratio_text`. A split's "1:4"
+means *1 old share becomes 4 total* (multiplicative), verified via
+`parse_before_after_ratio_text` — same textual shape, opposite arithmetic.
+`app.domain.announcement_parsing.before_after_to_new_per_held` converts
+the latter into this system's "new shares per held share" convention
+before it's stored, so downstream code (the adjustment-factor build) never
+has to know two conventions exist.
+
+`app.ingestion.corporate_actions_loader` now pairs the initial and dates
+announcements for the same event (rights issues and splits both) rather
+than drafting each independently — see the module's own docstring for the
+pairing heuristic and its limits.
 
 ## Known gaps — confirm before relying on these in production
 
-1. **Bonus issue / plain stock split**: no live example captured. The
-   loader's handling for these (`app.ingestion.corporate_actions_loader`,
-   the `bonus_issue`/`stock_split` branch) is generic and explicitly
-   labelled `UNVERIFIED MAPPING` in the notes it writes — treat every such
-   draft as needing full manual reconstruction from the source PDF.
-2. **Consolidation**: same caveat. `CONSOLIDATION OF SHARES AND RIGHTS
-   ISSUE` was seen in a list but its detail payload wasn't successfully
-   retrieved (an announcementId mismatch during probing pulled up an
-   unrelated AGM notice instead — plausible cause: `id` vs
-   `announcementId` confusion in the source list, worth re-checking).
-3. **`notifications`, `notifications/corporate`, `notifications/financial`,
+1. **Bonus issue** (a plain bonus/scrip issue with no share-count fields,
+   as opposed to the sub-division cases above which turned out to be well
+   covered): no live example was captured this session. The loader's
+   handling for it is the same generic ratio-text path used before splits
+   were verified, and is explicitly labelled `UNVERIFIED MAPPING` in the
+   notes it writes.
+2. **Consolidation**: same caveat as bonus issue. `CONSOLIDATION OF SHARES
+   AND RIGHTS ISSUE` was seen in one company's announcement list but its
+   detail payload wasn't successfully retrieved during probing (an
+   announcementId lookup returned an unrelated AGM notice instead —
+   plausible cause: `id` vs `announcementId` confusion in the source list,
+   worth re-checking). Given splits and consolidations are economically
+   opposite (share count up vs down), do not assume consolidation reuses
+   the split convention without verifying — check whether `before > after`
+   changes sign conventions anywhere before trusting a consolidation draft.
+3. **Rights-issue / split pairing heuristic**: `_pair_rows` in
+   `corporate_actions_loader.py` sorts each company's initial and dates
+   announcements chronologically and zips them index-wise. This matched
+   every live example this session (each company had exactly one event of
+   each type in the sampled window) but was not tested against a company
+   with two overlapping rights issues or splits in flight at once.
+4. **`notifications`, `notifications/corporate`, `notifications/financial`,
    `notifications/directors`**: these exist in the frontend's service
    layer as `apiService.get(...)` calls (i.e. GET, unlike everything
    else), but `GET /api/notifications/corporate` etc. returned `400
@@ -190,8 +234,9 @@ in `notes` for the human reviewer.
    version mismatch, or these routes require a header/param not yet
    identified. Not used by any loader in this codebase; re-verify before
    building against them.
-4. **Rate limiting behaviour under sustained load** was not tested (this
-   session made ~40 requests total, well under any plausible limit,
-   spaced by manual probing rather than the client's actual pacing).
-   `CseClient`'s conservative defaults (§5: ≥2s between calls) should be
-   kept until there's a reason to believe otherwise.
+5. **Rate limiting behaviour under sustained load** was not tested (this
+   session made ~60 requests total across two verification passes, well
+   under any plausible limit, spaced by manual probing rather than the
+   client's actual pacing). `CseClient`'s conservative defaults (§5: ≥2s
+   between calls) should be kept until there's a reason to believe
+   otherwise.

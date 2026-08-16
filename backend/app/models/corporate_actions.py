@@ -41,13 +41,29 @@ class CorporateAction(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     """Free text preserved from ingestion — the announcement's own wording
     plus, for a scraped draft, anything the parser couldn't determine
-    (app.ingestion.corporate_actions_loader.build_draft). This is what a
-    human reviews before setting confirmed_by; it is never used in any
-    calculation."""
+    (see the draft-builder functions in
+    app.ingestion.corporate_actions_loader). This is what a human reviews
+    before setting confirmed_by; it is never used in any calculation."""
 
     confirmed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     confirmed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    rejected_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    rejected_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """Deliberately separate columns from confirmed_by/confirmed_at rather
+    than a shared "reviewed_by" with a status enum or a sentinel value in
+    confirmed_by: every query that decides whether a row may feed the
+    adjustment-factor build (reconciliation.py's `confirmed_by.is_not(None)`
+    filter, in particular) must be able to keep meaning exactly "a human
+    approved this for use" without also having to remember to exclude a
+    magic string. A row can be rejected without ever having been
+    confirmed, and the two states must never be conflatable by a query
+    that forgets to check both."""
+
     @property
     def is_confirmed(self) -> bool:
         return self.confirmed_by is not None and self.confirmed_at is not None
+
+    @property
+    def is_rejected(self) -> bool:
+        return self.rejected_by is not None and self.rejected_at is not None

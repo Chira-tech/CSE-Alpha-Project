@@ -201,8 +201,19 @@ class AnnouncementDetail(_Lenient):
     # rights/subdivision "dates" record (via getGeneralAnnouncementById)
     allotment: int | None = None
     tradingCommencement: int | None = None
+    tradingSuspended: int | None = None
     votingProportion: str | None = None
     subDivisionBasedOnShareholdingsAsAt: int | None = None
+
+    # share split / sub-division (dType "ShareSplits", initial disclosure).
+    # Verified live (Lanka Tiles TILE.N0000, First Capital Holdings
+    # CFVF.N0000): `votingProportion` here is a bare "1 : 4" before:after
+    # ratio — a DIFFERENT convention from the rights issue's "N new every
+    # M held" prose above. `votingResultingNumOfShares` is returned as a
+    # STRING by the API even though it's numeric ("405000000"), hence
+    # `str | int` rather than `int`.
+    votingExistingNumOfShares: int | None = None
+    votingResultingNumOfShares: str | int | None = None
 
 
 class AnnouncementDetailResponse(_Lenient):

@@ -147,6 +147,101 @@ def test_ingest_creates_dividend_and_rights_drafts_skips_non_action_rows(db_sess
     assert "subscription price" in rights.notes
 
 
+SPLIT_TICKER = "CFVF.N0000"
+
+SPLIT_ANNOUNCEMENT_LIST = {
+    "reqCompanyAnnouncement": [
+        {
+            "id": 11833,
+            "createdDate": 1644898391000,
+            "dateOfAnnouncement": "15 Feb 2022",
+            "announcementId": 13681,
+            "announcementCategory": "SUB-DIVISION OF SHARES",
+            "company": "FIRST CAPITAL HOLDINGS PLC",
+        },
+        {
+            "id": 12157,
+            "createdDate": 1647238919000,
+            "dateOfAnnouncement": "11 Mar 2022",
+            "announcementId": 14032,
+            "announcementCategory": "SUB-DIVISION OF SHARES (DATES)",
+            "company": "FIRST CAPITAL HOLDINGS PLC",
+        },
+    ]
+}
+
+SPLIT_INITIAL_DETAIL = {
+    "reqBaseAnnouncement": {
+        "id": 13681,
+        "dType": "ShareSplits",
+        "dateOfAnnouncement": "15 Feb 2022",
+        "remarks": None,
+        "symbol": "CFVF",
+        "companyName": "FIRST CAPITAL HOLDINGS PLC",
+        "votingExistingNumOfShares": 101250000,
+        "votingResultingNumOfShares": "405000000",  # verified: API returns this as a string
+        "votingProportion": "1 : 4",
+        "tradingSuspended": None,
+        "tradingCommencement": None,
+    }
+}
+
+SPLIT_DATES_DETAIL = {
+    "reqBaseAnnouncement": {
+        "id": 14032,
+        "title": "SUB-DIVISION OF SHARES (DATES)",
+        "remarks": None,
+        "dateOfAnnouncement": "11 Mar 2022",
+        "symbol": "CFVF",
+        "companyName": "FIRST CAPITAL HOLDINGS PLC",
+        "recordDate": None,
+        "allotment": None,
+        "xr": None,  # verified: null for splits, unlike rights issues
+        "tradingCommencement": 1650565800000,
+        "tradingSuspended": 1649615400000,
+        "votingProportion": None,  # verified: null on the dates record for splits (unlike rights)
+    }
+}
+
+
+@respx.mock
+def test_ingest_pairs_initial_and_dates_announcements_for_a_share_split(db_session):
+    """Real captured data for First Capital Holdings PLC's April 2022
+    sub-division: ratio lives on the initial disclosure (both as exact
+    share counts and as "1 : 4" text), the ex-date lives on the *separate*
+    "(DATES)" announcement as `tradingCommencement` — not `xr`, which is
+    null for splits (verified also on Lanka Tiles TILE.N0000)."""
+    db_session.add(Security(ticker=SPLIT_TICKER, name="First Capital Holdings PLC"))
+    db_session.commit()
+
+    respx.post(f"{BASE}/getAnnouncementByCompany").mock(
+        return_value=httpx.Response(200, json=SPLIT_ANNOUNCEMENT_LIST)
+    )
+    respx.post(f"{BASE}/getAnnouncementById", data={"announcementId": "13681"}).mock(
+        return_value=httpx.Response(200, json=SPLIT_INITIAL_DETAIL)
+    )
+    respx.post(f"{BASE}/getAnnouncementById", data={"announcementId": "14032"}).mock(
+        return_value=httpx.Response(204)
+    )
+    respx.post(f"{BASE}/getGeneralAnnouncementById", data={"announcementId": "14032"}).mock(
+        return_value=httpx.Response(200, json=SPLIT_DATES_DETAIL)
+    )
+
+    client = _client()
+    inserted = ingest_corporate_actions_for_ticker(client, db_session, SPLIT_TICKER)
+    client.close()
+
+    assert inserted == 1
+    split = db_session.query(CorporateAction).filter_by(ticker=SPLIT_TICKER).one()
+    assert split.type is DbActionType.STOCK_SPLIT
+    assert split.confirmed_by is None
+    assert split.ex_date == dt.date(2022, 4, 22)  # from tradingCommencement, not xr
+    # (405,000,000 - 101,250,000) / 101,250,000 = 3 additional shares per held share
+    assert split.ratio == Decimal("3.00000000")
+    assert "exact share counts" in split.notes
+    assert "MISSING" not in split.notes
+
+
 @respx.mock
 def test_ingest_is_idempotent_on_rerun(db_session):
     db_session.add(Security(ticker=TICKER, name="Asia Asset Finance PLC"))
