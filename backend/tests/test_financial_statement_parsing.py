@@ -15,6 +15,7 @@ from decimal import Decimal
 import pytest
 
 from app.domain.financial_statement_parsing import (
+    check_accounting_identities,
     extract_candidate_lines,
     match_canonical_label,
     normalize_label,
@@ -195,3 +196,99 @@ def test_match_canonical_label_is_exact_not_substring():
 
 def test_match_canonical_label_unknown_returns_none():
     assert match_canonical_label("Intangible Assets - CWIP") is None
+
+
+# --- regression: the split-thousands corruption -------------------------
+#
+# Real lines from J.F. Packaging PLC's June 2026 INTERIM statements, where
+# pdfplumber emitted a space between the leading digit and the first comma
+# group ("4 ,453,103"). The same company's annual report renders cleanly,
+# so this only surfaced on live data.
+#
+# Left unhandled the line still tokenised: the stray "4" looked exactly
+# like a note reference, the note-reference rule dropped it, and Total
+# Assets was recorded as 453,103 instead of 4,453,103 — wrong by four
+# billion rupees, and entirely plausible on screen.
+
+SPLIT_THOUSANDS_LINES = {
+    "Total Assets 4 ,453,103 3,807,110 3,853,375 3,559,834": ("total_assets", Decimal("4453103")),
+    "Total Current Assets 2 ,822,064 2,181,824 1,720,129 1,397,287": (
+        "total_current_assets",
+        Decimal("2822064"),
+    ),
+    "Total Current Liabilities 2 ,048,107 1,728,581 1,143,600 1,113,525": (
+        "total_current_liabilities",
+        Decimal("2048107"),
+    ),
+    "Total Equity 1 ,785,912 1,643,031 2,487,901 2,394,220": ("total_equity", Decimal("1785912")),
+    "Total Liabilities 2 ,667,191 2,164,079 1,365,474 1,165,614": (
+        "total_liabilities",
+        Decimal("2667191"),
+    ),
+}
+
+
+@pytest.mark.parametrize(("line", "expected"), SPLIT_THOUSANDS_LINES.items())
+def test_split_thousands_group_is_rejoined_not_truncated(line, expected):
+    key, value = expected
+    result = split_label_and_values(line)
+    assert result is not None
+    assert result.statement_line == key
+    assert result.primary_value == value
+
+
+def test_the_specific_regression_four_billion_not_four_hundred_million():
+    """Named explicitly because the failure mode is a plausible number,
+    not a crash — the kind of bug that survives review."""
+    result = split_label_and_values("Total Assets 4 ,453,103 3,807,110 3,853,375 3,559,834")
+    assert result.primary_value == Decimal("4453103")
+    assert result.primary_value != Decimal("453103")
+
+
+def test_a_comma_leading_fragment_is_not_a_valid_number():
+    """The root permissiveness: the old value pattern accepted
+    ",453,103" as a number. Nothing should parse a bare fragment."""
+    result = split_label_and_values("Some Label ,453,103")
+    assert result is None or result.primary_value != Decimal("453103")
+
+
+# --- accounting identities ----------------------------------------------
+
+
+def _values(text: str) -> dict[str, Decimal]:
+    return {
+        line.statement_line: line.primary_value
+        for line in extract_candidate_lines(text)
+        if line.statement_line and line.primary_value is not None
+    }
+
+
+def test_identities_pass_on_a_correctly_extracted_balance_sheet():
+    checks = check_accounting_identities(_values(BALANCE_SHEET_TEXT))
+    assert checks, "expected at least one identity to be checkable"
+    assert all(c.passed for c in checks), [c for c in checks if not c.passed]
+
+
+def test_identities_pass_on_a_correctly_extracted_income_statement():
+    checks = check_accounting_identities(_values(INCOME_STATEMENT_TEXT))
+    assert all(c.passed for c in checks), [c for c in checks if not c.passed]
+
+
+def test_identities_catch_the_split_thousands_corruption_independently():
+    """The safety net: even if the regex fix were reverted, an identity
+    check on the corrupted figures fails, because the two sides of the
+    balance sheet get mangled by different amounts."""
+    corrupted = {
+        "total_assets": Decimal("453103"),  # what the bug produced
+        "total_equity": Decimal("785912"),
+        "total_liabilities": Decimal("667191"),
+    }
+    checks = check_accounting_identities(corrupted)
+    identity = next(c for c in checks if c.name == "assets = equity + liabilities")
+    assert not identity.passed
+    assert "differs by" in identity.detail
+
+
+def test_identities_skip_what_cannot_be_checked_rather_than_failing():
+    checks = check_accounting_identities({"total_assets": Decimal("100")})
+    assert checks == []

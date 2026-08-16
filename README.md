@@ -29,7 +29,7 @@ forbids outright.
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | 🔨 in progress |
-| 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | not started |
+| 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine built |
 | 3 | Valuation engine, price ladder, margin-of-safety engine | not started |
 | 4 | Scheduler, always-on service, alerting, decision capture | not started |
 | 5 | Macro engine (ARDL, regime classifier, sector sensitivity) | not started |
@@ -106,6 +106,21 @@ runnable on a clean machine with nothing installed; the migrations detect
 the missing Timescale extension and fall back to a plain table
 automatically. Point `DATABASE_URL` at Postgres and the same migrations
 apply unchanged.
+
+### Keeping data collection running
+
+With no historical price source available on the CSE API, forward capture
+is the only way price history accumulates — and a day missed cannot be
+recovered. Run the worker alongside the API:
+
+```bash
+python -m app.worker
+```
+
+It holds the §52 schedule (EOD snapshot 15:00 Colombo, reconciliation
+15:05, corporate-actions scan 16:00, financial-statement scan 16:30,
+weekdays only) and otherwise idles. All times are anchored to the
+exchange's clock regardless of where the host machine is.
 
 ### Optional: populate the review queues
 

@@ -42,7 +42,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.domain.financial_statement_parsing import ExtractedLine, extract_candidate_lines
+from app.domain.financial_statement_parsing import (
+    ExtractedLine,
+    check_accounting_identities,
+    extract_candidate_lines,
+)
 from app.ingestion.cse_client import CseClient
 from app.ingestion.schemas import FinancialAnnouncementResponse, FinancialAnnouncementRow
 from app.models.enums import ProvenanceTier
@@ -243,6 +247,29 @@ def ingest_financial_statement(
     source_url = _CDN_BASE_URL + row.path
     pdf_bytes = download_pdf(source_url, user_agent=user_agent or settings.cse_user_agent)
     candidates = extract_financial_statement_candidates(pdf_bytes)
+
+    # Independent arithmetic check before anything is stored. A statement
+    # that doesn't balance means the extraction is wrong, and the failure
+    # mode this guards against is a plausible number rather than a crash —
+    # a split thousands separator once turned 4,453,103 into 453,103 and
+    # nothing else in the pipeline noticed. Drafts still get written
+    # (they're unconfirmed by definition), but the failure is recorded on
+    # every row's notes so a reviewer sees it before promoting anything.
+    extracted_values = {
+        line.statement_line: line.primary_value
+        for _page, line in candidates
+        if line.statement_line and line.primary_value is not None
+    }
+    failed_identities = [c for c in check_accounting_identities(extracted_values) if not c.passed]
+    if failed_identities:
+        logger.error(
+            "extraction for %s %s failed %d accounting identity check(s): %s",
+            ticker,
+            period_end,
+            len(failed_identities),
+            "; ".join(f"{c.name} ({c.detail})" for c in failed_identities),
+        )
+
     drafts = build_fundamental_drafts(
         ticker=ticker,
         period_end=period_end,
@@ -251,6 +278,18 @@ def ingest_financial_statement(
         source_url=source_url,
         candidates=candidates,
     )
+
+    if failed_identities:
+        warning = (
+            "EXTRACTION FAILED ARITHMETIC CHECK — "
+            + "; ".join(f"{c.name}: {c.detail}" for c in failed_identities)
+            + ". Do not confirm any figure from this filing without checking it against "
+            "the source PDF; the statement does not balance, which means at least one "
+            "number here was read wrongly."
+        )
+        for draft in drafts:
+            draft.source_snippet = f"{warning}\n\n{draft.source_snippet or ''}".strip()
+
     if drafts:
         db.add_all(drafts)
         db.commit()

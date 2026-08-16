@@ -50,7 +50,7 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 184 backend unit tests passing, most against real captured API/PDF
+- [x] 239 backend unit tests passing, most against real captured API/PDF
       data rather than invented fixtures
 - [x] **Runnable web app.** SQLite dev mode (documented fallback —
       Postgres+Timescale remains the §51 production target, and the same
@@ -100,6 +100,51 @@ consecutive days.
       confirming a fundamentals draft promoted it and removed it from the
       queue; confirming an incomplete rights-issue draft correctly
       refused with the exact missing-field message.
+
+## Phase 2 — fundamental engine (started)
+
+- [x] **Always-on worker** (`python -m app.worker`). Holds the §52
+      schedule; kept out of the API process so `uvicorn --reload` can't
+      skip or double-fire jobs. **Caught a real timezone bug doing this:**
+      `CronTrigger` resolves its timezone at construction, defaulting to
+      the *host's* zone — on this machine (Australia/Perth, +08:00) the
+      "15:00 EOD snapshot" was scheduled for 12:30 Colombo, i.e. two hours
+      before the CSE closes, so it would have captured a mid-session price
+      and stored it as the close. Every trigger is now explicitly
+      Colombo-timed, with tests pinning it.
+- [x] **Ratio engine** (`app/domain/ratios.py`, §12): 10 ratios computable
+      from the line items the extractor actually pulls — ROE, ROA, gross
+      and operating and net margin, Novy-Marx gross profitability, current
+      ratio, liabilities/equity, equity ratio, effective tax rate. Pure
+      functions, verified against J.F. Packaging PLC's real FY2025/26
+      statements with hand-computed expected values.
+      - Ratios inherit the weakest provenance of their inputs (§8).
+      - Non-positive denominators return "not meaningful" rather than a
+        number: negative equity yields a *positive* ROE arithmetically,
+        which would rank the most distressed company top of a screen.
+      - The leverage ratio is named `liabilities_to_equity`, NOT
+        debt/equity — total liabilities includes payables and deferred
+        tax, and the conventional name would invite a wrong comparison.
+      - The 10 §12 ratios that need line items we don't extract (ROIC,
+        Piotroski, Altman Z", Beneish, cash conversion, ...) are declared
+        with exactly what each is missing, so the UI states the gap.
+- [x] Ratios surfaced on the company file with provenance chips, correct
+      units (§5.1: `1.38×`, `40.1%`), and evidence-panel drill-down.
+- [x] **Found and fixed a data-corruption bug in the PDF extractor.**
+      On J.F. Packaging's *interim* statements (but not its annual report)
+      pdfplumber emitted `4 ,453,103` — a space between the leading digit
+      and the first comma group. The line still tokenised, the stray `4`
+      looked exactly like a note reference, the note-reference rule
+      dropped it, and Total Assets was stored as 453,103 instead of
+      4,453,103 — wrong by four billion rupees and entirely plausible on
+      screen. Fixed three ways: repair split thousands before tokenising;
+      tighten the number pattern so a comma-leading fragment is never a
+      valid figure; and add **accounting-identity checks** (assets =
+      equity + liabilities, current + non-current = total, revenue −
+      cost of sales = gross profit, ...) that run before anything is
+      stored and stamp a prominent warning onto every draft from a filing
+      that doesn't balance. The identity check catches this class of
+      corruption independently of the regex.
 
 ## Not done yet — next in Phase 1
 

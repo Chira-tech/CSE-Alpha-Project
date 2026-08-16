@@ -39,9 +39,34 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-_VALUE_RE = re.compile(r"^\(?[\d,]+(\.\d+)?\)?$")
+# Strict: a well-formed figure is either comma-grouped in threes
+# (4,453,103) or has no grouping at all (453103), optionally negative via
+# parentheses and optionally with decimals. Deliberately does NOT match a
+# fragment like ",453,103".
+#
+# The earlier version of this pattern was `^\(?[\d,]+(\.\d+)?\)?$`, which
+# happily accepted a leading comma — and that permissiveness silently
+# corrupted a real filing. See _repair_split_thousands below.
+_VALUE_RE = re.compile(r"^\(?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\)?$")
 _NOTE_REF_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,3}$")
 _NIL = "-"
+
+# pdfplumber sometimes emits a space between a number's leading digit and
+# its first comma group: "4 ,453,103" instead of "4,453,103". Observed on
+# J.F. Packaging PLC's June 2026 interim statements (but NOT on its annual
+# report — same company, same layout family, different rendering).
+#
+# Left unrepaired this is worse than a parse failure: the line still
+# tokenises, the leading "4" looks exactly like a note reference, gets
+# dropped by the note-reference rule, and "Total Assets" is recorded as
+# 453,103 instead of 4,453,103 — off by four billion rupees and entirely
+# plausible on screen. Repairing before tokenising, and refusing
+# comma-leading fragments after, closes it from both directions.
+_SPLIT_THOUSANDS_RE = re.compile(r"(\d)\s+(?=,\d{3})")
+
+
+def _repair_split_thousands(line: str) -> str:
+    return _SPLIT_THOUSANDS_RE.sub(r"\1", line)
 
 # CSE comparative statements consistently print exactly this many value
 # columns (Group this-year, Group last-year, Company this-year, Company
@@ -140,7 +165,7 @@ def split_label_and_values(
     a nil marker. Returns None if the line has no trailing numeric tokens
     at all (i.e. it's not a data line — a heading, a page footer, etc.).
     """
-    tokens = line.split()
+    tokens = _repair_split_thousands(line).split()
     i = len(tokens)
     while i > 0 and (_VALUE_RE.match(tokens[i - 1]) or _NOTE_REF_RE.match(tokens[i - 1]) or tokens[i - 1] == _NIL):
         i -= 1
@@ -171,6 +196,80 @@ def split_label_and_values(
         values=values,
         raw_text=line,
     )
+
+
+@dataclass(frozen=True)
+class IdentityCheck:
+    name: str
+    passed: bool
+    detail: str
+
+
+def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityCheck]:
+    """Independent arithmetic checks on an extracted period.
+
+    A statement that doesn't balance means the extraction is wrong, and
+    this catches classes of corruption no regex can — it was an identity
+    failure (equity + liabilities != assets) that exposed the split-
+    thousands bug, because the two sides were mangled by different
+    amounts. Cheap, deterministic, and it fails loudly on exactly the
+    error mode that is otherwise invisible: a plausible wrong number.
+
+    Only checks identities where BOTH sides were extracted; a missing
+    line item is not a failure, it's simply not checkable.
+    """
+    checks: list[IdentityCheck] = []
+
+    def have(*keys: str) -> bool:
+        return all(k in values for k in keys)
+
+    # Assets = Equity + Liabilities
+    if have("total_assets", "total_equity", "total_liabilities"):
+        lhs = values["total_assets"]
+        rhs = values["total_equity"] + values["total_liabilities"]
+        ok = lhs == rhs
+        checks.append(
+            IdentityCheck(
+                "assets = equity + liabilities",
+                ok,
+                f"{lhs:,} vs {rhs:,}" + ("" if ok else f" — differs by {abs(lhs - rhs):,}"),
+            )
+        )
+
+    # The balance sheet's own footing line must agree with total assets.
+    if have("total_assets", "total_equity_and_liabilities"):
+        lhs, rhs = values["total_assets"], values["total_equity_and_liabilities"]
+        ok = lhs == rhs
+        checks.append(IdentityCheck("assets = equity and liabilities", ok, f"{lhs:,} vs {rhs:,}"))
+
+    # Current + non-current = total, both sides of the balance sheet.
+    if have("total_assets", "total_current_assets", "total_non_current_assets"):
+        lhs = values["total_assets"]
+        rhs = values["total_current_assets"] + values["total_non_current_assets"]
+        ok = lhs == rhs
+        checks.append(IdentityCheck("assets = current + non-current", ok, f"{lhs:,} vs {rhs:,}"))
+
+    if have("total_liabilities", "total_current_liabilities", "total_non_current_liabilities"):
+        lhs = values["total_liabilities"]
+        rhs = values["total_current_liabilities"] + values["total_non_current_liabilities"]
+        ok = lhs == rhs
+        checks.append(IdentityCheck("liabilities = current + non-current", ok, f"{lhs:,} vs {rhs:,}"))
+
+    # Revenue - cost of sales = gross profit (cost stored negative).
+    if have("revenue", "cost_of_sales", "gross_profit"):
+        lhs = values["revenue"] + values["cost_of_sales"]
+        rhs = values["gross_profit"]
+        ok = lhs == rhs
+        checks.append(IdentityCheck("revenue - cost of sales = gross profit", ok, f"{lhs:,} vs {rhs:,}"))
+
+    # Profit before tax - tax = profit for the period (tax stored negative).
+    if have("profit_before_tax", "income_tax_expense", "net_income"):
+        lhs = values["profit_before_tax"] + values["income_tax_expense"]
+        rhs = values["net_income"]
+        ok = lhs == rhs
+        checks.append(IdentityCheck("pre-tax profit - tax = net income", ok, f"{lhs:,} vs {rhs:,}"))
+
+    return checks
 
 
 def extract_candidate_lines(

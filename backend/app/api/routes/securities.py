@@ -22,6 +22,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.domain.fundamentals_view import ratios_for
+from app.domain.ratios import NOT_YET_COMPUTABLE
 from app.jobs.reconciliation import is_quarantined
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import ProvenanceTier
@@ -74,6 +76,24 @@ class FundamentalSummary(BaseModel):
     confirmed: bool
 
 
+class RatioOut(BaseModel):
+    key: str
+    label: str
+    formula: str
+    unit: str
+    value: Decimal | None
+    provenance: ProvenanceTier | None
+    inputs_used: list[str]
+    missing_inputs: list[str]
+    note: str | None
+
+
+class UncomputableRatioOut(BaseModel):
+    key: str
+    label: str
+    missing_inputs: list[str]
+
+
 class SecurityDetail(BaseModel):
     ticker: str
     name: str
@@ -90,6 +110,9 @@ class SecurityDetail(BaseModel):
     price_history: list[PricePoint]
     corporate_actions: list[CorporateActionSummary]
     fundamentals: list[FundamentalSummary]
+    ratio_period_end: dt.date | None
+    ratios: list[RatioOut]
+    ratios_not_yet_computable: list[UncomputableRatioOut]
     not_yet_built: list[str]
 
 
@@ -97,7 +120,9 @@ class SecurityDetail(BaseModel):
 # user the same story about what this system can't do yet.
 _NOT_YET_BUILT = [
     "Fair value and buy-below price (Phase 3 — valuation engine, Master Spec §16-26)",
-    "Composite score and coverage tier (Phase 2 — fundamental engine and gates, §12, §38)",
+    "Composite score (Phase 2 — §38; needs the full ratio set plus sector-relative percentiles)",
+    "Coverage tier (Phase 2 — §11; the gate logic exists but needs liquidity history and free float)",
+    "Trend direction and sector percentiles (Phase 2 — §13; needs several periods of history)",
     "Macro regime and sector fit (Phase 5 — macro engine, §29-33)",
     "Research note (Phase 7 — AI research writer, §44)",
 ]
@@ -197,6 +222,8 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
         .limit(1)
     )
 
+    ratio_period_end, ratio_results = ratios_for(db, ticker)
+
     return SecurityDetail(
         ticker=security.ticker,
         name=security.name,
@@ -245,6 +272,25 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
                 confirmed=f.confirmed_by is not None,
             )
             for f in fundamentals
+        ],
+        ratio_period_end=ratio_period_end,
+        ratios=[
+            RatioOut(
+                key=r.key,
+                label=r.label,
+                formula=r.formula,
+                unit=str(r.unit),
+                value=r.value,
+                provenance=r.provenance,
+                inputs_used=list(r.inputs_used),
+                missing_inputs=list(r.missing_inputs),
+                note=r.note,
+            )
+            for r in ratio_results
+        ],
+        ratios_not_yet_computable=[
+            UncomputableRatioOut(key=key, label=label, missing_inputs=list(needs))
+            for key, label, needs in NOT_YET_COMPUTABLE
         ],
         not_yet_built=_NOT_YET_BUILT,
     )

@@ -13,6 +13,7 @@ the live API — see app/ingestion/README_ENDPOINTS.md.
 from __future__ import annotations
 
 import logging
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,6 +28,8 @@ from app.jobs.reconciliation import run_nightly_reconciliation
 from app.models.securities import Security
 
 logger = logging.getLogger("cse_alpha.jobs.scheduler")
+
+MARKET_TZ = ZoneInfo("Asia/Colombo")
 
 
 def _all_tickers(db) -> list[str]:
@@ -127,18 +130,36 @@ def _job_financial_statement_scan() -> None:
         db.close()
 
 
-def build_scheduler() -> BackgroundScheduler:
-    scheduler = BackgroundScheduler(timezone="Asia/Colombo")
+def _colombo_cron(hour: int, minute: int) -> CronTrigger:
+    """Every schedule in this system is anchored to the exchange's clock,
+    never the host's.
 
+    `CronTrigger` resolves its timezone AT CONSTRUCTION, defaulting to the
+    machine's local zone — passing the scheduler a tz does NOT retro-fit a
+    trigger that was built without one. On a host in, say, Australia/Perth
+    (+08:00) that silently turns "15:00" into 12:30 Colombo, i.e. two
+    hours BEFORE the CSE closes at 14:30 — so the "end of day" snapshot
+    would capture a mid-session price and file it as the close. Caught on
+    a real machine; hence the explicit timezone here and the test in
+    tests/test_scheduler.py that pins it.
+    """
+    return CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri", timezone=MARKET_TZ)
+
+
+def build_scheduler() -> BackgroundScheduler:
+    scheduler = BackgroundScheduler(timezone=MARKET_TZ)
+
+    # §52: "EOD snapshot + adjustment  15:00 daily" — 30 minutes after the
+    # 14:30 Colombo close.
     scheduler.add_job(
         _job_eod_snapshot,
-        CronTrigger(hour=15, minute=0, day_of_week="mon-fri"),
+        _colombo_cron(15, 0),
         id="eod_snapshot",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_nightly_reconciliation,
-        CronTrigger(hour=15, minute=5, day_of_week="mon-fri"),
+        _colombo_cron(15, 5),
         id="nightly_reconciliation",
         replace_existing=True,
     )
@@ -146,13 +167,13 @@ def build_scheduler() -> BackgroundScheduler:
     # as the closest Phase-1-achievable approximation (see docstring above).
     scheduler.add_job(
         _job_corporate_actions_scan,
-        CronTrigger(hour=16, minute=0, day_of_week="mon-fri"),
+        _colombo_cron(16, 0),
         id="corporate_actions_scan",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_financial_statement_scan,
-        CronTrigger(hour=16, minute=30, day_of_week="mon-fri"),
+        _colombo_cron(16, 30),
         id="financial_statement_scan",
         replace_existing=True,
     )

@@ -127,6 +127,24 @@ export interface FundamentalSummary {
   confirmed: boolean;
 }
 
+export interface Ratio {
+  key: string;
+  label: string;
+  formula: string;
+  unit: "percent" | "times" | string;
+  value: string | null;
+  provenance: ProvenanceTier | null;
+  inputs_used: string[];
+  missing_inputs: string[];
+  note: string | null;
+}
+
+export interface UncomputableRatio {
+  key: string;
+  label: string;
+  missing_inputs: string[];
+}
+
 export interface SecurityDetail {
   ticker: string;
   name: string;
@@ -143,6 +161,9 @@ export interface SecurityDetail {
   price_history: PricePoint[];
   corporate_actions: CorporateActionSummary[];
   fundamentals: FundamentalSummary[];
+  ratio_period_end: string | null;
+  ratios: Ratio[];
+  ratios_not_yet_computable: UncomputableRatio[];
   not_yet_built: string[];
 }
 

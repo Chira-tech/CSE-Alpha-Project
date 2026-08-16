@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiRequestError, getSecurity } from "../api";
 import { EvidencePanel, type Evidence } from "../components/EvidencePanel";
 import { ProvenanceChip } from "../components/ProvenanceChip";
+import { RatioTable } from "../components/RatioTable";
 import { EmptyState, ErrorState, QuarantineNotice, SkeletonCard } from "../components/states";
 import { formatMagnitude, formatPrice, UNAVAILABLE } from "../format";
 import type { PricePoint, SecurityDetail } from "../types";
@@ -261,6 +262,16 @@ export function CompanyScreen({ ticker, onBack }: { ticker: string; onBack: () =
             </table>
           </div>
         )}
+      </section>
+
+      <section aria-labelledby="ratios-heading" className="stack-tight">
+        <h2 id="ratios-heading">Ratios</h2>
+        <RatioTable
+          ratios={data.ratios}
+          notComputable={data.ratios_not_yet_computable}
+          periodEnd={data.ratio_period_end}
+          onExplain={setEvidence}
+        />
       </section>
 
       <section aria-labelledby="fundamentals-heading" className="stack-tight">
