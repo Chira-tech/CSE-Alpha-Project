@@ -23,6 +23,7 @@ from app.db.session import SessionLocal
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
+from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
 from app.models.securities import Security
@@ -59,6 +60,23 @@ def _job_eod_snapshot() -> None:
         logger.info("EOD snapshot: wrote %d rows for session %s", written, session_date)
     except Exception:
         logger.exception("EOD snapshot job failed")
+    finally:
+        db.close()
+
+
+def _job_capture_market_internals() -> None:
+    """§29's variable set under "Market internals": market-wide earnings
+    yield, turnover, foreign net flow. Runs with the EOD snapshot because
+    it comes from the same end-of-session publication, and because the
+    earnings-yield half of the hero spread is only as current as this job.
+    """
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            written = ingest_market_internals(client, db)
+        logger.info("market internals: wrote %d new observation(s)", written)
+    except Exception:
+        logger.exception("market internals capture failed")
     finally:
         db.close()
 
@@ -155,6 +173,12 @@ def build_scheduler() -> BackgroundScheduler:
         _job_eod_snapshot,
         _colombo_cron(15, 0),
         id="eod_snapshot",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_capture_market_internals,
+        _colombo_cron(15, 2),
+        id="capture_market_internals",
         replace_existing=True,
     )
     scheduler.add_job(

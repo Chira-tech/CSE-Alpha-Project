@@ -114,7 +114,10 @@ class DailyMarketSummaryRow(_Lenient):
     spt: float | None = None  # S&P SL20 close (field name as returned)
     per: float | None = None
     pbv: float | None = None
-    dy: float | None = None
+    dy: float | None = None  # published as a percentage, e.g. 3.0
+    tradesNo: int | None = None
+    equityForeignPurchase: float | None = None
+    equityForeignSales: float | None = None
 
 
 # --- parameterised endpoints (POST form-urlencoded) --------------------------

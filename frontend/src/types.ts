@@ -189,3 +189,23 @@ export interface DataHealth {
   fundamentals_confirmed: number;
   quarantined: QuarantinedTicker[];
 }
+
+export interface SpreadPoint {
+  obs_date: string;
+  earnings_yield: string;
+  tbill_yield: string;
+  spread: string;
+}
+
+export interface Spread {
+  available: boolean;
+  missing: string[];
+  obs_date: string | null;
+  market_per: string | null;
+  earnings_yield: string | null;
+  tbill_yield: string | null;
+  tbill_obs_date: string | null;
+  tbill_source: string | null;
+  spread: string | null;
+  history: SpreadPoint[];
+}

@@ -31,10 +31,20 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import threading
+from decimal import Decimal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from app.db.session import get_db
+from app.domain.macro import SERIES_MARKET_PER
+from app.domain.macro_view import (
+    current_spread,
+    latest_observation,
+    risk_free_observation,
+    spread_history,
+)
 from app.ingestion.cse_client import CseClient, ShapeChangedError
 from app.ingestion.schemas import AspiData, SectorIndexRow
 
@@ -148,6 +158,67 @@ def _build_overview() -> MarketOverview:
         sectors=sorted(sectors, key=lambda s: s.name),
         unavailable=unavailable,
         fetched_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+
+class SpreadPoint(BaseModel):
+    obs_date: dt.date
+    earnings_yield: Decimal
+    tbill_yield: Decimal
+    spread: Decimal
+
+
+class SpreadOut(BaseModel):
+    """§29's hero variable. `available` is False when either input is
+    missing, with `missing` naming which — never a zero or a stale
+    figure, because the cost of equity and the regime read are both
+    built on this."""
+
+    available: bool
+    missing: list[str]
+    obs_date: dt.date | None = None
+    market_per: Decimal | None = None
+    earnings_yield: Decimal | None = None
+    tbill_yield: Decimal | None = None
+    tbill_obs_date: dt.date | None = None
+    tbill_source: str | None = None
+    spread: Decimal | None = None
+    history: list[SpreadPoint] = []
+
+
+@router.get("/spread", response_model=SpreadOut)
+def equity_tbill_spread(db: Session = Depends(get_db)) -> SpreadOut:
+    current = current_spread(db)
+    if current is None:
+        missing: list[str] = []
+        if latest_observation(db, SERIES_MARKET_PER) is None:
+            missing.append("market P/E (run `python -m app.cli capture-market`)")
+        if risk_free_observation(db) is None:
+            missing.append(
+                "364-day T-bill yield (run `python -m app.cli record-macro "
+                "--series cbsl.tbill_364d --value <pct> --percent --date <YYYY-MM-DD>`)"
+            )
+        return SpreadOut(available=False, missing=missing)
+
+    return SpreadOut(
+        available=True,
+        missing=[],
+        obs_date=current.obs_date,
+        market_per=current.market_per,
+        earnings_yield=current.earnings_yield,
+        tbill_yield=current.tbill_yield,
+        tbill_obs_date=current.tbill_obs_date,
+        tbill_source=current.tbill_source,
+        spread=current.spread,
+        history=[
+            SpreadPoint(
+                obs_date=p.obs_date,
+                earnings_yield=p.earnings_yield,
+                tbill_yield=p.tbill_yield,
+                spread=p.spread,
+            )
+            for p in spread_history(db)
+        ],
     )
 
 

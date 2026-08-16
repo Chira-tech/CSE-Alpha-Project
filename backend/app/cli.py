@@ -11,10 +11,14 @@ import argparse
 import datetime as dt
 import logging
 import sys
+from decimal import Decimal
 
 from app.config import settings
 from app.db.session import SessionLocal
+from app.domain.macro import SERIES_TBILL_364D
+from app.domain.macro_view import current_spread, record_observation
 from app.ingestion.bootstrap import run_bootstrap
+from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
 from app.ingestion.security_enrichment import enrich_securities
@@ -114,6 +118,85 @@ def cmd_enrich(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_capture_market(args: argparse.Namespace) -> int:
+    """Store the day's market internals (P/E, PBV, DY, ASPI, turnover,
+    foreign flow) into macro_series."""
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            written = ingest_market_internals(client, db)
+        print(f"Wrote {written} new macro observation(s).")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_record_macro(args: argparse.Namespace) -> int:
+    """Record a macro observation by hand — for CBSL series until a
+    scraper exists (their pages are JavaScript-rendered, so it's a real
+    integration rather than a fetch).
+
+    Rates are entered as percentages because that is how CBSL publishes
+    them, and stored as decimal fractions because that is how every
+    calculation consumes them. Doing that conversion once, here, is
+    deliberate: a percentage leaking into a spread calculation produces a
+    number wrong by 100x that still looks plausible.
+    """
+    value = Decimal(str(args.value))
+    if args.percent:
+        value = value / 100
+
+    obs_date = dt.date.fromisoformat(args.date)
+    available = dt.date.fromisoformat(args.available) if args.available else None
+
+    db = SessionLocal()
+    try:
+        row = record_observation(
+            db,
+            series_id=args.series,
+            obs_date=obs_date,
+            value=value,
+            first_available_date=available,
+            source=args.source,
+        )
+        print(
+            f"Recorded {row.series_id} = {row.value} (obs {row.obs_date}, "
+            f"first available {row.first_available_date}, source '{row.source}')."
+        )
+        if args.percent:
+            print(f"  Entered as {args.value}% and stored as the fraction {row.value}.")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_show_spread(args: argparse.Namespace) -> int:
+    """§29's hero variable: equity earnings yield minus the 364-day
+    T-bill yield."""
+    db = SessionLocal()
+    try:
+        spread = current_spread(db)
+        if spread is None:
+            print(
+                "Cannot compute the spread yet. It needs both:\n"
+                "  - a market P/E   (run `capture-market`)\n"
+                "  - a 364-day T-bill yield (run `record-macro --series cbsl.tbill_364d ...`)",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"As at {spread.obs_date}")
+        print(f"  Market P/E            {spread.market_per}")
+        print(f"  Earnings yield        {spread.earnings_yield * 100:.2f}%")
+        print(
+            f"  364-day T-bill yield  {spread.tbill_yield * 100:.2f}%  "
+            f"(obs {spread.tbill_obs_date}, source '{spread.tbill_source}')"
+        )
+        print(f"  SPREAD                {spread.spread * 100:+.2f}pp")
+    finally:
+        db.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_logging()
     parser = argparse.ArgumentParser(prog="app.cli", description="CSE Alpha Engine operator commands")
@@ -139,6 +222,35 @@ def main(argv: list[str] | None = None) -> int:
     p_en.add_argument("--ticker", action="append", help="limit to specific ticker(s); repeatable")
     p_en.add_argument("--limit", type=int, help="only process the first N tickers")
     p_en.set_defaults(func=cmd_enrich)
+
+    p_cm = sub.add_parser("capture-market", help="store today's market internals into macro_series")
+    p_cm.set_defaults(func=cmd_capture_market)
+
+    p_rm = sub.add_parser(
+        "record-macro",
+        help="record a macro observation by hand (CBSL series, until a scraper exists)",
+    )
+    p_rm.add_argument("--series", required=True, help=f"e.g. {SERIES_TBILL_364D}")
+    p_rm.add_argument("--value", required=True, help="the observed figure")
+    p_rm.add_argument("--date", required=True, help="observation date, YYYY-MM-DD")
+    p_rm.add_argument(
+        "--available",
+        help=(
+            "date the figure became public, YYYY-MM-DD. Defaults to the observation date, "
+            "which is right for same-day releases like a T-bill auction but WRONG for lagged "
+            "ones like CCPI — set it explicitly for those (§6)."
+        ),
+    )
+    p_rm.add_argument(
+        "--percent",
+        action="store_true",
+        help="value is a percentage (10.2) and should be stored as the fraction 0.102",
+    )
+    p_rm.add_argument("--source", default="manual", help="provenance note, default 'manual'")
+    p_rm.set_defaults(func=cmd_record_macro)
+
+    p_sp = sub.add_parser("spread", help="show the equity-earnings-yield-minus-T-bill spread (§29)")
+    p_sp.set_defaults(func=cmd_show_spread)
 
     args = parser.parse_args(argv)
     return args.func(args)

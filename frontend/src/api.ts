@@ -1,4 +1,5 @@
 import type {
+  Spread,
   CorporateAction,
   DataHealth,
   Fundamental,
@@ -111,4 +112,8 @@ export function confirmFundamental(id: number, actor: string, correctedValue?: s
       correction: correctedValue ? { value: correctedValue } : null,
     }),
   });
+}
+
+export function getSpread() {
+  return request<Spread>("/market/spread");
 }

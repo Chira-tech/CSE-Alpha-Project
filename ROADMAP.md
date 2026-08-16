@@ -50,7 +50,7 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 239 backend unit tests passing, most against real captured API/PDF
+- [x] 257 backend unit tests passing, most against real captured API/PDF
       data rather than invented fixtures
 - [x] **Runnable web app.** SQLite dev mode (documented fallback —
       Postgres+Timescale remains the §51 production target, and the same
@@ -145,6 +145,50 @@ consecutive days.
       stored and stamp a prominent warning onto every draft from a filing
       that doesn't balance. The identity check catches this class of
       corruption independently of the regex.
+
+## Phase 5 groundwork — the hero variable
+
+- [x] **§29's hero spread is live**: equity earnings yield (1 ÷ market
+      P/E, from CSE's `dailyMarketSummery`) minus the 364-day T-bill
+      yield. The spec calls this "the single most powerful macro variable
+      in the system" and puts it on the home screen — it is now there,
+      with a zero-baseline sparkline and an accessible data table (§15.2).
+      Current reading: **−1.43pp**, i.e. equities yielding *less* than
+      risk-free bills — the "equity as bond substitute" condition §29 is
+      built around.
+- [x] `macro_series` is finally used: market P/E, PBV, dividend yield,
+      ASPI, S&P SL20, turnover, market cap and foreign net flow captured
+      daily (`capture-market`, and a scheduled job at 15:02 Colombo).
+- [x] Unit discipline enforced at the edge: CSE publishes dividend yield
+      as a percentage, the T-bill CLI takes `--percent`, and everything is
+      stored as a decimal fraction. Mixing the two conventions would give
+      a spread wrong by 100× that still looks like a plausible number, so
+      there is a test asserting both yields stay fractions.
+- [x] Point-in-time pairing: `spread_history` pairs each market
+      observation with the T-bill rate that was *public on that date*,
+      not the latest one — otherwise every rate change would silently
+      rewrite history.
+
+### The T-bill rate is entered by hand, deliberately
+
+CBSL publishes on JavaScript-rendered pages, so automated collection is a
+real integration (§5 lists it as "API + scrape, release-calendar driven")
+rather than a fetch. Until that exists:
+
+```bash
+python -m app.cli record-macro --series cbsl.tbill_364d \
+  --value 10.2 --percent --date 2026-08-12 --source "CBSL weekly auction"
+```
+
+It lands in the same point-in-time series as everything else, carries
+`source`, and the UI states plainly that it was entered manually. A
+hard-coded constant pretending to be live data would not be acceptable;
+a dated, sourced manual observation is.
+
+- [ ] **CBSL scraper** — needs a headless browser or their statistical
+      appendix files. Would also unlock policy rate, CCPI, reserves, FX
+      (§29's full variable set) and, critically, the risk-free rate that
+      §17.2's cost of equity is built on.
 
 ## Not done yet — next in Phase 1
 

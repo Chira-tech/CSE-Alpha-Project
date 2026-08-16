@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getDataHealth, getMarketOverview } from "../api";
+import { ApiRequestError, getDataHealth, getMarketOverview, getSpread } from "../api";
 import { Delta } from "../components/Delta";
+import { SpreadHero } from "../components/SpreadHero";
 import { EmptyState, ErrorState, PartialNotice, SkeletonCard } from "../components/states";
 import { formatIndexValue, formatInteger } from "../format";
-import type { DataHealth, MarketOverview } from "../types";
+import type { DataHealth, MarketOverview, Spread } from "../types";
 
 /**
  * UI & Experience Specification §8 — Screen 1, "Today". Four questions in
@@ -24,6 +25,7 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "re
   const [marketError, setMarketError] = useState<string | null>(null);
   const [health, setHealth] = useState<DataHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [spread, setSpread] = useState<Spread | null>(null);
 
   useEffect(() => {
     getMarketOverview()
@@ -32,6 +34,11 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "re
     getDataHealth()
       .then(setHealth)
       .catch((e) => setHealthError(e instanceof ApiRequestError ? e.message : String(e)));
+    // The spread reads the local database, so it survives the CSE feed
+    // being unreachable — it is deliberately not tied to the market call.
+    getSpread()
+      .then(setSpread)
+      .catch(() => setSpread(null));
   }, []);
 
   const attention: string[] = [];
@@ -104,14 +111,15 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "re
               </div>
             </div>
 
+            {spread && <SpreadHero spread={spread} />}
+
             <div className="notice notice-neutral">
-              <h3>The regime read is not built yet — Phase 5</h3>
+              <h3>The regime classification is not built yet — Phase 5</h3>
               <p className="prose t-body">
-                The spec puts the earnings-yield-minus-364-day-T-bill spread on this screen, not the
-                index level, and calls it "the single most powerful macro variable in the system"
-                (§29): CSE equity is priced as a substitute for Treasury bills, so the index tells
-                you what happened while the spread tells you whether equities are cheap against the
-                only real alternative. The index above is a stand-in until the macro engine exists.{" "}
+                The spread above is §29's hero variable and the most important input to the regime
+                read, but the read itself — the Markov regime classifier with its probability, the
+                recommended gross exposure, the sector tilts and the ARDL error-correction half-life
+                — needs the macro engine.{" "}
                 <button className="btn-link" onClick={() => onOpenScreen("macro")}>
                   What Macro will contain
                 </button>
