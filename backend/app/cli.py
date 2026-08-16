@@ -17,6 +17,7 @@ from app.db.session import SessionLocal
 from app.ingestion.bootstrap import run_bootstrap
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
+from app.ingestion.security_enrichment import enrich_securities
 from app.models.securities import Security
 from sqlalchemy import select
 
@@ -77,6 +78,42 @@ def cmd_ingest_corporate_actions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_enrich(args: argparse.Namespace) -> int:
+    """Fill ISIN / listing date / shares issued from companyInfoSummery.
+
+    One request per company at >=2s pacing (§5), so a full sweep of ~283
+    names is roughly 10 minutes. `--limit` exists to sanity-check a few
+    first.
+    """
+    db = SessionLocal()
+    try:
+        tickers = [t for (t,) in db.execute(select(Security.ticker).order_by(Security.ticker)).all()]
+        if args.ticker:
+            tickers = [t for t in tickers if t in set(args.ticker)]
+        if args.limit:
+            tickers = tickers[: args.limit]
+        if not tickers:
+            print("No matching tickers. Run `bootstrap` first?", file=sys.stderr)
+            return 1
+
+        est = len(tickers) * settings.cse_min_seconds_between_calls / 60
+        print(f"Enriching {len(tickers)} ticker(s) — roughly {est:.0f} min at the configured pacing.")
+        with CseClient() as client:
+            result = enrich_securities(client, db, tickers)
+        print(
+            f"Done. {result['enriched']} updated, {result['skipped']} already complete or empty, "
+            f"{result['failed']} failed."
+        )
+        print(
+            "Note: cse_sector and archetype are NOT set — neither exists on the CSE API, and "
+            "archetype drives the valuation model router, so it needs a deliberate mapping "
+            "(Master Spec Appendix P2)."
+        )
+    finally:
+        db.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_logging()
     parser = argparse.ArgumentParser(prog="app.cli", description="CSE Alpha Engine operator commands")
@@ -97,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     p_ca.add_argument("--ticker", action="append", help="limit to specific ticker(s); repeatable")
     p_ca.add_argument("--limit", type=int, help="only process the first N tickers")
     p_ca.set_defaults(func=cmd_ingest_corporate_actions)
+
+    p_en = sub.add_parser("enrich", help="fill ISIN / listing date / shares issued per company")
+    p_en.add_argument("--ticker", action="append", help="limit to specific ticker(s); repeatable")
+    p_en.add_argument("--limit", type=int, help="only process the first N tickers")
+    p_en.set_defaults(func=cmd_enrich)
 
     args = parser.parse_args(argv)
     return args.func(args)

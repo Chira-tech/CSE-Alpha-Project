@@ -136,6 +136,9 @@ export interface SecurityDetail {
   listing_date: string | null;
   delisting_date: string | null;
   fiscal_year_end: string | null;
+  shares_issued: number | null;
+  shares_issued_as_of: string | null;
+  public_float_pct: string | null;
   quarantined: boolean;
   price_history: PricePoint[];
   corporate_actions: CorporateActionSummary[];

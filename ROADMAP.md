@@ -10,7 +10,7 @@ consecutive days.
       `corporate_actions` (+ `notes`, `rejected_by`/`rejected_at`),
       `fundamentals` (+ `source_snippet`, `confirmed_by`/`confirmed_at`),
       `float_data`, `macro_series`, `data_alerts`
-- [x] Alembic migrations 0001–0004 (Timescale hypertable optional/detected)
+- [x] Alembic migrations 0001–0005 (Timescale hypertable optional/detected)
 - [x] Corporate-action math: TERP, cumulative total-return adjustment
       factor series (§7, §P1) — pure functions, unit tested
 - [x] Coverage gate logic: Gate 1 liquidity, Gate 2 structural, Gate 3
@@ -50,7 +50,7 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 170 backend unit tests passing, most against real captured API/PDF
+- [x] 184 backend unit tests passing, most against real captured API/PDF
       data rather than invented fixtures
 - [x] **Runnable web app.** SQLite dev mode (documented fallback —
       Postgres+Timescale remains the §51 production target, and the same
@@ -74,6 +74,16 @@ consecutive days.
       whole screen if any one failed. Now: per-section degradation with a
       named `unavailable` list (§15.1's Partial state) and a 60s cache —
       4.5s cold, 0.2s warm.
+- [x] **Per-company enrichment** (`app/ingestion/security_enrichment.py`,
+      `python -m app.cli enrich`): ISIN, listing date and shares issued
+      from `companyInfoSummery`, verified against real companies (Abans
+      listed 1984-01-01, Asia Asset Finance ISIN LK0406N00005). These fill
+      columns Gate 2 (§11.1) needs in order to run at all. Never
+      overwrites a hand-set value; never sets sector/archetype; never
+      derives free float from foreign holding — migration 0005 makes
+      `public_float_pct` nullable instead, and Gate 2 now treats an
+      unknown float as "cannot evaluate" rather than silently passing,
+      which is the behaviour a hard gate must have.
 - [x] **Fixed a real point-in-time bug found in the running app**:
       bootstrap stamped prices with `date.today()`, so ingesting on a
       Sunday filed Friday's prices under a date the market never traded.
@@ -104,18 +114,33 @@ consecutive days.
       is a recent-filings feed only; a different, not-yet-identified
       source is needed to backfill history to the Part O #2 target
       (2015-01-01).
-- [ ] **Price history is one day deep.** `bootstrap` seeds the latest
-      session only; depth accumulates one day at a time from the
-      scheduled EOD job. No historical price backfill source has been
-      found on the CSE API — this blocks anything needing a time series
-      (factor library, momentum, beta, Amihud liquidity), i.e. most of
-      Phases 2 and 6. Worth solving early; a broker EOD file (the same
-      second source PARAMETERS.md #5 wants) may cover both needs at once.
-- [ ] **`cse_sector` and `archetype` are NULL for every company.**
-      Bootstrap deliberately doesn't guess them — archetype drives the
-      valuation model router (§15/§16) and a wrong one silently routes a
-      bank through an industrial DCF (Part N #7). Needs a real mapping,
-      hand-corrected per Appendix P2. Blocks sector-relative anything.
+- [ ] **Price history is one day deep — now confirmed unsolvable from the
+      CSE API.** A full sweep of the site's own endpoint list (see the
+      inventory in README_ENDPOINTS.md) found `chartData`, which returns
+      up to ~1 year of daily points but **for the ASPI index only** —
+      every per-company id returns `[]`. `companyInfoSummery`'s
+      hi/lo/volume fields are period aggregates, not a series. So there is
+      no per-company historical price source on the public API, and this
+      genuinely blocks the factor library, momentum, Dimson beta and
+      Amihud liquidity — most of Phases 2 and 6. **A broker EOD file is
+      now the only identified route**, and it would also satisfy
+      PARAMETERS.md #5's second-source requirement: one decision, two
+      blockers cleared.
+- [ ] **`cse_sector` and `archetype` — confirmed not available from the
+      API at all.** No endpoint carries company→sector membership
+      (`allSectors` gives index levels only). This matches Appendix P2,
+      which says the archetype mapping is maintained as a hand-corrected
+      version-controlled file. Needs a deliberate mapping exercise, not
+      more API work. Blocks sector-relative percentiles (§12) and the
+      valuation model router (§16).
+- [ ] **ASPI daily history (~1 year) is available and not yet captured**
+      via `chartData` `chartId=1&period=5`. Worth ingesting into
+      `macro_series` for the Phase 5 macro engine, though 1 year is well
+      short of what regime estimation wants.
+- [ ] **`allSecurityCode`** exposes an `active` flag per security — the
+      only endpoint found that distinguishes inactive listings, relevant
+      to §7's survivorship requirement. No delisting date, and not yet
+      used by any loader.
 - [ ] **Plain bonus issue / consolidation**: still unverified after ~40
       tickers probed across two sessions — no live example of either was
       found. Share splits (which looked similar) ARE now verified.

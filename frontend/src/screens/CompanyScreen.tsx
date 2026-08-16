@@ -149,6 +149,20 @@ export function CompanyScreen({ ticker, onBack }: { ticker: string; onBack: () =
         <Fact label="Listing date" value={data.listing_date} />
         <Fact label="Fiscal year end" value={data.fiscal_year_end} />
         <Fact label="Turnover (latest)" value={latest ? formatMagnitude(latest.turnover) : null} />
+        <Fact
+          label="Shares issued"
+          value={data.shares_issued === null ? null : formatMagnitude(data.shares_issued)}
+          note={
+            data.shares_issued_as_of
+              ? `As at ${data.shares_issued_as_of}, from the CSE company summary.`
+              : undefined
+          }
+        />
+        <Fact
+          label="Public free float"
+          value={data.public_float_pct}
+          note="Sourced from quarterly shareholding disclosures (§5), which are not ingested yet. Deliberately not derived from foreign holding — that is a different number, and Gate 2 treats this as 'cannot evaluate' rather than a pass."
+        />
       </section>
 
       <section aria-labelledby="prices-heading" className="stack-tight">

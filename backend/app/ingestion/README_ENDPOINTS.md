@@ -76,13 +76,99 @@ fields (turnover, CDS holdings domestic/foreign, ASI/SPT close, PER, PBV,
 DY, etc.) — see `app.ingestion.schemas.DailyMarketSummaryRow` for the
 subset this system types; everything else is dropped by the lenient model.
 
+### Full endpoint inventory (from the site's own `apiService` calls)
+
+Extracted by grepping the production JS bundle for `apiService.*("...")`,
+which is the authoritative list of what the frontend actually uses:
+
+```
+allSectors            allSecurityCode       announcementById
+approvedAnnouncement  aspi/year             chartData
+cntSecurity           corporateAnnouncementCategory
+circularAnnouncement  directiveAnnouncement events  events/top
+getAnnouncementByCompany  getAnnouncementById
+getBuyInBoardAnnouncements  getCOVIDAnnouncements
+getFinancialAnnouncement  getGeneralAnnouncementById
+getNewListingsRelatedNoticesAnnouncements
+getNonComplianceAnnouncements  marketStatus  news/web
+notifications  notifications/corporate  notifications/directors
+notifications/financial  returnAspiSnp  smd  smd/categories
+(plus auth/subscription endpoints: signIn*, signUp*, verifyOtp,
+ calculateAmount, editSubscription, paymentConfirm, ... — not relevant)
+```
+
+### `allSecurityCode` — GET (one of the few genuine GETs)
+```json
+[{"id":204,"name":"ABANS ELECTRICALS PLC","symbol":"ABAN.N0000","active":1}]
+```
+Every security with an `active` flag. Relevant to §7's survivorship
+requirement ("delisted, suspended and defaulted companies remain in the
+database"): this is the only endpoint found that distinguishes inactive
+listings, though it gives no delisting date. Not yet used by any loader.
+
+### `chartData` — POST form, `chartId=<N>&period=<1-5>`
+**Index history only — not per company.** `chartId=1` is the ASPI;
+`chartId` values 2-4 and every security id tried returned `[]`. Verified
+depth:
+
+| period | points | range |
+|---|---|---|
+| 1 | intraday | 1-minute bars for the session |
+| 3 | 20 | ~1 month daily |
+| 4 | 60 | ~3 months daily |
+| 5 | 240 | ~1 year daily |
+
+```json
+[{"d":1784256360000,"v":21420.8,"pc":-0.1248}]
+```
+(`d` epoch millis, `v` index value, `pc` percent change.) Useful for the
+Phase 5 macro engine; does **not** solve per-company price backfill.
+
+### `aspi/year` — POST, no params
+Year-to-date returns only, not a series:
+`{"triAspiValue":-1.09,"snpValueForYear":-1.49,"aspiValueForYear":-4.43,"triSnpValue":2.34}`
+
 ### `companyInfoSummery` — POST form, `symbol=<TICKER>`
 ```json
-{"reqSymbolBetaInfo": {...}, "reqLogo": {...},
+{"reqSymbolBetaInfo": {"securityId":1108,"triASIBetaValue":1.42,
+   "betaValueSPSL":1.52,"triASIBetaPeriod":"2026","quarter":1},
+ "reqLogo": {...},
  "reqSymbolInfo": {"id":2025,"symbol":"AAF.N0000","name":"ASIA ASSET FINANCE PLC",
-   "issueDate":"12/JAN/2012","quantityIssued":124195533,"parValue":1.0,
-   "lastTradedPrice":49.1, "...": "many more hi/lo/volume fields"}}
+   "isin":"LK0406N00005","issueDate":"12/JAN/2012","quantityIssued":124195533,
+   "parValue":1.0,"lastTradedPrice":49.1,"marketCap":...,
+   "foreignHoldings":...,"foreignPercentage":...,
+   "...": "plus wtd/mtd/ytd/p12 hi-lo-volume-turnover aggregates"}}
 ```
+Consumed by `app.ingestion.security_enrichment` for ISIN, listing date
+(`issueDate`, format "12/JAN/2012") and shares issued. Three deliberate
+non-uses:
+
+- **`foreignPercentage` is not free float.** A family-controlled
+  conglomerate can be 95% domestically held and still have a 10% public
+  float. `float_data.public_float_pct` therefore stays NULL until
+  quarterly shareholding disclosures (§5) are ingested, and Gate 2 treats
+  NULL as "cannot evaluate", never as a pass.
+- **`betaValueSPSL` / `triASIBetaValue` are captured but not used as the
+  system's beta.** §35.2 requires the Dimson (1979) aggregated-coefficient
+  correction because CSE stocks routinely go days without trading, and
+  calls skipping it "the single most common technical error in
+  frontier-market factor work". CSE's published beta is a comparison
+  point for our own estimate, not a substitute.
+- **The `hi/lo` aggregates (`wtdHiPrice`, `ytdLowPrice`, `p12HiPrice`…)
+  are not a price series.** They're summary statistics; they cannot
+  reconstruct the daily history the factor library needs.
+
+### No sector or archetype anywhere
+Searched every endpoint above. `allSectors` gives sector *index levels*
+but no company→sector membership, and `companyInfoSummery` has no sector
+field. So `securities.cse_sector` and `securities.archetype` cannot be
+populated from the API at all — which matches Appendix P2's own
+instruction that the archetype mapping is "maintained as a
+version-controlled file with manual overrides", since "several CSE
+conglomerates are misclassified by standard GICS and must be corrected by
+hand." Enrichment deliberately leaves both NULL rather than guessing:
+archetype drives the valuation model router, where a wrong value silently
+routes a bank through an industrial DCF (Part N #7).
 
 ### `detailedTrades` — POST form, `symbol=<TICKER>`
 ```json

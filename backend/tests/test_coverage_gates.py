@@ -78,6 +78,38 @@ def test_gate1_fails_when_position_too_large_vs_adv():
     assert any("ADV" in reason for reason in result.reasons_failed)
 
 
+def test_gate2_fails_when_free_float_is_unknown_rather_than_passing():
+    """A hard gate must never pass on absent evidence. `None` means the
+    shareholding disclosure hasn't been ingested, not that the float is
+    fine — treating it as a pass would let a company through Gate 2 on
+    data nobody has."""
+    inputs = Gate2Inputs(
+        free_float_pct=None,
+        on_watch_list=False,
+        trading_suspended=False,
+        months_listed=60,
+        market_cap_lkr=Decimal("5000000000"),
+        consecutive_quarters_history=20,
+    )
+    result = evaluate_gate2_structural(inputs)
+    assert not result.passed
+    assert any("free float unknown" in reason for reason in result.reasons_failed)
+
+
+def test_gate2_fails_when_market_cap_is_unknown():
+    inputs = Gate2Inputs(
+        free_float_pct=Decimal("0.30"),
+        on_watch_list=False,
+        trading_suspended=False,
+        months_listed=60,
+        market_cap_lkr=None,
+        consecutive_quarters_history=20,
+    )
+    result = evaluate_gate2_structural(inputs)
+    assert not result.passed
+    assert any("market cap unknown" in reason for reason in result.reasons_failed)
+
+
 def test_gate2_fails_on_watch_list():
     inputs = Gate2Inputs(
         free_float_pct=Decimal("0.30"),

@@ -25,6 +25,7 @@ from app.db.session import get_db
 from app.jobs.reconciliation import is_quarantined
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import ProvenanceTier
+from app.models.float_data import FloatData
 from app.models.fundamentals import Fundamental
 from app.models.prices import PriceDaily
 from app.models.securities import Security
@@ -82,6 +83,9 @@ class SecurityDetail(BaseModel):
     listing_date: dt.date | None
     delisting_date: dt.date | None
     fiscal_year_end: str | None
+    shares_issued: int | None
+    shares_issued_as_of: dt.date | None
+    public_float_pct: Decimal | None
     quarantined: bool
     price_history: list[PricePoint]
     corporate_actions: list[CorporateActionSummary]
@@ -186,6 +190,13 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
         .order_by(Fundamental.period_end.desc(), Fundamental.statement_line)
     ).all()
 
+    latest_float = db.scalar(
+        select(FloatData)
+        .where(FloatData.ticker == ticker)
+        .order_by(FloatData.as_of.desc())
+        .limit(1)
+    )
+
     return SecurityDetail(
         ticker=security.ticker,
         name=security.name,
@@ -195,6 +206,9 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
         listing_date=security.listing_date,
         delisting_date=security.delisting_date,
         fiscal_year_end=security.fiscal_year_end,
+        shares_issued=latest_float.shares_issued if latest_float else None,
+        shares_issued_as_of=latest_float.as_of if latest_float else None,
+        public_float_pct=latest_float.public_float_pct if latest_float else None,
         quarantined=is_quarantined(db, ticker),
         price_history=[
             PricePoint(

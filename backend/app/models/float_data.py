@@ -18,6 +18,12 @@ class FloatData(Base):
     ticker: Mapped[str] = mapped_column(String(20), ForeignKey("securities.ticker"), nullable=False)
     as_of: Mapped[dt.date] = mapped_column(Date, nullable=False)
     shares_issued: Mapped[int] = mapped_column(Integer, nullable=False)
-    public_float_pct: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+
+    public_float_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    """Nullable because the source that carries it (quarterly shareholding
+    disclosures, §5) isn't wired up yet, while shares_issued IS available
+    from companyInfoSummery. Recording the real figure and leaving this
+    genuinely-unknown one NULL is what Design Law 3 requires; Gate 2's
+    free-float test treats NULL as "cannot evaluate", never as a pass."""
     top20_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     controlling_holder: Mapped[str | None] = mapped_column(String(200), nullable=True)

@@ -139,14 +139,36 @@ class CompanySymbolInfo(_Lenient):
     id: int | None = None
     symbol: str
     name: str
-    issueDate: str | None = None
+    isin: str | None = None
+    issueDate: str | None = None  # "12/JAN/2012"
     quantityIssued: int | None = None
     parValue: float | None = None
     lastTradedPrice: float | None = None
+    marketCap: float | None = None
+    foreignHoldings: int | None = None
+    foreignPercentage: float | None = None
+
+
+class CompanyBetaInfo(_Lenient):
+    """CSE publishes its own beta per security. Deliberately NOT used as
+    the system's beta: Master Spec §35.2 requires the Dimson (1979)
+    aggregated-coefficient correction because CSE stocks routinely go
+    days without trading, and an uncorrected OLS beta is "severely
+    downward biased" — skipping that is called out as "the single most
+    common technical error in frontier-market factor work". Captured for
+    comparison against our own estimate once the factor library exists,
+    not as a substitute for it."""
+
+    securityId: int | None = None
+    triASIBetaValue: float | None = None
+    betaValueSPSL: float | None = None
+    triASIBetaPeriod: str | None = None
+    quarter: int | None = None
 
 
 class CompanyInfoSummary(_Lenient):
     reqSymbolInfo: CompanySymbolInfo
+    reqSymbolBetaInfo: CompanyBetaInfo | None = None
 
 
 # --- announcements (POST form-urlencoded) ------------------------------------

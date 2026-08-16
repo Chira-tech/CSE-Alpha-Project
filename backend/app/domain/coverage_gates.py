@@ -71,11 +71,17 @@ def evaluate_gate1_liquidity(inputs: Gate1Inputs) -> Gate1Result:
 
 @dataclasses.dataclass(frozen=True)
 class Gate2Inputs:
-    free_float_pct: Decimal
+    free_float_pct: Decimal | None
+    """None means "not known yet", not "zero" — the quarterly
+    shareholding disclosure that carries it (§5) may not be ingested for
+    this company. A hard gate must never pass on absent evidence, so an
+    unknown float FAILS the gate with an explicit reason rather than
+    being waved through."""
+
     on_watch_list: bool
     trading_suspended: bool
     months_listed: int
-    market_cap_lkr: Decimal
+    market_cap_lkr: Decimal | None
     consecutive_quarters_history: int
 
 
@@ -88,7 +94,9 @@ class Gate2Result:
 def evaluate_gate2_structural(inputs: Gate2Inputs) -> Gate2Result:
     reasons: list[str] = []
 
-    if inputs.free_float_pct < settings.gate2_min_free_float_pct:
+    if inputs.free_float_pct is None:
+        reasons.append("free float unknown — no shareholding disclosure ingested for this company")
+    elif inputs.free_float_pct < settings.gate2_min_free_float_pct:
         reasons.append(f"free float {inputs.free_float_pct:.1%} < required {settings.gate2_min_free_float_pct:.0%}")
     if inputs.on_watch_list:
         reasons.append("on CSE Watch List")
@@ -96,7 +104,9 @@ def evaluate_gate2_structural(inputs: Gate2Inputs) -> Gate2Result:
         reasons.append("trading suspended")
     if inputs.months_listed < settings.gate2_min_months_listed:
         reasons.append(f"listed {inputs.months_listed}m < required {settings.gate2_min_months_listed}m")
-    if inputs.market_cap_lkr < settings.gate2_min_market_cap_lkr:
+    if inputs.market_cap_lkr is None:
+        reasons.append("market cap unknown")
+    elif inputs.market_cap_lkr < settings.gate2_min_market_cap_lkr:
         reasons.append(
             f"market cap {inputs.market_cap_lkr:,.0f} LKR < required {settings.gate2_min_market_cap_lkr:,.0f} LKR"
         )
