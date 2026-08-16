@@ -17,7 +17,16 @@ const ACTION_LABELS: Record<string, string> = {
   suspension: "Suspension",
 };
 
-export function CompanyScreen({ ticker, onBack }: { ticker: string; onBack: () => void }) {
+export function CompanyScreen({
+  ticker,
+  onBack,
+  onOpen,
+}: {
+  ticker: string;
+  onBack: () => void;
+  /** Jump to another line of the same issuer. */
+  onOpen: (ticker: string) => void;
+}) {
   const [data, setData] = useState<SecurityDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
@@ -139,7 +148,36 @@ export function CompanyScreen({ ticker, onBack }: { ticker: string; onBack: () =
         </div>
       </header>
 
+      {data.sibling_tickers.length > 0 && (
+        <div className="notice notice-neutral">
+          <h3>
+            {data.instrument_type === "non_voting"
+              ? "This is the non-voting line of a company that also lists voting shares"
+              : "This issuer has more than one listed line"}
+          </h3>
+          <p className="prose t-body">
+            Also listed:{" "}
+            {data.sibling_tickers.map((t, i) => (
+              <span key={t}>
+                {i > 0 && ", "}
+                <button className="btn-link mono" onClick={() => onOpen(t)}>
+                  {t}
+                </button>
+              </span>
+            ))}
+            . They are the same issuer, so they file one set of accounts — every fundamental and
+            ratio on this page is shared with those lines, not computed separately. Prices,
+            turnover and market capitalisation are not shared.
+          </p>
+        </div>
+      )}
+
       <section className="card fact-grid" aria-label="Company facts">
+        <Fact
+          label="Instrument"
+          value={data.instrument_type?.replace("_", "-") ?? null}
+          note="The CSE lists lines, not companies. Only ordinary and non-voting lines are common equity a valuation model may be pointed at."
+        />
         <Fact label="CSE sector" value={data.cse_sector} />
         <Fact
           label="Archetype"

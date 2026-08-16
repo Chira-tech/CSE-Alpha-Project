@@ -14,6 +14,7 @@ import dataclasses
 from decimal import Decimal
 
 from app.config import settings
+from app.domain.instrument_type import COMMON_EQUITY, InstrumentType
 from app.models.enums import CoverageTier
 
 
@@ -71,6 +72,14 @@ def evaluate_gate1_liquidity(inputs: Gate1Inputs) -> Gate1Result:
 
 @dataclasses.dataclass(frozen=True)
 class Gate2Inputs:
+    instrument_type: InstrumentType = dataclasses.field(
+        default=InstrumentType.ORDINARY, kw_only=True
+    )
+    """What the ticker actually is. `tradeSummary` returns every line that
+    traded, including non-voting shares, closed-end fund units and rights
+    — none of which a valuation model may be pointed at unchecked. See
+    `app.domain.instrument_type`."""
+
     free_float_pct: Decimal | None
     """None means "not known yet", not "zero" — the quarterly
     shareholding disclosure that carries it (§5) may not be ingested for
@@ -93,6 +102,20 @@ class Gate2Result:
 
 def evaluate_gate2_structural(inputs: Gate2Inputs) -> Gate2Result:
     reasons: list[str] = []
+
+    # Checked first: if the line is not common equity, the remaining
+    # tests are not merely failed, they are meaningless. A rights line has
+    # no free float and a fund unit has no reporting history, so reporting
+    # those as ordinary gate failures would suggest the instrument might
+    # qualify once the data improves. It never will.
+    if inputs.instrument_type not in COMMON_EQUITY:
+        return Gate2Result(
+            passed=False,
+            reasons_failed=(
+                f"not common equity — {inputs.instrument_type.value} lines are outside "
+                f"the investable universe",
+            ),
+        )
 
     if inputs.free_float_pct is None:
         reasons.append("free float unknown — no shareholding disclosure ingested for this company")

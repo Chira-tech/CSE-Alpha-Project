@@ -49,7 +49,11 @@ export function App() {
         return <TodayScreen onOpenScreen={(id) => go(id)} />;
       case "companies":
         return openTicker ? (
-          <CompanyScreen ticker={openTicker} onBack={() => setOpenTicker(null)} />
+          <CompanyScreen
+            ticker={openTicker}
+            onBack={() => setOpenTicker(null)}
+            onOpen={setOpenTicker}
+          />
         ) : (
           <CompaniesScreen onOpen={setOpenTicker} />
         );

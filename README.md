@@ -19,7 +19,7 @@ Build follows the phased sequence in Master Spec §54. We are in **Phase 1 —
 point-in-time data spine**.
 
 There is a **runnable web app** — see Quick start below. It shows real CSE
-data (live index levels, all ~283 listed companies, prices, the review
+data (live index levels, all 283 listed lines from 264 issuers, prices, the review
 queues, data health). It deliberately does **not** show fair values,
 scores or buy prices, because the engines that compute them are Phase 2–3
 and haven't been built: the company file lists those gaps explicitly
@@ -94,7 +94,7 @@ npm run dev
 ```
 
 Open **http://localhost:5173**. You'll get four screens: Market (live ASPI
-and sector indices), Companies (all ~283 listed names, searchable, click
+and sector indices), Companies (all 283 listed lines, searchable, click
 through to a company file), Review queue, and Data health.
 
 ### A note on SQLite vs PostgreSQL
@@ -140,7 +140,7 @@ many hours; run it in chunks).
 
 The Review screen is empty until ingestion has scraped something. Corporate
 actions are rate-limited to >=2s per request (§5), so the full sweep of
-283 companies takes 10+ minutes — start with a few:
+283 lines takes 10+ minutes — start with a few:
 
 ```bash
 python -m app.cli ingest-corporate-actions --limit 5

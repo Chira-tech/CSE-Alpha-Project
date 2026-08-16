@@ -27,6 +27,13 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
 
   useEffect(() => setShown(PAGE_SIZE), [query]);
 
+  // The CSE lists LINES, not companies: 18 issuers have both a voting and
+  // a non-voting line, so "283 companies" overstates the universe by 19.
+  const issuerCount = useMemo(
+    () => (all ? new Set(all.map((r) => r.issuer_code ?? r.ticker)).size : null),
+    [all]
+  );
+
   if (error) {
     return (
       <div className="route stack">
@@ -57,6 +64,12 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
           Every listed company gets a file, whether or not it is investable — §10 separates analysis
           coverage from capital eligibility deliberately, so nothing is hidden, only labelled.
         </p>
+        <p className="prose t-body">
+          The exchange lists <em>lines</em>, not companies. Several issuers — mostly banks — have a
+          voting and a non-voting line trading separately, and a few listed lines are fund units or
+          rights rather than equity at all. Both are tagged below, and the count is given in lines
+          and issuers so neither number has to be guessed at.
+        </p>
       </header>
 
       <div className="toolbar">
@@ -74,7 +87,8 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
         </div>
         {filtered && (
           <span className="t-caption" role="status">
-            {filtered.length} of {all?.length ?? 0} companies
+            {filtered.length} of {all?.length ?? 0} lines
+            {issuerCount !== null && ` · ${issuerCount} issuers`}
           </span>
         )}
       </div>
@@ -126,7 +140,17 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                         </>
                       )}
                     </th>
-                    <td>{r.name}</td>
+                    <td>
+                      {r.name}
+                      {r.instrument_type && r.instrument_type !== "ordinary" && (
+                        <>
+                          {" "}
+                          <span className="status-tag">
+                            {r.instrument_type.replace("_", "-")}
+                          </span>
+                        </>
+                      )}
+                    </td>
                     <td className="right num">{formatPrice(r.last_close)}</td>
                     <td className="right num">{formatMagnitude(r.turnover)}</td>
                     <td className="right num">

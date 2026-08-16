@@ -33,6 +33,17 @@ class Security(Base):
     and must be manually corrected where GICS misclassifies a CSE
     conglomerate (Appendix P2)."""
 
+    instrument_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    """What the line actually is — see `app.domain.instrument_type`.
+    `tradeSummary` returns non-voting lines, fund units and rights
+    alongside ordinary shares, and only ordinary/non-voting are common
+    equity a valuation model may be pointed at."""
+
+    issuer_code: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
+    """The stem shared by every line of one company: COMB.N0000 and
+    COMB.X0000 both carry `COMB`. Fundamentals belong to the issuer, and
+    the §27.1 concentration caps must count one bank once."""
+
     listing_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     delisting_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     board: Mapped[str | None] = mapped_column(String(50), nullable=True)

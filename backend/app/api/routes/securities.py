@@ -38,6 +38,13 @@ router = APIRouter(prefix="/securities", tags=["securities"])
 class SecurityListItem(BaseModel):
     ticker: str
     name: str
+    instrument_type: str | None
+    """`tradeSummary` lists every traded LINE, not every company — 18 of
+    the 283 are non-voting lines of a company whose voting line is also
+    listed, and three are not equity at all. Exposed so the UI can say so
+    rather than implying 283 distinct businesses."""
+
+    issuer_code: str | None
     cse_sector: str | None
     archetype: str | None
     last_close: Decimal | None
@@ -97,6 +104,12 @@ class UncomputableRatioOut(BaseModel):
 class SecurityDetail(BaseModel):
     ticker: str
     name: str
+    instrument_type: str | None
+    issuer_code: str | None
+    sibling_tickers: list[str] = []
+    """Other listed lines of the same issuer. Non-empty means this
+    company's fundamentals are shared with another ticker."""
+
     isin: str | None
     cse_sector: str | None
     archetype: str | None
@@ -168,6 +181,8 @@ def list_securities(
             SecurityListItem(
                 ticker=security.ticker,
                 name=security.name,
+                instrument_type=security.instrument_type,
+                issuer_code=security.issuer_code,
                 cse_sector=security.cse_sector,
                 archetype=security.archetype,
                 last_close=price.close if price else None,
@@ -224,9 +239,22 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
 
     ratio_period_end, ratio_results = ratios_for(db, ticker)
 
+    siblings = (
+        db.scalars(
+            select(Security.ticker)
+            .where(Security.issuer_code == security.issuer_code, Security.ticker != ticker)
+            .order_by(Security.ticker)
+        ).all()
+        if security.issuer_code
+        else []
+    )
+
     return SecurityDetail(
         ticker=security.ticker,
         name=security.name,
+        instrument_type=security.instrument_type,
+        issuer_code=security.issuer_code,
+        sibling_tickers=list(siblings),
         isin=security.isin,
         cse_sector=security.cse_sector,
         archetype=security.archetype,

@@ -89,6 +89,8 @@ export interface MarketOverview {
 export interface SecurityListItem {
   ticker: string;
   name: string;
+  instrument_type: string | null;
+  issuer_code: string | null;
   cse_sector: string | null;
   archetype: string | null;
   last_close: string | null;
@@ -148,6 +150,9 @@ export interface UncomputableRatio {
 export interface SecurityDetail {
   ticker: string;
   name: string;
+  instrument_type: string | null;
+  issuer_code: string | null;
+  sibling_tickers: string[];
   isin: string | null;
   cse_sector: string | null;
   archetype: string | null;

@@ -101,10 +101,22 @@ notifications/financial  returnAspiSnp  smd  smd/categories
 ```json
 [{"id":204,"name":"ABANS ELECTRICALS PLC","symbol":"ABAN.N0000","active":1}]
 ```
-Every security with an `active` flag. Relevant to §7's survivorship
-requirement ("delisted, suspended and defaulted companies remain in the
-database"): this is the only endpoint found that distinguishes inactive
-listings, though it gives no delisting date. Not yet used by any loader.
+327 securities. **The `active` flag does NOT solve survivorship** — an
+earlier note here claimed it was "the only endpoint found that
+distinguishes inactive listings". Probed on 17 Aug 2026, `active` is `1`
+for all 327 rows; it never carries a 0, so it distinguishes nothing. §7's
+survivorship requirement remains unmet and needs a different source.
+
+What the endpoint IS good for: it is a strict superset of `tradeSummary`
+(327 vs 283, with nothing in tradeSummary that is missing here), and the
+extra 44 are mostly non-equity instrument types — debentures, rights,
+warrants, preference shares, fund units — plus ordinary lines that simply
+did not trade that session. The two cannot be differenced to find
+delistings, because "absent from tradeSummary" conflates "delisted" with
+"illiquid today".
+
+The symbol suffix encodes the instrument type and the issuer; see
+`app.domain.instrument_type`, which is what consumes this knowledge.
 
 ### `chartData` — POST form, `chartId=<N>&period=<1-5>`
 **Index history only — not per company.** `chartId=1` is the ASPI;

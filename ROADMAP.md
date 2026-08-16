@@ -285,10 +285,41 @@ a dated, sourced manual observation is.
         rows are never overwritten, so the job only repairs gaps. **That
         makes ASPI history self-healing for up to a year** — unlike
         prices, where a missed day is gone for good.
-- [ ] **`allSecurityCode`** exposes an `active` flag per security — the
-      only endpoint found that distinguishes inactive listings, relevant
-      to §7's survivorship requirement. No delisting date, and not yet
-      used by any loader.
+- [x] **Instrument types and issuer identity** (`app/domain/instrument_type.py`,
+      migration 0006). The universe comes from `tradeSummary`, which
+      returns every traded LINE, not every company. Of 283 lines: 262
+      ordinary, **18 non-voting** (COMB.X0000, HNB.X0000, SEYB.X0000, ...),
+      2 closed-end fund units, 1 rights line. So **283 lines are 264
+      issuers**, and every earlier statement of "~283 listed companies"
+      in this repo was overstating the universe by 19.
+      - Commercial Bank was in the universe twice. Beyond looking wrong on
+        a screen, the §27.1/§39.1 concentration caps (10%/6%/3% by tier)
+        would have counted one bank as two positions — a single-issuer
+        limit silently evaded.
+      - Fundamentals belong to the ISSUER: COMB.N0000 and COMB.X0000 share
+        one set of accounts, one ROE, one book value. `issuer_code` is now
+        stored and indexed so they attach once.
+      - Fund units and rights lines are not equity at all — a P/E or ROE
+        for them is a category error, not an imprecise number. **Gate 2
+        now rejects non-common-equity outright**, and returns that as the
+        single reason rather than adding it to a list of ordinary gate
+        failures, which would imply the instrument might qualify once the
+        data improves.
+      - Verified against the exchange's own ISINs (LK0053N00005 /
+        LK0053X00004) and `companyInfoSummery` (COMB.X0000: 97,325,945
+        shares; COMB.N0000: 1,556,530,602).
+      - Surfaced in the UI: the Companies list counts "283 lines · 264
+        issuers" and tags non-ordinary lines; a company file with siblings
+        says so and cross-links them.
+
+- [ ] **§7 survivorship is still unmet, and `allSecurityCode` does not
+      solve it** — corrected 17 Aug. An earlier note here recorded its
+      `active` flag as "the only endpoint found that distinguishes
+      inactive listings". Probed live: `active` is `1` for all 327 rows
+      and never carries a 0. Differencing it against `tradeSummary` does
+      not work either, because "absent from tradeSummary" conflates
+      delisted with merely illiquid that session. Needs a different
+      source; `securities.delisting_date` stays NULL until there is one.
 - [ ] **Plain bonus issue / consolidation**: still unverified after ~40
       tickers probed across two sessions — no live example of either was
       found. Share splits (which looked similar) ARE now verified.

@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.ingestion.cse_client import CseClient
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.ingestion.schemas import TradeSummaryRow
+from app.domain.instrument_type import classify, issuer_code
 from app.models.securities import Security
 
 logger = logging.getLogger("cse_alpha.ingestion.bootstrap")
@@ -49,7 +50,14 @@ def bootstrap_securities(db: Session, rows: list[TradeSummaryRow]) -> tuple[int,
     for row in rows:
         if row.symbol in existing:
             continue
-        db.add(Security(ticker=row.symbol, name=row.name or row.symbol))
+        db.add(
+            Security(
+                ticker=row.symbol,
+                name=row.name or row.symbol,
+                instrument_type=classify(row.symbol).value,
+                issuer_code=issuer_code(row.symbol),
+            )
+        )
         inserted += 1
 
     if inserted:
