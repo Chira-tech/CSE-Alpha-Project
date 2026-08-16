@@ -91,3 +91,49 @@ def test_pacing_enforces_minimum_gap_between_calls():
         elapsed = time.monotonic() - start
     assert elapsed >= 0.2
     client.close()
+
+
+@respx.mock
+def test_post_json_sends_json_body_not_query_params(fast_client):
+    """Verified live behaviour (README_ENDPOINTS.md): no-parameter list
+    endpoints like tradeSummary/marketStatus are POST with a JSON body."""
+    route = respx.post("https://example.test/api/marketStatus").mock(
+        return_value=httpx.Response(200, json={"status": "Market Closed"})
+    )
+    result = fast_client.post_json("marketStatus", model=_MarketStatus, body={})
+    assert result.status == "Market Closed"
+    request = route.calls.last.request
+    assert request.headers["content-type"].startswith("application/json")
+
+
+@respx.mock
+def test_post_form_sends_urlencoded_body_not_json(fast_client):
+    """Verified live behaviour: parameterised endpoints (companyInfoSummery,
+    getAnnouncementByCompany, ...) require form-urlencoded — a JSON body
+    against them returns 400 "symbol parameter is missing" even with the
+    right field name, so this content-type distinction is load-bearing."""
+    route = respx.post("https://example.test/api/companyInfoSummery").mock(
+        return_value=httpx.Response(200, json={"reqSymbolInfo": {"symbol": "AAF.N0000", "name": "Asia Asset"}})
+    )
+    fast_client.post_form("companyInfoSummery", data={"symbol": "AAF.N0000"})
+    request = route.calls.last.request
+    assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+    assert request.content == b"symbol=AAF.N0000"
+
+
+@respx.mock
+def test_post_form_returns_none_on_204_when_allowed(fast_client):
+    """Verified live behaviour: getAnnouncementById returns 204 for an
+    announcementId belonging to the "general announcement" family instead
+    — this must surface as None, not an exception, so the loader can fall
+    back to getGeneralAnnouncementById."""
+    respx.post("https://example.test/api/getAnnouncementById").mock(return_value=httpx.Response(204))
+    result = fast_client.post_form("getAnnouncementById", data={"announcementId": 19806}, allow_empty=True)
+    assert result is None
+
+
+@respx.mock
+def test_post_form_204_without_allow_empty_raises(fast_client):
+    respx.post("https://example.test/api/getAnnouncementById").mock(return_value=httpx.Response(204))
+    with pytest.raises(ShapeChangedError):
+        fast_client.post_form("getAnnouncementById", data={"announcementId": 1})

@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -38,6 +38,13 @@ class CorporateAction(Base):
     formula changes later."""
 
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """Free text preserved from ingestion — the announcement's own wording
+    plus, for a scraped draft, anything the parser couldn't determine
+    (app.ingestion.corporate_actions_loader.build_draft). This is what a
+    human reviews before setting confirmed_by; it is never used in any
+    calculation."""
+
     confirmed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     confirmed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

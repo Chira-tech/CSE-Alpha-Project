@@ -10,18 +10,30 @@ Master Spec §5, "THE SINGLE BIGGEST OPERATIONAL FRAGILITY":
     exponential backoff, a circuit breaker, an identifying user-agent, and
     never parallel hammering."
 
-This module implements every one of those requirements generically. It
-does NOT hard-code the actual endpoint paths/response shapes as fact —
-Part II §5.2 names several (`marketStatus`, `marketSummery`,
-`tradeSummary`, `todaySharePrice`, `companyInfoSummery`,
-`detailedTrades`, `dailyMarketSummery`, `aspiData`, `snpData`,
-`topGainers`, `topLooses`) but these are undocumented and may have
-drifted since the spec was written (9 Aug 2026). ROADMAP.md tracks
-confirming them against the live API as the next task. Endpoint-specific
-loaders (app.ingestion.price_loader etc.) pass a pydantic model in for
-validation; a shape mismatch raises ShapeChangedError rather than
-returning silently-wrong data — this is the "alert on shape change, not
-just HTTP error" requirement.
+This module implements every one of those requirements. Unlike the first
+Phase-1 pass, the request semantics below are VERIFIED against the live
+API (probed 16 Aug 2026 — see app/ingestion/README_ENDPOINTS.md for the
+full trace and raw captured payloads), not transcribed from the spec:
+
+  * Every endpoint uses POST, never GET (GET returns 405/400
+    "Could not find the GET method for URL ..."). The spec's own naming
+    (`marketStatus`, `tradeSummary`, ...) is correct; the HTTP method it
+    implied was not.
+  * Endpoints with no required parameters (marketStatus, tradeSummary,
+    todaySharePrice, topGainers, topLooses, aspiData, dailyMarketSummery)
+    accept a POST with a JSON body (verified with `{}`).
+  * Endpoints that take a parameter (companyInfoSummery, detailedTrades,
+    getAnnouncementByCompany, getAnnouncementById, getGeneralAnnouncementById)
+    require application/x-www-form-urlencoded, NOT a JSON body — a JSON
+    body against these returns 400 "symbol parameter is missing" even
+    when the field is present, because the server reads form fields.
+  * A 204 No Content is a real, valid response for some detail lookups
+    (e.g. `getAnnouncementById` returns 204 for an announcement that only
+    exists as a "general" announcement — the caller must retry against
+    `getGeneralAnnouncementById`). Callers must not treat 204 as an error.
+
+`get_json` is kept for API completeness/tests but no live cse.lk endpoint
+found during this verification pass actually accepts GET.
 """
 from __future__ import annotations
 
@@ -68,9 +80,9 @@ def _is_retryable_status(response: httpx.Response) -> bool:
 class CseClient:
     """Thread-safe-enough for a single ingestion worker (one process, one
     scheduler per Master Spec §52 — this is deliberately not a
-    high-concurrency client). Never call `.get()` from multiple threads
+    high-concurrency client). Never call it from multiple threads
     concurrently for the same instance; that would defeat the whole point
-    of `--min_seconds_between_calls` pacing and the "never parallel
+    of `min_seconds_between_calls` pacing and the "never parallel
     hammering" rule.
     """
 
@@ -123,7 +135,15 @@ class CseClient:
                     time.sleep(remaining)
             self._last_call_monotonic = time.monotonic()
 
-    def _do_request(self, path: str, params: dict[str, Any] | None) -> httpx.Response:
+    def _do_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        form_body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
         @retry(
             reraise=True,
             stop=stop_after_attempt(self._max_retries),
@@ -134,7 +154,9 @@ class CseClient:
             self._throttle()
             url = f"{self.base_url}/{path.lstrip('/')}"
             try:
-                response = self._client.get(url, params=params)
+                response = self._client.request(
+                    method, url, params=params, json=json_body, data=form_body
+                )
             except httpx.TimeoutException as exc:
                 raise TransientFetchError(f"timeout calling {url}") from exc
             except httpx.TransportError as exc:
@@ -146,29 +168,37 @@ class CseClient:
 
         return _attempt()
 
-    def get_json(
+    def _execute(
         self,
+        method: str,
         path: str,
         *,
-        model: type[ModelT] | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> ModelT | dict[str, Any] | list[Any]:
-        """Fetch `path` and, if `model` is given, validate the response
-        against it. Raises ShapeChangedError (not silently returning
-        malformed data) if validation fails, and CircuitOpenError without
-        making a network call at all once the breaker has tripped.
-        """
+        model: type[ModelT] | None,
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | None,
+        form_body: dict[str, Any] | None,
+        allow_empty: bool,
+    ) -> ModelT | dict[str, Any] | list[Any] | None:
         self._breaker.before_call()
 
         try:
-            response = self._do_request(path, params)
+            response = self._do_request(
+                method, path, params=params, json_body=json_body, form_body=form_body
+            )
         except TransientFetchError:
             self._breaker.record_failure()
             raise
 
+        if response.status_code == 204:
+            # Verified real behaviour, not a bug to work around: some
+            # detail-lookup endpoints (getAnnouncementById) return 204 for
+            # an id that belongs to a different announcement family.
+            self._breaker.record_success()
+            if allow_empty:
+                return None
+            raise ShapeChangedError(f"{path} returned 204 No Content, which this caller doesn't allow")
+
         if response.status_code >= 400:
-            # Non-retryable client error (e.g. 404) — still a failure for
-            # breaker purposes, but we don't retry it.
             self._breaker.record_failure()
             response.raise_for_status()
 
@@ -190,3 +220,52 @@ class CseClient:
 
         self._breaker.record_success()
         return payload
+
+    def get_json(
+        self,
+        path: str,
+        *,
+        model: type[ModelT] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> ModelT | dict[str, Any] | list[Any] | None:
+        """GET request. Kept for completeness/tests — no live cse.lk
+        endpoint confirmed during Phase 1 verification actually accepts
+        GET; prefer post_json/post_form for real ingestion."""
+        return self._execute(
+            "GET", path, model=model, params=params, json_body=None, form_body=None, allow_empty=False
+        )
+
+    def post_json(
+        self,
+        path: str,
+        *,
+        model: type[ModelT] | None = None,
+        body: dict[str, Any] | None = None,
+        allow_empty: bool = False,
+    ) -> ModelT | dict[str, Any] | list[Any] | None:
+        """POST with a JSON body. Verified for the no-parameter list
+        endpoints: marketStatus, tradeSummary, todaySharePrice,
+        topGainers, topLooses, aspiData, dailyMarketSummery — all accept
+        `body={}`."""
+        return self._execute(
+            "POST", path, model=model, params=None, json_body=body or {}, form_body=None, allow_empty=allow_empty
+        )
+
+    def post_form(
+        self,
+        path: str,
+        *,
+        model: type[ModelT] | None = None,
+        data: dict[str, Any] | None = None,
+        allow_empty: bool = False,
+    ) -> ModelT | dict[str, Any] | list[Any] | None:
+        """POST with application/x-www-form-urlencoded data. Verified for
+        the parameterised endpoints: companyInfoSummery, detailedTrades
+        (symbol=...), getAnnouncementByCompany (symbol=...),
+        getAnnouncementById / getGeneralAnnouncementById
+        (announcementId=...). `allow_empty=True` is needed for
+        getAnnouncementById specifically, which returns 204 for ids that
+        belong to the "general announcement" family instead."""
+        return self._execute(
+            "POST", path, model=model, params=None, json_body=None, form_body=data or {}, allow_empty=allow_empty
+        )
