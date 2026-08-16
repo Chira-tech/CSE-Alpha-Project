@@ -273,6 +273,13 @@ a dated, sourced manual observation is.
         recovered — so a later reader can tell which rows rest on the
         identity. Across the full year the two independent routes never
         disagreed on a single post-close day.
+      - Surfaced on the Macro screen as a year-long line with its axis
+        range stated in the caption. §17 forbids "charts without a zero
+        baseline where one is meaningful" — zero is NOT meaningful for an
+        index level, and a zero-based axis would flatten a real 15%
+        drawdown into nothing, so the range is stated explicitly instead,
+        which is what that anti-pattern is actually protecting against.
+        The caption also says how many closes were reconstructed and why.
       - Scheduled weekly (Saturday 06:00 Colombo) rather than daily: the
         same-day close already arrives via `capture-market`, and existing
         rows are never overwritten, so the job only repairs gaps. **That

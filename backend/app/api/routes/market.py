@@ -38,11 +38,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.domain.macro import SERIES_MARKET_PER
+from app.domain.macro import SERIES_ASPI, SERIES_MARKET_PER
 from app.domain.macro_view import (
     current_spread,
     latest_observation,
     risk_free_observation,
+    series_history,
     spread_history,
 )
 from app.ingestion.cse_client import CseClient, ShapeChangedError
@@ -195,8 +196,7 @@ def equity_tbill_spread(db: Session = Depends(get_db)) -> SpreadOut:
             missing.append("market P/E (run `python -m app.cli capture-market`)")
         if risk_free_observation(db) is None:
             missing.append(
-                "364-day T-bill yield (run `python -m app.cli record-macro "
-                "--series cbsl.tbill_364d --value <pct> --percent --date <YYYY-MM-DD>`)"
+                "364-day T-bill yield (run `python -m app.cli cbsl --days 10`)"
             )
         return SpreadOut(available=False, missing=missing)
 
@@ -219,6 +219,35 @@ def equity_tbill_spread(db: Session = Depends(get_db)) -> SpreadOut:
             )
             for p in spread_history(db)
         ],
+    )
+
+
+class IndexPoint(BaseModel):
+    obs_date: dt.date
+    value: Decimal
+    source: str
+
+
+class IndexHistoryOut(BaseModel):
+    """ASPI closing levels. `recovered` counts the rows whose close was
+    reconstructed from the feed's percentage change rather than read
+    directly — see `app.domain.index_history` for why that distinction
+    is load-bearing rather than cosmetic."""
+
+    series_id: str
+    points: list[IndexPoint]
+    recovered: int
+
+
+@router.get("/index-history", response_model=IndexHistoryOut)
+def index_history(db: Session = Depends(get_db)) -> IndexHistoryOut:
+    rows = series_history(db, SERIES_ASPI, limit=400)
+    return IndexHistoryOut(
+        series_id=SERIES_ASPI,
+        points=[
+            IndexPoint(obs_date=r.obs_date, value=r.value, source=r.source) for r in rows
+        ],
+        recovered=sum(1 for r in rows if r.source.endswith("(pc)")),
     )
 
 

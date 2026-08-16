@@ -209,3 +209,18 @@ export interface Spread {
   spread: string | null;
   history: SpreadPoint[];
 }
+
+export interface IndexPoint {
+  obs_date: string;
+  value: string;
+  source: string;
+}
+
+export interface IndexHistory {
+  series_id: string;
+  points: IndexPoint[];
+  /** Rows whose close was reconstructed from the feed's percentage
+   * change rather than read directly. The distinction is load-bearing:
+   * the feed's raw level is NOT the close on ~38% of days. */
+  recovered: number;
+}

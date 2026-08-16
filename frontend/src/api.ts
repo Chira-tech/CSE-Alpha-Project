@@ -3,6 +3,7 @@ import type {
   CorporateAction,
   DataHealth,
   Fundamental,
+  IndexHistory,
   MarketOverview,
   SecurityDetail,
   SecurityListItem,
@@ -112,6 +113,10 @@ export function confirmFundamental(id: number, actor: string, correctedValue?: s
       correction: correctedValue ? { value: correctedValue } : null,
     }),
   });
+}
+
+export function getIndexHistory() {
+  return request<IndexHistory>("/market/index-history");
 }
 
 export function getSpread() {

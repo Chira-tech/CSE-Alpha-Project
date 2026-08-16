@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getMarketOverview } from "../api";
+import { ApiRequestError, getIndexHistory, getMarketOverview } from "../api";
 import { Delta } from "../components/Delta";
+import { IndexHistoryChart } from "../components/IndexHistoryChart";
 import { ErrorState, PartialNotice, SkeletonTable } from "../components/states";
 import { formatIndexValue, formatMagnitude } from "../format";
-import type { MarketOverview } from "../types";
+import type { IndexHistory, MarketOverview } from "../types";
 
 /**
  * §7.1 Macro: "the regime, the variables, the project pipeline."
@@ -17,11 +18,17 @@ import type { MarketOverview } from "../types";
 export function MacroScreen() {
   const [market, setMarket] = useState<MarketOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [index, setIndex] = useState<IndexHistory | null>(null);
 
   useEffect(() => {
     getMarketOverview()
       .then(setMarket)
       .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
+    // Stored history, so it survives a live-feed outage independently of
+    // the sector board above — a failure there must not blank this.
+    getIndexHistory()
+      .then(setIndex)
+      .catch(() => setIndex(null));
   }, []);
 
   // The feed includes the all-share index as a sector row; showing it in
@@ -52,6 +59,15 @@ export function MacroScreen() {
           would do under a rate cut.
         </p>
       </div>
+
+      {index && index.points.length > 1 && (
+        <section aria-labelledby="aspi-history-heading" className="stack-tight">
+          <h2 id="aspi-history-heading">ASPI, last year</h2>
+          <div className="card">
+            <IndexHistoryChart history={index} />
+          </div>
+        </section>
+      )}
 
       <section aria-labelledby="sectors-heading" className="stack-tight">
         <h2 id="sectors-heading">Sector indices</h2>

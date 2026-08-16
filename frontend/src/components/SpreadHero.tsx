@@ -85,10 +85,11 @@ export function SpreadHero({ spread }: { spread: Spread }) {
 
       {isManual && (
         <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
-          The T-bill yield was entered by hand, not scraped — CBSL publishes it on
-          JavaScript-rendered pages, so automated collection is a separate integration (§5). It is
-          stored in the same point-in-time series as everything else and carries its source, so
-          nothing here pretends to be live data.
+          This T-bill yield was entered by hand rather than scraped. The CBSL scraper now collects
+          the primary-market auction yield automatically, so a manual figure here means the
+          scraper has not run for this date — prefer <span className="code-hint">python -m app.cli
+          cbsl</span>. It is stored in the same point-in-time series as everything else and carries
+          its source, so nothing here pretends to be live data.
         </p>
       )}
 
