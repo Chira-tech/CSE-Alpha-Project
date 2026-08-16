@@ -119,6 +119,41 @@
   --caution: #C9A65E;
 }
 
+/*
+ * §15.2 requires the product to respect `prefers-color-scheme`, but §16's
+ * token block as published only defines dark under an explicit
+ * [data-theme="dark"] attribute — so a user whose OS is in dark mode and
+ * who has never touched an in-app toggle would get the light palette.
+ * This block closes that gap by applying the same dark values on the OS
+ * preference, while leaving an explicit [data-theme="light"] able to
+ * override it. The values are not re-invented here: they are the §2.4
+ * dark palette, identical to the attribute block above.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #12181A;
+    --canvas-sunken: #151C1E;
+    --surface: #1A2225;
+    --surface-sunken: #151C1E;
+    --border: #2C3739;
+    --border-strong: #3C4A4D;
+    --ink-1: #E4EAE8;
+    --ink-2: #A8B6B8;
+    --ink-3: #7E8F92;
+    --ink-4: #5C6B6E;
+    --brand-300: #7FB3A5;
+    --brand-500: #3E8078;
+    --pos: #6FA891;
+    --pos-bg: #1C2E28;
+    --neg: #C98A70;
+    --neg-bg: #2E211C;
+    --caution: #C9A65E;
+    /* §2.2 reserves caution-bg for data-quality state; the light value
+       is far too bright against a #12181A canvas. */
+    --caution-bg: #2A2418;
+  }
+}
+
 /* mandatory global rules — §3 (tabular figures), §4 (reduced motion) */
 .num, table td, table th {
   font-variant-numeric: tabular-nums;

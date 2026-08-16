@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiRequestError, confirmFundamental, listFundamentals } from "../api";
 import type { Fundamental } from "../types";
 import { ProvenanceChip } from "./ProvenanceChip";
+import { EmptyState, ErrorState, SkeletonTable } from "./states";
 
 interface RowProps {
   row: Fundamental;
@@ -10,72 +11,95 @@ interface RowProps {
   onRemoved: (id: number) => void;
 }
 
-function FundamentalRow({ row, reviewerName, onChanged, onRemoved }: RowProps) {
+function Row({ row, reviewerName, onChanged, onRemoved }: RowProps) {
   const [value, setValue] = useState(row.value);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showSnippet, setShowSnippet] = useState(false);
+  const [showSource, setShowSource] = useState(false);
   const corrected = value !== row.value;
 
-  async function handleConfirm() {
+  async function confirm() {
     if (!reviewerName.trim()) {
       setError("Enter your name above before confirming.");
       return;
     }
-    setSaving(true);
+    setBusy(true);
     setError(null);
     try {
       const updated = await confirmFundamental(row.id, reviewerName.trim(), corrected ? value : undefined);
       onChanged(updated);
       onRemoved(row.id);
     } catch (e) {
-      setError(e instanceof ApiRequestError ? e.message : "Failed to confirm");
+      setError(e instanceof ApiRequestError ? e.message : "Request failed");
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
 
   return (
     <>
       <tr>
-        <td className="mono">{row.ticker}</td>
+        <th
+          scope="row"
+          className="mono"
+          style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}
+        >
+          {row.ticker}
+        </th>
         <td className="num">{row.period_end}</td>
         <td>{row.period_type}</td>
         <td className="mono">{row.statement_line}</td>
         <td>
+          <label className="t-label" htmlFor={`f-${row.id}`} style={{ display: "block" }}>
+            Value
+          </label>
           <input
-            className="num"
+            id={`f-${row.id}`}
+            className="num input-narrow"
             type="text"
             inputMode="decimal"
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-          {corrected && <span className="corrected-badge">corrected</span>}
+          {corrected && (
+            <>
+              {" "}
+              <span className="status-tag status-pending">corrected</span>
+            </>
+          )}
         </td>
         <td>
           <ProvenanceChip tier={row.provenance_tier} />
         </td>
         <td>
           {row.source_snippet && (
-            <button type="button" className="btn-link" onClick={() => setShowSnippet((s) => !s)}>
-              {showSnippet ? "hide source" : "show source"}
+            <button className="btn-link" onClick={() => setShowSource((s) => !s)} aria-expanded={showSource}>
+              {showSource ? "hide source" : "show source"}
             </button>
           )}
         </td>
-        <td className="actions-cell">
-          <button type="button" className="btn-confirm" onClick={handleConfirm} disabled={saving}>
-            Confirm
-          </button>
-          {error && <p className="error-text">{error}</p>}
+        <td>
+          <div className="stack-tight">
+            <button className="btn-primary" onClick={confirm} disabled={busy}>
+              Confirm
+            </button>
+            {error && (
+              <p className="t-caption" role="alert" style={{ color: "var(--neg-strong)", margin: 0 }}>
+                {error}
+              </p>
+            )}
+          </div>
         </td>
       </tr>
-      {showSnippet && (
+      {showSource && (
         <tr>
           <td colSpan={8}>
-            <pre className="snippet">{row.source_snippet}</pre>
+            {/* §8: an AI-assisted figure "must show the source snippet". */}
+            <pre className="code-block">{row.source_snippet}</pre>
             {row.source_url && (
-              <a href={row.source_url} target="_blank" rel="noreferrer">
-                view PDF{row.source_page !== null ? ` (page ${row.source_page + 1})` : ""}
+              <a className="t-caption" href={row.source_url} target="_blank" rel="noreferrer">
+                open the filed PDF
+                {row.source_page !== null ? ` (page ${row.source_page + 1})` : ""}
               </a>
             )}
           </td>
@@ -87,53 +111,63 @@ function FundamentalRow({ row, reviewerName, onChanged, onRemoved }: RowProps) {
 
 export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
   const [rows, setRows] = useState<Fundamental[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     listFundamentals({ pendingOnly: true })
       .then(setRows)
-      .catch((e) => setLoadError(e instanceof ApiRequestError ? e.message : "Failed to load"));
+      .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
   }, []);
 
-  function handleChanged(updated: Fundamental) {
-    setRows((prev) => prev?.map((r) => (r.id === updated.id ? updated : r)) ?? prev);
+  if (error) {
+    return (
+      <ErrorState
+        whatFailed="The fundamentals queue could not be loaded"
+        whatItAffects="This queue only."
+        whatStillWorks="The corporate-actions queue and every other screen."
+        whatHappensNext={<>Check the API is reachable, then reload. Underlying error: {error}</>}
+      />
+    );
   }
-
-  function handleRemoved(id: number) {
-    setRows((prev) => prev?.filter((r) => r.id !== id) ?? prev);
-  }
-
-  if (loadError) return <p className="error-text">Couldn't load fundamentals: {loadError}</p>;
-  if (rows === null) return <p className="muted">Loading…</p>;
+  if (!rows) return <SkeletonTable rows={4} columns={8} />;
   if (rows.length === 0) {
-    return <p className="muted">Nothing pending. Every AI-assisted extraction has been reviewed.</p>;
+    return (
+      <EmptyState title="Nothing pending.">
+        <p style={{ margin: 0 }}>
+          Every AI-assisted extraction has been reviewed. New figures appear here when the
+          financial-statement scan reads a newly filed PDF.
+        </p>
+      </EmptyState>
+    );
   }
 
   return (
-    <table className="queue-table">
-      <thead>
-        <tr>
-          <th>Ticker</th>
-          <th>Period end</th>
-          <th>Type</th>
-          <th>Line</th>
-          <th>Value</th>
-          <th>Provenance</th>
-          <th>Source</th>
-          <th>Review</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <FundamentalRow
-            key={row.id}
-            row={row}
-            reviewerName={reviewerName}
-            onChanged={handleChanged}
-            onRemoved={handleRemoved}
-          />
-        ))}
-      </tbody>
-    </table>
+    <div className="table-wrap table-scroll">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Ticker</th>
+            <th scope="col">Period end</th>
+            <th scope="col">Type</th>
+            <th scope="col">Line</th>
+            <th scope="col">Value</th>
+            <th scope="col">Provenance</th>
+            <th scope="col">Source</th>
+            <th scope="col">Review</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <Row
+              key={r.id}
+              row={r}
+              reviewerName={reviewerName}
+              onChanged={(u) => setRows((p) => p?.map((x) => (x.id === u.id ? u : x)) ?? p)}
+              onRemoved={(id) => setRows((p) => p?.filter((x) => x.id !== id) ?? p)}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

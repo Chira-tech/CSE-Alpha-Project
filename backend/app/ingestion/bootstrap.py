@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ingestion.cse_client import CseClient
-from app.ingestion.price_loader import fetch_eod_prices, upsert_eod_prices
+from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.ingestion.schemas import TradeSummaryRow
 from app.models.securities import Security
 
@@ -57,21 +57,39 @@ def bootstrap_securities(db: Session, rows: list[TradeSummaryRow]) -> tuple[int,
     return inserted, len(existing)
 
 
-def run_bootstrap(db: Session, as_of: dt.date | None = None) -> dict[str, int]:
+def run_bootstrap(db: Session, as_of: dt.date | None = None) -> dict[str, object]:
     """One tradeSummary fetch feeds both the securities universe and the
     day's prices.
 
-    `as_of` defaults to today, but the CSE feed returns the LAST COMPLETED
-    session — running this on a weekend/holiday would stamp stale prices
-    with today's date. The scheduler (§52) only runs the EOD job Mon-Fri
-    after close for that reason; pass an explicit `as_of` when
-    bootstrapping outside market days.
+    When `as_of` isn't given the session date is derived from the feed's
+    own timestamps (see `infer_session_date`) rather than defaulting to
+    today — the CSE feed always returns the last COMPLETED session, so
+    bootstrapping on a weekend, a holiday, or before the open would
+    otherwise file stale prices under a date the market never traded.
     """
     with CseClient() as client:
         rows = fetch_eod_prices(client)
 
-    inserted, already = bootstrap_securities(db, rows)
-    prices = upsert_eod_prices(db, as_of or dt.date.today(), rows)
+    session_date = as_of or infer_session_date(rows)
+    if session_date is None:
+        raise ValueError(
+            "could not determine the trading session date from the feed (no row carried a "
+            "lastTradedTime) — pass an explicit --as-of rather than guessing"
+        )
 
-    logger.info("bootstrap: %d new securities (%d already known), %d price rows", inserted, already, prices)
-    return {"securities_inserted": inserted, "securities_already_known": already, "price_rows": prices}
+    inserted, already = bootstrap_securities(db, rows)
+    prices = upsert_eod_prices(db, session_date, rows)
+
+    logger.info(
+        "bootstrap: %d new securities (%d already known), %d price rows for session %s",
+        inserted,
+        already,
+        prices,
+        session_date,
+    )
+    return {
+        "securities_inserted": inserted,
+        "securities_already_known": already,
+        "price_rows": prices,
+        "session_date": session_date,
+    }

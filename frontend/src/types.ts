@@ -71,11 +71,18 @@ export interface SectorSnapshot {
   turnover_today: number | null;
 }
 
+export interface UnavailableSection {
+  section: string;
+  reason: string;
+}
+
 export interface MarketOverview {
-  status: string;
+  status: string | null;
   aspi: IndexSnapshot | null;
   sectors: SectorSnapshot[];
+  unavailable: UnavailableSection[];
   fetched_at: string;
+  cached: boolean;
   source: string;
 }
 

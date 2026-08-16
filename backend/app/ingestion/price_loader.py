@@ -7,9 +7,11 @@ JSON body `{}` — see app.ingestion.cse_client and README_ENDPOINTS.md).
 """
 from __future__ import annotations
 
+import collections
 import datetime as dt
 import logging
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +21,36 @@ from app.ingestion.schemas import TradeSummaryResponse, TradeSummaryRow
 from app.models.prices import PriceDaily
 
 logger = logging.getLogger("cse_alpha.ingestion.price_loader")
+
+_SRI_LANKA_TZ = ZoneInfo("Asia/Colombo")
+
+
+def infer_session_date(rows: list[TradeSummaryRow]) -> dt.date | None:
+    """The trading date these prices actually belong to, derived from the
+    feed's own `lastTradedTime` rather than assumed to be today.
+
+    This matters more than it looks. `tradeSummary` always returns the
+    LAST COMPLETED session, so ingesting on a Sunday (or a public
+    holiday, or before the market opens) and stamping the rows with
+    today's date silently files Friday's prices under Sunday — a
+    fabricated observation on a date the market never traded. Master Spec
+    §6's whole point is that a record's date must be the date the market
+    could actually have seen it; getting this wrong corrupts every return
+    calculation built on top of the series.
+
+    Uses the modal date across all rows, not the max: a single stale or
+    mis-stamped row shouldn't drag the whole session's date with it.
+    Returns None if no row carries a timestamp, and the caller must then
+    decide explicitly rather than guessing.
+    """
+    dates = [
+        dt.datetime.fromtimestamp(r.lastTradedTime / 1000, tz=_SRI_LANKA_TZ).date()
+        for r in rows
+        if r.lastTradedTime
+    ]
+    if not dates:
+        return None
+    return collections.Counter(dates).most_common(1)[0][0]
 
 
 def fetch_eod_prices(client: CseClient) -> list[TradeSummaryRow]:

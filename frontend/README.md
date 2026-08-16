@@ -1,54 +1,94 @@
 # Frontend
 
-Four screens over the Phase 1 data layer:
+Built against the **UI & Experience Specification v1.0**. Where the spec is
+specific, this follows it literally — see "Spec compliance" below.
 
-- **Market** — live ASPI and S&P/CSE sector indices. A live passthrough to
-  cse.lk, labelled as such: nothing here is stored or point-in-time, and
-  no model reads it. When the macro engine lands (Phase 5) this becomes
-  the regime read with the earnings-yield-minus-T-bill spread as its hero
-  chart (§29), which is the number that actually matters on this screen.
-- **Companies** — every listed name (§10: analyse everything), searchable,
-  click through to a company file with price history, corporate actions
-  and extracted statement lines.
-- **Review queue** — the confirm workflow for scraped corporate actions
-  and AI-assisted financial figures (§5's "mandatory human confirm
-  queue"). Until this existed, reviewing a draft meant querying the
-  database by hand.
-- **Data health** — coverage, feed freshness, queue depths, quarantined
-  tickers (UI spec screen 9, §8/§50).
+## Screens
 
-## What is deliberately missing
+The navigation is §7.1's, exactly: six primary destinations, a rule, then
+two advanced ones.
 
-No fair values, composite scores, buy-below prices or coverage tiers. The
-engines that compute them are Phases 2–3 and don't exist. The company file
-lists those gaps in plain language instead, because the UI specification's
-anti-pattern list is explicit that "a fake number that reaches a user once
-destroys trust permanently."
+| Destination | State |
+|---|---|
+| **Today** | Built. §8's four questions; sections 1–2 answered from real data, 3–4 marked as awaiting their engines. |
+| **Opportunities** | Awaiting Phases 2–3 (needs the fundamental, valuation and price engines). |
+| **Companies** | Built. All listed names, searchable, each with a company file. |
+| **Portfolio** | Awaiting Phase 8. |
+| **Macro** | Partly built — the live sector index board exists; the regime engine (§29–34) does not. |
+| **Journal** | Awaiting Phase 4. |
+| **Lab** | Awaiting Phase 8. |
+| **Data health** | Built. §9's screen: coverage, freshness, queue depths, quarantine. |
+| **Confirm queue** | Built. Reached from Data health — §7.1 specifies eight destinations and adding a ninth would misrepresent the IA. |
 
-This is also not yet the full nine-screen product the UI spec designs
-(Today, Opportunities, Valuation workbench, Portfolio, Journal, Lab...) —
-those need engines behind them. What's here follows the same design
-tokens (`design-tokens.css`, §16) and the same five laws (§1): calm by
-default, direction carried by glyph as well as hue, tabular figures,
-missing data shown as missing.
+Destinations whose engines don't exist are listed rather than hidden, and
+each says plainly what will live there and which phase builds it. Hiding
+them would misrepresent the product's shape; filling them with sample
+content is the §17 placeholder anti-pattern, which the spec forbids
+outright ("a fake number that reaches a user once destroys trust
+permanently").
+
+## What is deliberately absent
+
+No fair values, composite scores, buy-below prices or coverage tiers —
+their engines are Phases 2–3. The API omits those fields entirely rather
+than returning null, because a null is too easy to render as "0".
+
+## Spec compliance
+
+Fifteen automated checks run against the source (see the audit block in
+the session notes / re-runnable with grep): no raw hex outside the token
+file, no pill buttons, no weight above 600, spacing from the 4px scale
+only, `prefers-reduced-motion` and `prefers-color-scheme` both honoured,
+2px brand focus rings, skip link, evidence panel as a slide-over rather
+than a modal, tabular figures, direction carried by glyph as well as hue,
+nulls as "Data unavailable", no BUY/SELL verdict anywhere, explicit paging
+rather than infinite scroll.
+
+Specific implementations worth knowing about:
+
+- **§3 type scale** — `.t-display` / `h1` / `h2` / `h3` / `.t-body` /
+  `.t-data` / `.t-label` / `.t-caption` are the only text sizes. Three
+  weights (400/500/600). Prose capped at 68 characters.
+- **§4 shell** — 240px persistent rail, 1360px max content, collapsing to
+  a horizontal bar under 1024px.
+- **§5 numbers** — `format.ts` returns the "Data unavailable" sentinel
+  from every formatter, so a caller physically cannot render a gap as a
+  value. Magnitudes abbreviate (`4.9m`, `1.2bn`); percentages carry one
+  decimal and an explicit sign.
+- **§14 evidence panel** — click the closing price on a company file. It
+  slides in from the right at 480px with a *transparent* click-catcher,
+  not a dimming scrim, because the spec's whole objection to modals is
+  that they block the context you're comparing against.
+- **§15.1 six states** — `components/states.tsx`. `ErrorState`'s props are
+  named `whatFailed` / `whatItAffects` / `whatStillWorks` /
+  `whatHappensNext` so an incomplete error message doesn't type-check.
+- **§2.2 ochre discipline** — `--caution` is used only for data-quality
+  and system state (stale feed, quarantine, pending review), never for
+  market movement, so "the data is wrong" never reads as "the company is
+  in trouble".
+
+### One deviation from the published tokens, deliberately
+
+§16's token block defines dark mode only under an explicit
+`[data-theme="dark"]` attribute, but §15.2 requires respecting
+`prefers-color-scheme`. As published those two conflict: a user whose OS
+is dark and who never touches an in-app toggle would get the light
+palette. `design-tokens.css` now also applies §2.4's dark values under a
+`prefers-color-scheme: dark` media query, guarded so an explicit
+`[data-theme="light"]` still wins. No new colours were invented.
 
 ## Running it
 
-Backend first (see the root README's Quick start — it needs to be
-bootstrapped with real data, or the screens will correctly render as
-empty). CORS is already configured for `http://localhost:5173`.
+Backend first (see the root README — it must be bootstrapped, or the
+screens will correctly render as empty). CORS is preconfigured for
+`http://localhost:5173`.
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env    # defaults to http://localhost:8000, edit if needed
+cp .env.example .env    # defaults to http://localhost:8000
 npm run dev
 ```
 
-Open http://localhost:5173. On the Review screen, enter your name once
-(persisted in the browser) — every confirm/reject requires it, matching
-the backend's own requirement that review actions are attributable.
-
-`npm run build` produces a static `dist/` bundle; `npm run lint`
-type-checks without emitting (no separate linter yet — TypeScript strict
-mode is doing that job).
+Open http://localhost:5173. `npm run build` produces a static bundle;
+`npm run lint` type-checks (TypeScript strict mode is the linter for now).

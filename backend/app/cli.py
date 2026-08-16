@@ -36,7 +36,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     print(
         f"Bootstrap complete: {result['securities_inserted']} new securities "
         f"({result['securities_already_known']} already known), "
-        f"{result['price_rows']} price rows written."
+        f"{result['price_rows']} price rows written for session {result['session_date']}."
     )
     return 0
 
@@ -83,7 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_bootstrap = sub.add_parser("bootstrap", help="populate securities + latest prices from the live CSE API")
-    p_bootstrap.add_argument("--as-of", help="YYYY-MM-DD to stamp prices with (default: today)")
+    p_bootstrap.add_argument(
+        "--as-of",
+        help=(
+            "YYYY-MM-DD to stamp prices with. Defaults to the session date derived from the "
+            "feed's own timestamps, which is almost always what you want — only override if "
+            "you know the feed's timestamps are wrong."
+        ),
+    )
     p_bootstrap.set_defaults(func=cmd_bootstrap)
 
     p_ca = sub.add_parser("ingest-corporate-actions", help="scrape corporate actions into the confirm queue")

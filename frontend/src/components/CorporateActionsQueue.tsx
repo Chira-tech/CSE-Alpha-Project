@@ -7,6 +7,7 @@ import {
   rejectCorporateAction,
 } from "../api";
 import type { CorporateAction } from "../types";
+import { EmptyState, ErrorState, SkeletonTable } from "./states";
 
 const TYPE_LABELS: Record<CorporateAction["type"], string> = {
   dividend_cash: "Cash dividend",
@@ -18,10 +19,9 @@ const TYPE_LABELS: Record<CorporateAction["type"], string> = {
   suspension: "Suspension",
 };
 
-// Which numeric fields are relevant/editable per action type — matches
-// app.api.routes.corporate_actions._validate_confirmable's requirements
-// (Master Spec §7 / Appendix P1) so the form never asks a reviewer to
-// fill in a field that isn't actually used for that action's maths.
+// Which numeric fields matter per action type — mirrors
+// app.api.routes.corporate_actions._validate_confirmable so the form
+// never asks for a field that action's maths doesn't use (§7, §P1).
 const FIELDS_BY_TYPE: Record<CorporateAction["type"], (keyof CorporateAction)[]> = {
   dividend_cash: ["cash_amount"],
   bonus_issue: ["ratio"],
@@ -46,107 +46,112 @@ interface RowProps {
   onRemoved: (id: number) => void;
 }
 
-function CorporateActionRow({ action, reviewerName, onChanged, onRemoved }: RowProps) {
+function Row({ action, reviewerName, onChanged, onRemoved }: RowProps) {
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fields = FIELDS_BY_TYPE[action.type];
   const dirty = Object.keys(edits).length > 0;
 
-  async function handleSave() {
-    setSaving(true);
-    setError(null);
-    try {
-      const updated = await patchCorporateActionDraft(action.id, edits);
-      onChanged(updated);
-      setEdits({});
-    } catch (e) {
-      setError(e instanceof ApiRequestError ? e.message : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
+  function requireName(): boolean {
+    if (reviewerName.trim()) return true;
+    setError("Enter your name above before confirming or rejecting.");
+    return false;
   }
 
-  async function handleConfirm() {
-    if (!reviewerName.trim()) {
-      setError("Enter your name above before confirming.");
-      return;
-    }
-    setSaving(true);
+  async function run(fn: () => Promise<CorporateAction>, remove: boolean) {
+    setBusy(true);
     setError(null);
     try {
-      if (dirty) await patchCorporateActionDraft(action.id, edits);
-      const updated = await confirmCorporateAction(action.id, reviewerName.trim());
+      const updated = await fn();
       onChanged(updated);
-      onRemoved(action.id);
+      if (remove) onRemoved(action.id);
+      else setEdits({});
     } catch (e) {
-      setError(e instanceof ApiRequestError ? e.message : "Failed to confirm");
+      setError(e instanceof ApiRequestError ? e.message : "Request failed");
     } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleReject() {
-    if (!reviewerName.trim()) {
-      setError("Enter your name above before rejecting.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const updated = await rejectCorporateAction(action.id, reviewerName.trim());
-      onChanged(updated);
-      onRemoved(action.id);
-    } catch (e) {
-      setError(e instanceof ApiRequestError ? e.message : "Failed to reject");
-    } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
 
   return (
     <tr>
-      <td className="mono">{action.ticker}</td>
+      <th
+        scope="row"
+        className="mono"
+        style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}
+      >
+        {action.ticker}
+      </th>
       <td className="num">{action.ex_date}</td>
       <td>{TYPE_LABELS[action.type]}</td>
-      <td colSpan={fields.length ? undefined : 1}>
-        <div className="field-grid">
+      <td>
+        <div className="stack-tight">
           {fields.map((field) => (
-            <label key={field} className="field">
-              <span className="field-label">{FIELD_LABELS[field]}</span>
+            <div key={field} className="field-inline">
+              <label className="t-label" htmlFor={`ca-${action.id}-${field}`}>
+                {FIELD_LABELS[field]}
+              </label>
               <input
-                className="num"
+                id={`ca-${action.id}-${field}`}
+                className="num input-narrow"
                 type="text"
                 inputMode="decimal"
                 value={edits[field] ?? (action[field] as string | null) ?? ""}
-                placeholder="—"
-                onChange={(e) => setEdits((prev) => ({ ...prev, [field]: e.target.value }))}
+                placeholder="not set"
+                onChange={(e) => setEdits((p) => ({ ...p, [field]: e.target.value }))}
               />
-            </label>
+            </div>
           ))}
+          {fields.length === 0 && <span className="t-caption">No numeric inputs for this type.</span>}
         </div>
       </td>
-      <td className="notes-cell">
-        {action.notes && <p className="notes-text">{action.notes}</p>}
+      <td className="prose">
+        {action.notes && <p className="t-caption" style={{ margin: 0 }}>{action.notes}</p>}
         {action.source_url && (
-          <a href={action.source_url} target="_blank" rel="noreferrer">
-            source
+          <a className="t-caption" href={action.source_url} target="_blank" rel="noreferrer">
+            source announcement
           </a>
         )}
       </td>
-      <td className="actions-cell">
-        {dirty && (
-          <button type="button" onClick={handleSave} disabled={saving}>
-            Save
-          </button>
-        )}
-        <button type="button" className="btn-confirm" onClick={handleConfirm} disabled={saving}>
-          Confirm
-        </button>
-        <button type="button" className="btn-reject" onClick={handleReject} disabled={saving}>
-          Reject
-        </button>
-        {error && <p className="error-text">{error}</p>}
+      <td>
+        <div className="stack-tight">
+          <div className="row">
+            {dirty && (
+              <button disabled={busy} onClick={() => run(() => patchCorporateActionDraft(action.id, edits), false)}>
+                Save
+              </button>
+            )}
+            <button
+              className="btn-primary"
+              disabled={busy}
+              onClick={() => {
+                if (!requireName()) return;
+                run(async () => {
+                  if (dirty) await patchCorporateActionDraft(action.id, edits);
+                  return confirmCorporateAction(action.id, reviewerName.trim());
+                }, true);
+              }}
+            >
+              Confirm
+            </button>
+            <button
+              className="btn-danger"
+              disabled={busy}
+              onClick={() => {
+                if (!requireName()) return;
+                run(() => rejectCorporateAction(action.id, reviewerName.trim()), true);
+              }}
+            >
+              Reject
+            </button>
+          </div>
+          {error && (
+            <p className="t-caption" role="alert" style={{ color: "var(--neg-strong)", margin: 0 }}>
+              {error}
+            </p>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -154,51 +159,62 @@ function CorporateActionRow({ action, reviewerName, onChanged, onRemoved }: RowP
 
 export function CorporateActionsQueue({ reviewerName }: { reviewerName: string }) {
   const [actions, setActions] = useState<CorporateAction[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     listCorporateActions({ pendingOnly: true })
       .then(setActions)
-      .catch((e) => setLoadError(e instanceof ApiRequestError ? e.message : "Failed to load"));
+      .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
   }, []);
 
-  function handleChanged(updated: CorporateAction) {
-    setActions((prev) => prev?.map((a) => (a.id === updated.id ? updated : a)) ?? prev);
+  if (error) {
+    return (
+      <ErrorState
+        whatFailed="The corporate-actions queue could not be loaded"
+        whatItAffects="This queue only."
+        whatStillWorks="The fundamentals queue and every other screen."
+        whatHappensNext={<>Check the API is reachable, then reload. Underlying error: {error}</>}
+      />
+    );
   }
-
-  function handleRemoved(id: number) {
-    setActions((prev) => prev?.filter((a) => a.id !== id) ?? prev);
-  }
-
-  if (loadError) return <p className="error-text">Couldn't load corporate actions: {loadError}</p>;
-  if (actions === null) return <p className="muted">Loading…</p>;
+  if (!actions) return <SkeletonTable rows={4} columns={6} />;
   if (actions.length === 0) {
-    return <p className="muted">Nothing pending. Every scraped corporate action has been reviewed.</p>;
+    return (
+      <EmptyState title="Nothing pending.">
+        <p style={{ margin: 0 }}>
+          Every scraped corporate action has been reviewed. Run{" "}
+          <span className="code-hint">python -m app.cli ingest-corporate-actions</span> to scan for
+          new announcements.
+        </p>
+      </EmptyState>
+    );
   }
 
   return (
-    <table className="queue-table">
-      <thead>
-        <tr>
-          <th>Ticker</th>
-          <th>Ex-date</th>
-          <th>Type</th>
-          <th>Fields</th>
-          <th>Notes / source</th>
-          <th>Review</th>
-        </tr>
-      </thead>
-      <tbody>
-        {actions.map((action) => (
-          <CorporateActionRow
-            key={action.id}
-            action={action}
-            reviewerName={reviewerName}
-            onChanged={handleChanged}
-            onRemoved={handleRemoved}
-          />
-        ))}
-      </tbody>
-    </table>
+    <div className="table-wrap table-scroll">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Ticker</th>
+            <th scope="col">Ex-date</th>
+            <th scope="col">Type</th>
+            <th scope="col">Fields</th>
+            <th scope="col">Notes</th>
+            <th scope="col">Review</th>
+          </tr>
+        </thead>
+        <tbody>
+          {actions.map((a) => (
+            <Row
+              key={a.id}
+              action={a}
+              reviewerName={reviewerName}
+              onChanged={(u) => setActions((p) => p?.map((x) => (x.id === u.id ? u : x)) ?? p)}
+              onRemoved={(id) => setActions((p) => p?.filter((x) => x.id !== id) ?? p)}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

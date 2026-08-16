@@ -12,7 +12,6 @@ the live API — see app/ingestion/README_ENDPOINTS.md.
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -23,7 +22,7 @@ from app.db.session import SessionLocal
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
-from app.ingestion.price_loader import fetch_eod_prices, upsert_eod_prices
+from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
 from app.models.securities import Security
 
@@ -35,13 +34,26 @@ def _all_tickers(db) -> list[str]:
 
 
 def _job_eod_snapshot() -> None:
-    """§52: "EOD snapshot + adjustment  15:00 daily"."""
+    """§52: "EOD snapshot + adjustment  15:00 daily".
+
+    The session date comes from the feed's own timestamps, not from
+    `date.today()` — the job is scheduled Mon-Fri after close, but a
+    public holiday, an unscheduled closure, or a late/missed run would
+    otherwise write the previous session's prices under today's date.
+    See `infer_session_date`; §6 depends on this being right.
+    """
     db = SessionLocal()
     try:
         with CseClient() as client:
             rows = fetch_eod_prices(client)
-        written = upsert_eod_prices(db, dt.date.today(), rows)
-        logger.info("EOD snapshot: wrote %d rows", written)
+
+        session_date = infer_session_date(rows)
+        if session_date is None:
+            logger.error("EOD snapshot: could not determine session date from feed; nothing written")
+            return
+
+        written = upsert_eod_prices(db, session_date, rows)
+        logger.info("EOD snapshot: wrote %d rows for session %s", written, session_date)
     except Exception:
         logger.exception("EOD snapshot job failed")
     finally:

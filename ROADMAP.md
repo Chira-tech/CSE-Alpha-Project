@@ -50,16 +50,37 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 158 backend unit tests passing, most against real captured API/PDF
+- [x] 170 backend unit tests passing, most against real captured API/PDF
       data rather than invented fixtures
 - [x] **Runnable web app.** SQLite dev mode (documented fallback —
       Postgres+Timescale remains the §51 production target, and the same
       migrations apply to both), a `python -m app.cli bootstrap` command
       that pulls the real universe and latest prices from the live CSE
-      API in a single request, and four screens: Market (live ASPI +
-      sector indices), Companies (all 283 names, searchable, with a
-      company file), Review queue, Data health. Verified end-to-end
-      against real bootstrapped data.
+      API in a single request, and the screens below. Verified end-to-end
+      against real bootstrapped data and visually in a browser.
+- [x] **Frontend rebuilt against the UI & Experience Specification.**
+      §7.1's navigation exactly (six primary destinations, a rule, two
+      advanced), §3's type scale and three-weight limit, §4's 240px rail
+      / 1360px content / three elevations / motion durations, §5's number
+      and direction conventions, §14's evidence panel as a right
+      slide-over, and §15.1's six component states — `ErrorState`'s props
+      are named after the four things §15.1 says an error must state, so
+      an incomplete one doesn't type-check. 15 automated spec checks pass
+      (no raw hex outside the token file, no pill buttons, no weight
+      above 600, reduced-motion and colour-scheme honoured, focus rings,
+      skip link, no BUY/SELL verdict, and so on).
+- [x] **Market endpoint made resilient.** Was: three sequential upstream
+      calls at 2s pacing (4.5s every load) that returned 502 for the
+      whole screen if any one failed. Now: per-section degradation with a
+      named `unavailable` list (§15.1's Partial state) and a 60s cache —
+      4.5s cold, 0.2s warm.
+- [x] **Fixed a real point-in-time bug found in the running app**:
+      bootstrap stamped prices with `date.today()`, so ingesting on a
+      Sunday filed Friday's prices under a date the market never traded.
+      Session date is now derived from the feed's own timestamps
+      (`infer_session_date`, modal not max so one stale row can't drag
+      the session). The scheduled EOD job had the same bug and is fixed
+      too. This is exactly what §6 exists to prevent.
 - [x] **New this session: confirm-queue frontend** (`frontend/`) — React +
       TypeScript, two tables (corporate actions, fundamentals) wired to
       the confirm APIs above, using the UI spec's design tokens. NOT the

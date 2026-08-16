@@ -1,114 +1,151 @@
-import { useState } from "react";
-import { CorporateActionsQueue } from "./components/CorporateActionsQueue";
-import { FundamentalsQueue } from "./components/FundamentalsQueue";
+import { useEffect, useState } from "react";
 import { useReviewerName } from "./hooks/useReviewerName";
+import { NAV_ITEMS, REVIEW_SCREEN, type ScreenId } from "./nav";
 import { CompaniesScreen } from "./screens/CompaniesScreen";
 import { CompanyScreen } from "./screens/CompanyScreen";
 import { DataHealthScreen } from "./screens/DataHealthScreen";
-import { MarketScreen } from "./screens/MarketScreen";
-
-type Screen = "market" | "companies" | "review" | "health";
-
-const NAV: { id: Screen; label: string; blurb: string }[] = [
-  { id: "market", label: "Market", blurb: "Where the exchange is right now" },
-  { id: "companies", label: "Companies", blurb: "Every listed name" },
-  { id: "review", label: "Review queue", blurb: "Data awaiting human confirmation" },
-  { id: "health", label: "Data health", blurb: "Coverage, freshness, quarantine" },
-];
+import { MacroScreen } from "./screens/MacroScreen";
+import { NotBuiltScreen } from "./screens/NotBuiltScreen";
+import { ReviewScreen } from "./screens/ReviewScreen";
+import { TodayScreen } from "./screens/TodayScreen";
 
 export function App() {
-  const [screen, setScreen] = useState<Screen>("market");
+  const [screen, setScreen] = useState<ScreenId>("today");
   const [openTicker, setOpenTicker] = useState<string | null>(null);
-  const [reviewTab, setReviewTab] = useState<"corporate-actions" | "fundamentals">(
-    "corporate-actions",
-  );
   const { name, setName } = useReviewerName();
 
-  function go(next: Screen) {
+  function go(next: ScreenId) {
     setScreen(next);
     setOpenTicker(null);
+    // Route change moves focus to the main region so keyboard and screen
+    // reader users land on the new content rather than staying in the
+    // nav (§15.2 logical tab order).
+    requestAnimationFrame(() => document.getElementById("main")?.focus());
+  }
+
+  // §7.1: "Global search (⌘K) ... is the fastest path to anything."
+  // Full command palette is a later screen; for now the shortcut takes
+  // you to Companies and focuses its filter, which is the only search
+  // surface that exists.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setScreen("companies");
+        setOpenTicker(null);
+        requestAnimationFrame(() => document.getElementById("company-search")?.focus());
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const primary = NAV_ITEMS.filter((i) => i.group === "primary");
+  const advanced = NAV_ITEMS.filter((i) => i.group === "advanced");
+
+  function renderScreen() {
+    switch (screen) {
+      case "today":
+        return <TodayScreen onOpenScreen={(id) => go(id)} />;
+      case "companies":
+        return openTicker ? (
+          <CompanyScreen ticker={openTicker} onBack={() => setOpenTicker(null)} />
+        ) : (
+          <CompaniesScreen onOpen={setOpenTicker} />
+        );
+      case "macro":
+        return <MacroScreen />;
+      case "data-health":
+        return <DataHealthScreen onOpenReview={() => go("review")} />;
+      case "review":
+        return (
+          <ReviewScreen
+            reviewerName={name}
+            onChangeReviewerName={setName}
+            onBack={() => go("data-health")}
+          />
+        );
+      default: {
+        const item = NAV_ITEMS.find((i) => i.id === screen);
+        return item ? <NotBuiltScreen item={item} /> : null;
+      }
+    }
   }
 
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <h1>CSE Alpha Engine</h1>
-          <p className="subtitle">
-            Phase 1 — the point-in-time data spine. What you can see here is real data from the
-            Colombo Stock Exchange. What you can't see yet — fair values, scores, buy prices — is
-            listed plainly rather than faked.
-          </p>
-        </div>
-        {screen === "review" && (
-          <label className="reviewer-field">
-            <span>Reviewing as</span>
-            <input
-              type="text"
-              placeholder="your name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-        )}
-      </header>
+    <>
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
 
-      <nav className="tabs">
-        {NAV.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            title={item.blurb}
-            className={screen === item.id ? "tab tab-active" : "tab"}
-            onClick={() => go(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-
-      <main>
-        {screen === "market" && <MarketScreen />}
-
-        {screen === "companies" &&
-          (openTicker ? (
-            <CompanyScreen ticker={openTicker} onBack={() => setOpenTicker(null)} />
-          ) : (
-            <CompaniesScreen onOpen={setOpenTicker} />
-          ))}
-
-        {screen === "review" && (
-          <div className="stack">
-            <div className="subtabs">
-              <button
-                type="button"
-                className={reviewTab === "corporate-actions" ? "subtab subtab-active" : "subtab"}
-                onClick={() => setReviewTab("corporate-actions")}
-              >
-                Corporate actions
-              </button>
-              <button
-                type="button"
-                className={reviewTab === "fundamentals" ? "subtab subtab-active" : "subtab"}
-                onClick={() => setReviewTab("fundamentals")}
-              >
-                Fundamentals
-              </button>
-            </div>
-            <p className="provenance-note">
-              Master Spec §5 — every scraped corporate action and every AI-assisted financial figure
-              waits here until a human confirms it. Nothing below has affected any price or valuation.
-            </p>
-            {reviewTab === "corporate-actions" ? (
-              <CorporateActionsQueue reviewerName={name} />
-            ) : (
-              <FundamentalsQueue reviewerName={name} />
-            )}
+      <div className="shell">
+        <nav className="rail" aria-label="Primary">
+          <div className="rail-brand">
+            <div className="rail-brand-name">CSE Alpha Engine</div>
+            <div className="t-caption">Phase 1 · data spine</div>
           </div>
-        )}
 
-        {screen === "health" && <DataHealthScreen />}
-      </main>
-    </div>
+          <div className="rail-search">
+            <button
+              onClick={() => {
+                go("companies");
+                requestAnimationFrame(() => document.getElementById("company-search")?.focus());
+              }}
+              style={{ width: "100%", textAlign: "left", color: "var(--ink-3)" }}
+            >
+              Search companies… <span className="t-caption">⌘K</span>
+            </button>
+          </div>
+
+          <div className="rail-nav">
+            <div className="rail-group">
+              {primary.map((item) => (
+                <RailItem key={item.id} item={item} current={screen} onGo={go} />
+              ))}
+            </div>
+            <div className="rail-group">
+              {advanced.map((item) => (
+                <RailItem key={item.id} item={item} current={screen} onGo={go} />
+              ))}
+              <RailItem item={REVIEW_SCREEN} current={screen} onGo={go} />
+            </div>
+          </div>
+
+          <div className="rail-foot">
+            <p className="t-caption prose" style={{ margin: 0 }}>
+              Deterministic code computes; AI explains. There is no BUY button in this product, by
+              design (§4, law 6).
+            </p>
+          </div>
+        </nav>
+
+        <main className="content" id="main" tabIndex={-1}>
+          {renderScreen()}
+        </main>
+      </div>
+    </>
+  );
+}
+
+function RailItem({
+  item,
+  current,
+  onGo,
+}: {
+  item: (typeof NAV_ITEMS)[number];
+  current: ScreenId;
+  onGo: (id: ScreenId) => void;
+}) {
+  const isCurrent = current === item.id;
+  return (
+    <button
+      className="rail-item"
+      aria-current={isCurrent ? "page" : undefined}
+      title={item.blurb}
+      onClick={() => onGo(item.id)}
+    >
+      <span>{item.label}</span>
+      {item.awaitingPhase && <span className="rail-phase">{item.awaitingPhase}</span>}
+    </button>
   );
 }
