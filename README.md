@@ -18,6 +18,14 @@ order. There is no BUY button anywhere in this product.
 Build follows the phased sequence in Master Spec §54. We are in **Phase 1 —
 point-in-time data spine**.
 
+There is a **runnable web app** — see Quick start below. It shows real CSE
+data (live index levels, all ~283 listed companies, prices, the review
+queues, data health). It deliberately does **not** show fair values,
+scores or buy prices, because the engines that compute them are Phase 2–3
+and haven't been built: the company file lists those gaps explicitly
+rather than rendering a placeholder number, which the UI specification
+forbids outright.
+
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | 🔨 in progress |
@@ -57,37 +65,57 @@ frontend/            React + TypeScript confirm-queue tool (see frontend/README.
                       approve the ingestion drafts Phase 1 produces
 ```
 
-## Getting started (backend)
+## Quick start — run it and look at it
+
+Two terminals. Backend first:
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate       # Windows
+.venv\Scripts\activate                       # Windows
 pip install -r requirements.txt
-copy .env.example .env       # then fill in DB URL etc.
+
+# Dev mode: SQLite, no external database needed.
+set DATABASE_URL=sqlite+pysqlite:///./devdb.sqlite   # Windows (use `export` on macOS/Linux)
 alembic upgrade head
+
+# Pull the real universe + latest prices from the live CSE API (~1 request)
+python -m app.cli bootstrap
+
 uvicorn app.main:app --reload
 ```
 
-Requires PostgreSQL with the TimescaleDB extension (Master Spec §51). For
-local dev without Timescale installed, the hypertable creation step in the
-migration is skipped automatically (see `alembic/env.py`) and plain Postgres
-tables are used — fine for correctness testing, not for production price-series
-performance.
-
-## Getting started (confirm-queue frontend)
-
-Once the backend above is running:
+Then the frontend:
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env
 npm run dev
 ```
 
-Open http://localhost:5173 — see `frontend/README.md` for what this tool
-is (and isn't).
+Open **http://localhost:5173**. You'll get four screens: Market (live ASPI
+and sector indices), Companies (all ~283 listed names, searchable, click
+through to a company file), Review queue, and Data health.
+
+### A note on SQLite vs PostgreSQL
+
+Master Spec §51 specifies PostgreSQL + TimescaleDB, and that remains the
+production target — the price series will want hypertables long before
+this is running at scale. SQLite is supported purely so the app is
+runnable on a clean machine with nothing installed; the migrations detect
+the missing Timescale extension and fall back to a plain table
+automatically. Point `DATABASE_URL` at Postgres and the same migrations
+apply unchanged.
+
+### Optional: populate the review queues
+
+The Review screen is empty until ingestion has scraped something. Corporate
+actions are rate-limited to >=2s per request (§5), so the full sweep of
+283 companies takes 10+ minutes — start with a few:
+
+```bash
+python -m app.cli ingest-corporate-actions --limit 5
+```
 
 ## Why start here and not with a model
 

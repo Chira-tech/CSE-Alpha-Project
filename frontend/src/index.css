@@ -246,3 +246,276 @@ button:disabled {
 .muted {
   color: var(--ink-3);
 }
+
+/* ---- layout primitives ------------------------------------------------ */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s6);
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 var(--s3) 0;
+  color: var(--ink-1);
+}
+
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 var(--s3) 0;
+  color: var(--ink-1);
+}
+
+.right {
+  text-align: right;
+}
+
+/* ---- hero (UI spec §1 law 2: one number is large, rest support) ------- */
+
+.hero-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s5);
+}
+
+.hero-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  margin-bottom: var(--s2);
+}
+
+.hero-value {
+  font-size: 34px;
+  line-height: 40px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  margin-top: var(--s2);
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.status-pill {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 1px var(--s2);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+/* ---- direction (§5.2: small text only, never a background) ----------- */
+
+.delta {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.delta-up {
+  color: var(--pos-strong);
+}
+
+.delta-down {
+  color: var(--neg-strong);
+}
+
+.delta-flat {
+  color: var(--neutral);
+}
+
+/* ---- toolbar / search ------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.search-input {
+  flex: 1;
+  max-width: 420px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--ink-1);
+}
+
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-clickable:hover {
+  background: var(--canvas-sunken);
+}
+
+/* ---- company file ----------------------------------------------------- */
+
+.company-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--s5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s5);
+}
+
+.company-ticker {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.company-name {
+  font-size: 20px;
+  font-weight: 600;
+  margin: var(--s1) 0 0 0;
+}
+
+.company-price {
+  text-align: right;
+}
+
+.facts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s5);
+}
+
+.fact .field-label {
+  min-width: 0;
+  margin-bottom: var(--s1);
+}
+
+/* ---- stats ------------------------------------------------------------ */
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--s4);
+}
+
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s4);
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  margin-top: var(--s1);
+}
+
+.caution-text {
+  color: var(--caution);
+}
+
+/* ---- status labels ---------------------------------------------------- */
+
+.status-confirmed {
+  color: var(--pos-strong);
+  font-size: 12px;
+}
+
+.status-rejected {
+  color: var(--neg-strong);
+  font-size: 12px;
+}
+
+.status-pending {
+  color: var(--caution);
+  font-size: 12px;
+}
+
+.quarantine-badge {
+  display: inline-block;
+  margin-left: var(--s2);
+  font-size: 10px;
+  color: var(--caution);
+  border: 1px solid var(--caution);
+  border-radius: var(--r-sm);
+  padding: 0 var(--s1);
+}
+
+/* Ochre, never clay: §2.2 reserves the caution token for data-quality and
+   system state so "something is wrong with the data" is never confused
+   with "something is wrong with the company". */
+.quarantine-notice,
+.stale-banner {
+  background: var(--caution-bg);
+  border: 1px solid var(--caution);
+  border-radius: var(--r-md);
+  padding: var(--s3) var(--s4);
+  font-size: 13px;
+  color: var(--ink-1);
+}
+
+/* ---- notes ------------------------------------------------------------ */
+
+.provenance-note {
+  font-size: 12px;
+  color: var(--ink-3);
+  max-width: 78ch;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.not-built {
+  background: var(--canvas-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s5);
+}
+
+.not-built ul {
+  margin: 0 0 var(--s3) 0;
+  padding-left: var(--s5);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.not-built li {
+  margin-bottom: var(--s1);
+}
+
+/* ---- sub tabs --------------------------------------------------------- */
+
+.subtabs {
+  display: flex;
+  gap: var(--s2);
+}
+
+.subtab {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  padding: var(--s2) var(--s4);
+  font-size: 13px;
+  color: var(--ink-2);
+  border-radius: var(--r-sm);
+}
+
+.subtab-active {
+  border-color: var(--brand-500);
+  color: var(--brand-700);
+  background: var(--brand-50);
+}

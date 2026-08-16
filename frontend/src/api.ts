@@ -1,4 +1,11 @@
-import type { CorporateAction, Fundamental } from "./types";
+import type {
+  CorporateAction,
+  DataHealth,
+  Fundamental,
+  MarketOverview,
+  SecurityDetail,
+  SecurityListItem,
+} from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -32,6 +39,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiRequestError(detail, response.status);
   }
   return response.json() as Promise<T>;
+}
+
+// --- Market / companies / health -----------------------------------------
+
+export function getMarketOverview() {
+  return request<MarketOverview>("/market");
+}
+
+export function listSecurities(search?: string) {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  return request<SecurityListItem[]>(`/securities?${params}`);
+}
+
+export function getSecurity(ticker: string) {
+  return request<SecurityDetail>(`/securities/${encodeURIComponent(ticker)}`);
+}
+
+export function getDataHealth() {
+  return request<DataHealth>("/data-health");
 }
 
 // --- Corporate actions --------------------------------------------------

@@ -73,6 +73,23 @@ class TopMoverRow(_Lenient):
     tradeDate: int | None = None  # epoch millis
 
 
+class SectorIndexRow(_Lenient):
+    """One row from `allSectors` — verified live. These are the S&P/CSE
+    GICS industry-group indices (Energy, Materials, Capital Goods, ...),
+    not the CSE's own sector classification of individual companies."""
+
+    sectorId: int | None = None
+    symbol: str | None = None
+    name: str
+    indexName: str | None = None
+    indexValue: float | None = None
+    change: float | None = None
+    percentage: float | None = None
+    sectorTurnoverToday: float | None = None
+    sectorVolumeToday: int | None = None
+    transactionTime: int | None = None
+
+
 class AspiData(_Lenient):
     id: int | None = None
     value: float

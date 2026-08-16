@@ -1,48 +1,236 @@
 """
-Minimal read endpoints. Deliberately not building a screener/ranking API
-yet (Phase 2, per ROADMAP.md) — this exists so the data layer is reachable
-and testable end to end during Phase 1, matching the UI spec's own
-philosophy of "every number is a door": even at this stage, a ticker should
-resolve to something inspectable rather than nothing.
+Company list and company file.
+
+WHAT IS DELIBERATELY ABSENT: composite scores, fair values, buy-below
+prices, coverage tiers. Those are Phase 2/3 (§12-26) and the engines that
+compute them do not exist yet. The UI spec's anti-pattern list is explicit
+that "placeholder or lorem content in any shipped state" is forbidden
+because "a fake number that reaches a user once destroys trust
+permanently" — so rather than emitting a null score the UI might render as
+"0", this API doesn't expose those fields at all, and the company file
+returns an explicit `not_yet_built` list the UI renders as a plain
+statement of what the system cannot yet tell you.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+import datetime as dt
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.jobs.reconciliation import is_quarantined
+from app.models.corporate_actions import CorporateAction
+from app.models.enums import ProvenanceTier
+from app.models.fundamentals import Fundamental
+from app.models.prices import PriceDaily
 from app.models.securities import Security
 
 router = APIRouter(prefix="/securities", tags=["securities"])
 
 
-@router.get("")
-def list_securities(db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(select(Security).order_by(Security.ticker)).all()
-    return [
-        {
-            "ticker": s.ticker,
-            "name": s.name,
-            "cse_sector": s.cse_sector,
-            "archetype": s.archetype,
-        }
-        for s in rows
-    ]
+class SecurityListItem(BaseModel):
+    ticker: str
+    name: str
+    cse_sector: str | None
+    archetype: str | None
+    last_close: Decimal | None
+    last_price_date: dt.date | None
+    turnover: Decimal | None
+    volume: int | None
+    quarantined: bool
 
 
-@router.get("/{ticker}")
-def get_security(ticker: str, db: Session = Depends(get_db)) -> dict:
+class PricePoint(BaseModel):
+    date: dt.date
+    close: Decimal | None
+    open: Decimal | None
+    high: Decimal | None
+    low: Decimal | None
+    volume: int | None
+    turnover: Decimal | None
+    adj_factor: Decimal
+
+
+class CorporateActionSummary(BaseModel):
+    id: int
+    ex_date: dt.date
+    type: str
+    confirmed: bool
+    rejected: bool
+
+
+class FundamentalSummary(BaseModel):
+    id: int
+    period_end: dt.date
+    period_type: str
+    statement_line: str
+    value: Decimal
+    provenance_tier: ProvenanceTier
+    confirmed: bool
+
+
+class SecurityDetail(BaseModel):
+    ticker: str
+    name: str
+    isin: str | None
+    cse_sector: str | None
+    archetype: str | None
+    listing_date: dt.date | None
+    delisting_date: dt.date | None
+    fiscal_year_end: str | None
+    quarantined: bool
+    price_history: list[PricePoint]
+    corporate_actions: list[CorporateActionSummary]
+    fundamentals: list[FundamentalSummary]
+    not_yet_built: list[str]
+
+
+# Kept in one place so the company file and any future screen tell the
+# user the same story about what this system can't do yet.
+_NOT_YET_BUILT = [
+    "Fair value and buy-below price (Phase 3 — valuation engine, Master Spec §16-26)",
+    "Composite score and coverage tier (Phase 2 — fundamental engine and gates, §12, §38)",
+    "Macro regime and sector fit (Phase 5 — macro engine, §29-33)",
+    "Research note (Phase 7 — AI research writer, §44)",
+]
+
+
+@router.get("", response_model=list[SecurityListItem])
+def list_securities(
+    search: str | None = Query(None, description="case-insensitive match on ticker or name"),
+    limit: int = Query(500, le=1000),
+    db: Session = Depends(get_db),
+) -> list[SecurityListItem]:
+    """Every listed company (§10: "analyse everything"), with its most
+    recent stored close. Companies with no price row yet are still
+    returned — with nulls, never a zero — so the universe is always
+    complete and gaps are visible rather than hidden."""
+    # Most recent price date per ticker, then join back for that row's
+    # values. Done as a subquery rather than N+1 per-ticker lookups.
+    latest = (
+        select(PriceDaily.ticker, func.max(PriceDaily.date).label("max_date"))
+        .group_by(PriceDaily.ticker)
+        .subquery()
+    )
+    stmt = (
+        select(Security, PriceDaily)
+        .outerjoin(latest, latest.c.ticker == Security.ticker)
+        .outerjoin(
+            PriceDaily,
+            (PriceDaily.ticker == latest.c.ticker) & (PriceDaily.date == latest.c.max_date),
+        )
+        .order_by(Security.ticker)
+        .limit(limit)
+    )
+    if search:
+        pattern = f"%{search.lower()}%"
+        stmt = stmt.where(
+            func.lower(Security.ticker).like(pattern) | func.lower(Security.name).like(pattern)
+        )
+
+    quarantined_tickers = _quarantined_set(db)
+    items: list[SecurityListItem] = []
+    for security, price in db.execute(stmt).all():
+        items.append(
+            SecurityListItem(
+                ticker=security.ticker,
+                name=security.name,
+                cse_sector=security.cse_sector,
+                archetype=security.archetype,
+                last_close=price.close if price else None,
+                last_price_date=price.date if price else None,
+                turnover=price.turnover if price else None,
+                volume=price.volume if price else None,
+                quarantined=security.ticker in quarantined_tickers,
+            )
+        )
+    return items
+
+
+def _quarantined_set(db: Session) -> set[str]:
+    """One query for the whole list rather than is_quarantined() per row."""
+    from app.models.data_quality import DataAlert
+
+    rows = db.execute(
+        select(DataAlert.ticker).where(DataAlert.resolved.is_(False)).distinct()
+    ).all()
+    return {t for (t,) in rows}
+
+
+@router.get("/{ticker}", response_model=SecurityDetail)
+def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
     security = db.get(Security, ticker)
     if security is None:
         raise HTTPException(status_code=404, detail=f"unknown ticker {ticker!r}")
-    return {
-        "ticker": security.ticker,
-        "name": security.name,
-        "cse_sector": security.cse_sector,
-        "archetype": security.archetype,
-        "listing_date": security.listing_date,
-        "delisting_date": security.delisting_date,
-        "quarantined": is_quarantined(db, ticker),
-    }
+
+    prices = db.scalars(
+        select(PriceDaily)
+        .where(PriceDaily.ticker == ticker)
+        .order_by(PriceDaily.date.desc())
+        .limit(250)
+    ).all()
+
+    actions = db.scalars(
+        select(CorporateAction)
+        .where(CorporateAction.ticker == ticker)
+        .order_by(CorporateAction.ex_date.desc())
+    ).all()
+
+    fundamentals = db.scalars(
+        select(Fundamental)
+        .where(Fundamental.ticker == ticker)
+        .order_by(Fundamental.period_end.desc(), Fundamental.statement_line)
+    ).all()
+
+    return SecurityDetail(
+        ticker=security.ticker,
+        name=security.name,
+        isin=security.isin,
+        cse_sector=security.cse_sector,
+        archetype=security.archetype,
+        listing_date=security.listing_date,
+        delisting_date=security.delisting_date,
+        fiscal_year_end=security.fiscal_year_end,
+        quarantined=is_quarantined(db, ticker),
+        price_history=[
+            PricePoint(
+                date=p.date,
+                close=p.close,
+                open=p.open,
+                high=p.high,
+                low=p.low,
+                volume=p.volume,
+                turnover=p.turnover,
+                adj_factor=p.adj_factor,
+            )
+            # oldest-first is what a chart wants
+            for p in reversed(prices)
+        ],
+        corporate_actions=[
+            CorporateActionSummary(
+                id=a.id,
+                ex_date=a.ex_date,
+                type=a.type.value,
+                confirmed=a.is_confirmed,
+                rejected=a.is_rejected,
+            )
+            for a in actions
+        ],
+        fundamentals=[
+            FundamentalSummary(
+                id=f.id,
+                period_end=f.period_end,
+                period_type=f.period_type,
+                statement_line=f.statement_line,
+                value=f.value,
+                provenance_tier=f.provenance_tier,
+                confirmed=f.confirmed_by is not None,
+            )
+            for f in fundamentals
+        ],
+        not_yet_built=_NOT_YET_BUILT,
+    )

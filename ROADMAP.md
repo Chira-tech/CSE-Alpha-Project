@@ -50,8 +50,16 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 145 backend unit tests passing, most against real captured API/PDF
+- [x] 158 backend unit tests passing, most against real captured API/PDF
       data rather than invented fixtures
+- [x] **Runnable web app.** SQLite dev mode (documented fallback —
+      Postgres+Timescale remains the §51 production target, and the same
+      migrations apply to both), a `python -m app.cli bootstrap` command
+      that pulls the real universe and latest prices from the live CSE
+      API in a single request, and four screens: Market (live ASPI +
+      sector indices), Companies (all 283 names, searchable, with a
+      company file), Review queue, Data health. Verified end-to-end
+      against real bootstrapped data.
 - [x] **New this session: confirm-queue frontend** (`frontend/`) — React +
       TypeScript, two tables (corporate actions, fundamentals) wired to
       the confirm APIs above, using the UI spec's design tokens. NOT the
@@ -75,6 +83,18 @@ consecutive days.
       is a recent-filings feed only; a different, not-yet-identified
       source is needed to backfill history to the Part O #2 target
       (2015-01-01).
+- [ ] **Price history is one day deep.** `bootstrap` seeds the latest
+      session only; depth accumulates one day at a time from the
+      scheduled EOD job. No historical price backfill source has been
+      found on the CSE API — this blocks anything needing a time series
+      (factor library, momentum, beta, Amihud liquidity), i.e. most of
+      Phases 2 and 6. Worth solving early; a broker EOD file (the same
+      second source PARAMETERS.md #5 wants) may cover both needs at once.
+- [ ] **`cse_sector` and `archetype` are NULL for every company.**
+      Bootstrap deliberately doesn't guess them — archetype drives the
+      valuation model router (§15/§16) and a wrong one silently routes a
+      bank through an industrial DCF (Part N #7). Needs a real mapping,
+      hand-corrected per Appendix P2. Blocks sector-relative anything.
 - [ ] **Plain bonus issue / consolidation**: still unverified after ~40
       tickers probed across two sessions — no live example of either was
       found. Share splits (which looked similar) ARE now verified.

@@ -5,7 +5,14 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import corporate_actions, fundamentals, health, securities
+from app.api.routes import (
+    corporate_actions,
+    data_health,
+    fundamentals,
+    health,
+    market,
+    securities,
+)
 from app.config import settings
 
 logging.basicConfig(level=settings.log_level)
@@ -33,5 +40,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(securities.router)
+app.include_router(market.router)
 app.include_router(corporate_actions.router)
 app.include_router(fundamentals.router)
+app.include_router(data_health.router)

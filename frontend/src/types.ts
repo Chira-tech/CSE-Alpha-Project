@@ -1,11 +1,9 @@
 /**
- * Mirrors the FastAPI response models exactly (backend/app/api/routes/
- * corporate_actions.py and fundamentals.py). Decimal fields come over the
- * wire as strings (pydantic v2's default JSON encoding for Decimal, which
- * preserves precision that a JS number would silently round) — never
- * parse them to `number` for display; only for arithmetic you actually
- * need, and even then prefer showing the server's own string back to the
- * user unless you have a specific reason to reformat it.
+ * Mirrors the FastAPI response models exactly (backend/app/api/routes/*).
+ * Decimal fields come over the wire as strings (pydantic v2's default JSON
+ * encoding for Decimal, which preserves precision a JS number would
+ * silently round) — never parse them to `number` for display; only for
+ * arithmetic you actually need.
  */
 
 export type CorporateActionType =
@@ -20,7 +18,7 @@ export type CorporateActionType =
 export interface CorporateAction {
   id: number;
   ticker: string;
-  ex_date: string; // YYYY-MM-DD
+  ex_date: string;
   type: CorporateActionType;
   ratio: string | null;
   cash_amount: string | null;
@@ -56,6 +54,107 @@ export interface Fundamental {
   confirmed_at: string | null;
 }
 
-export interface ApiError {
+export interface IndexSnapshot {
+  value: number | null;
+  change: number | null;
+  percentage: number | null;
+  low: number | null;
+  high: number | null;
+}
+
+export interface SectorSnapshot {
+  name: string;
+  symbol: string | null;
+  index_value: number | null;
+  change: number | null;
+  percentage: number | null;
+  turnover_today: number | null;
+}
+
+export interface MarketOverview {
+  status: string;
+  aspi: IndexSnapshot | null;
+  sectors: SectorSnapshot[];
+  fetched_at: string;
+  source: string;
+}
+
+export interface SecurityListItem {
+  ticker: string;
+  name: string;
+  cse_sector: string | null;
+  archetype: string | null;
+  last_close: string | null;
+  last_price_date: string | null;
+  turnover: string | null;
+  volume: number | null;
+  quarantined: boolean;
+}
+
+export interface PricePoint {
+  date: string;
+  close: string | null;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+  volume: number | null;
+  turnover: string | null;
+  adj_factor: string;
+}
+
+export interface CorporateActionSummary {
+  id: number;
+  ex_date: string;
+  type: string;
+  confirmed: boolean;
+  rejected: boolean;
+}
+
+export interface FundamentalSummary {
+  id: number;
+  period_end: string;
+  period_type: string;
+  statement_line: string;
+  value: string;
+  provenance_tier: ProvenanceTier;
+  confirmed: boolean;
+}
+
+export interface SecurityDetail {
+  ticker: string;
+  name: string;
+  isin: string | null;
+  cse_sector: string | null;
+  archetype: string | null;
+  listing_date: string | null;
+  delisting_date: string | null;
+  fiscal_year_end: string | null;
+  quarantined: boolean;
+  price_history: PricePoint[];
+  corporate_actions: CorporateActionSummary[];
+  fundamentals: FundamentalSummary[];
+  not_yet_built: string[];
+}
+
+export interface QuarantinedTicker {
+  ticker: string;
+  alert_type: string;
   detail: string;
+  raised_at: string;
+}
+
+export interface DataHealth {
+  securities_count: number;
+  price_rows: number;
+  latest_price_date: string | null;
+  price_feed_age_days: number | null;
+  securities_with_no_price: number;
+  corporate_actions_total: number;
+  corporate_actions_pending: number;
+  corporate_actions_confirmed: number;
+  corporate_actions_rejected: number;
+  fundamentals_total: number;
+  fundamentals_pending_confirmation: number;
+  fundamentals_confirmed: number;
+  quarantined: QuarantinedTicker[];
 }
