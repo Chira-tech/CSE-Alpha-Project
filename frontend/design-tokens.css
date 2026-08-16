@@ -1,0 +1,132 @@
+/*
+ * CSE Alpha Engine — design tokens
+ * Transcribed verbatim from UI & Experience Specification v1.0 §16.
+ * No component may reference a raw hex value — always these custom
+ * properties. See §2 for the rationale behind each colour choice (in
+ * particular: pine replaces green, clay replaces red, Risk-Off is slate
+ * not red, ochre is reserved exclusively for data-quality/system state).
+ */
+:root {
+  /* neutrals */
+  --canvas: #FAFBFA;
+  --canvas-sunken: #F4F6F5;
+  --surface: #FFFFFF;
+  --surface-sunken: #EDF1EF;
+  --border: #E2E8E5;
+  --border-strong: #C9D3CF;
+  --ink-1: #1F2A2E;
+  --ink-2: #4A5A5E;
+  --ink-3: #7A8A8E;
+  --ink-4: #A7B3B5;
+
+  /* brand */
+  --brand-900: #143430;
+  --brand-700: #1F4744;
+  --brand-500: #2C5F5D;
+  --brand-300: #6E9B8E;
+  --brand-100: #DCE8E4;
+  --brand-50: #F0F5F3;
+
+  /* directional — never the sole carrier of meaning; always paired with a
+     glyph (up/down/dash) and never used as a background over more than
+     ~5% of the viewport (§5.2) */
+  --pos-strong: #3F6E5A;
+  --pos: #4E7C6A;
+  --pos-bg: #E8F0EB;
+  --neg-strong: #96543D;
+  --neg: #A8674F;
+  --neg-bg: #F7EDE8;
+  --neutral: #7A8A8E;
+  --caution: #B08A3E;
+  --caution-bg: #FAF4E6; /* data quality ONLY — never market movement */
+
+  /* categorical (charts/segments), ordered by perceptual distance */
+  --cat-1: #2C5F5D;
+  --cat-2: #6E9B8E;
+  --cat-3: #46577A;
+  --cat-4: #8A6E8F;
+  --cat-5: #A8674F;
+  --cat-6: #B08A3E;
+  --cat-7: #7E8F92;
+  --cat-8: #C2CDC7;
+
+  /* semantic */
+  --zone-strong-accumulate: var(--pos-strong);
+  --zone-accumulate: var(--brand-300);
+  --zone-fair: #C2CDC7;
+  --zone-trim: #C9A15E;
+  --zone-exit: var(--neg);
+
+  --regime-risk-on: var(--pos);
+  --regime-transition: var(--caution);
+  --regime-risk-off: #7E8F92; /* slate, never red — a season, not an emergency */
+
+  --prov-reported: var(--brand-500);
+  --prov-derived: var(--brand-300);
+  --prov-estimated: var(--caution);
+  --prov-ai: #8A6E8F;
+  --prov-missing: var(--ink-4);
+
+  --thesis-intact: var(--pos);
+  --thesis-weakening: var(--caution);
+  --thesis-broken: var(--neg);
+
+  /* type */
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* space — 4px base, these values only (§4) */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  /* radius + elevation */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --e-raised: 0 1px 2px rgba(31, 42, 46, .05);
+  --e-float: 0 8px 24px rgba(31, 42, 46, .12);
+
+  /* motion */
+  --t-fast: 90ms;
+  --t-base: 180ms;
+  --t-value: 400ms;
+  --ease: cubic-bezier(.2, 0, .2, 1);
+}
+
+[data-theme="dark"] {
+  --canvas: #12181A;
+  --canvas-sunken: #151C1E;
+  --surface: #1A2225;
+  --surface-sunken: #151C1E;
+  --border: #2C3739;
+  --border-strong: #3C4A4D;
+  --ink-1: #E4EAE8;
+  --ink-2: #A8B6B8;
+  --ink-3: #7E8F92;
+  --ink-4: #5C6B6E;
+  --brand-300: #7FB3A5;
+  --brand-500: #3E8078;
+  --pos: #6FA891;
+  --pos-bg: #1C2E28;
+  --neg: #C98A70;
+  --neg-bg: #2E211C;
+  --caution: #C9A65E;
+}
+
+/* mandatory global rules — §3 (tabular figures), §4 (reduced motion) */
+.num, table td, table th {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
