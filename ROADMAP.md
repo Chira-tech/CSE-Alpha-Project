@@ -50,13 +50,20 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 145 unit tests passing, most against real captured API/PDF data
-      rather than invented fixtures
+- [x] 145 backend unit tests passing, most against real captured API/PDF
+      data rather than invented fixtures
+- [x] **New this session: confirm-queue frontend** (`frontend/`) — React +
+      TypeScript, two tables (corporate actions, fundamentals) wired to
+      the confirm APIs above, using the UI spec's design tokens. NOT the
+      Phase 2+ product frontend (screener, company file, etc.) — see
+      `frontend/README.md` for the distinction. End-to-end smoke tested:
+      backend served real seeded data over CORS to the dev server,
+      confirming a fundamentals draft promoted it and removed it from the
+      queue; confirming an incomplete rights-issue draft correctly
+      refused with the exact missing-field message.
 
 ## Not done yet — next in Phase 1
 
-- [ ] **Confirm-queue frontend** — both confirm APIs exist; there's no UI.
-      Usable via curl/httpie for now.
 - [ ] **Second data source for reconciliation** (PARAMETERS.md #5) — the
       internal adjusted-vs-raw check exists; an independent external
       cross-check does not.
@@ -84,6 +91,12 @@ consecutive days.
       (`CANONICAL_LABELS`) is verified against exactly one real filing —
       wording varies across companies and will need expanding as more
       real filings are processed
+- [ ] `npm audit` flags a moderate-severity vulnerability in Vite's dev
+      dependency chain (esbuild) affecting the dev server only, not
+      production builds — low priority for an internal tool only ever run
+      against localhost, but a `npm audit fix --force` (major Vite
+      upgrade) should happen before this ships anywhere less trusted than
+      a developer's own machine
 
 ## Explicitly deferred to later phases
 

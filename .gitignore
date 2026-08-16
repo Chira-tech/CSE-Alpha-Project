@@ -15,3 +15,13 @@ frontend/dist/
 *.log
 .coverage
 htmlcov/
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/*.tsbuildinfo
+
+# local sqlite dbs used for smoke-testing (real deployment is Postgres)
+*.db
+*.db-journal

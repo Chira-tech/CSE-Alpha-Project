@@ -52,7 +52,9 @@ backend/            Python service: ingestion, domain logic, API, jobs
     api/              FastAPI routes
   alembic/            DB migrations
   tests/
-frontend/            React + Tailwind (design tokens from the UI spec) — later phase
+frontend/            React + TypeScript confirm-queue tool (see frontend/README.md) —
+                      NOT the Phase 2+ product frontend, just enough UI to review and
+                      approve the ingestion drafts Phase 1 produces
 ```
 
 ## Getting started (backend)
@@ -72,6 +74,20 @@ local dev without Timescale installed, the hypertable creation step in the
 migration is skipped automatically (see `alembic/env.py`) and plain Postgres
 tables are used — fine for correctness testing, not for production price-series
 performance.
+
+## Getting started (confirm-queue frontend)
+
+Once the backend above is running:
+
+```bash
+cd frontend
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Open http://localhost:5173 — see `frontend/README.md` for what this tool
+is (and isn't).
 
 ## Why start here and not with a model
 

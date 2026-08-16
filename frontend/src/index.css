@@ -1,0 +1,248 @@
+/*
+ * Layered on top of ../design-tokens.css (UI & Experience Specification
+ * v1.0 §16). This is an internal review tool, not one of the nine
+ * product screens the UI spec designs in detail — but it follows the
+ * same laws (§1): calm by default, no pill buttons, restrained elevation,
+ * tabular numbers, no colour as the sole carrier of meaning.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: var(--s6) var(--s5);
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--s6);
+  margin-bottom: var(--s5);
+}
+
+.page-header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 var(--s2) 0;
+  color: var(--brand-700);
+}
+
+.subtitle {
+  max-width: 60ch;
+  color: var(--ink-2);
+  margin: 0;
+}
+
+.reviewer-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.reviewer-field input {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--ink-1);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--s2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--s5);
+}
+
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--s3) var(--s4);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.tab-active {
+  color: var(--brand-700);
+  border-bottom-color: var(--brand-500);
+}
+
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.queue-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  background: var(--canvas-sunken);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-table td {
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.queue-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.num,
+input.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.field-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.field-label {
+  font-size: 11px;
+  color: var(--ink-3);
+  min-width: 150px;
+}
+
+input[type="text"] {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s1) var(--s2);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  width: 130px;
+  background: var(--surface);
+  color: var(--ink-1);
+}
+
+.notes-cell {
+  max-width: 320px;
+}
+
+.notes-text {
+  margin: 0 0 var(--s2) 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.actions-cell {
+  white-space: nowrap;
+}
+
+button {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--ink-1);
+  margin-right: var(--s2);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-confirm {
+  border-color: var(--brand-500);
+  color: var(--brand-700);
+}
+
+.btn-confirm:hover:not(:disabled) {
+  background: var(--brand-50);
+}
+
+.btn-reject {
+  border-color: var(--neg);
+  color: var(--neg-strong);
+}
+
+.btn-reject:hover:not(:disabled) {
+  background: var(--neg-bg);
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--brand-500);
+  text-decoration: underline;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+}
+
+.corrected-badge {
+  display: inline-block;
+  margin-left: var(--s2);
+  font-size: 10px;
+  color: var(--caution);
+  border: 1px solid var(--caution);
+  border-radius: var(--r-sm);
+  padding: 1px var(--s1);
+}
+
+.snippet {
+  white-space: pre-wrap;
+  background: var(--canvas-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--s3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin: var(--s2) 0;
+}
+
+.error-text {
+  color: var(--neg-strong);
+  font-size: 12px;
+  margin: var(--s1) 0 0 0;
+}
+
+.muted {
+  color: var(--ink-3);
+}
