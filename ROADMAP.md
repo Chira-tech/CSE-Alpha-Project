@@ -8,10 +8,9 @@ consecutive days.
 - [x] Repo scaffold, config, DB session management
 - [x] Core schema (§9) as SQLAlchemy models: `securities`, `prices_daily`,
       `corporate_actions` (+ `notes`, `rejected_by`/`rejected_at`),
-      `fundamentals`, `float_data`, `macro_series`, `data_alerts`
-- [x] Alembic migrations (0001 initial schema, 0002 corporate_actions.notes,
-      0003 corporate_actions rejection columns; Timescale hypertable
-      optional/detected)
+      `fundamentals` (+ `source_snippet`, `confirmed_by`/`confirmed_at`),
+      `float_data`, `macro_series`, `data_alerts`
+- [x] Alembic migrations 0001–0004 (Timescale hypertable optional/detected)
 - [x] Corporate-action math: TERP, cumulative total-return adjustment
       factor series (§7, §P1) — pure functions, unit tested
 - [x] Coverage gate logic: Gate 1 liquidity, Gate 2 structural, Gate 3
@@ -23,61 +22,68 @@ consecutive days.
       (not GET), with a hard split between JSON-body and form-urlencoded
       endpoints, plus real 204-No-Content handling. Full trace in
       `backend/app/ingestion/README_ENDPOINTS.md`.
-- [x] Corporate-actions ingestion (`app/ingestion/corporate_actions_loader.py`):
-      fetches announcements, classifies categories, fetches detail with
-      the verified getAnnouncementById → getGeneralAnnouncementById
-      fallback, and writes DRAFT rows (confirmed_by always None).
-      **Now pairs the "initial disclosure" and "(DATES)" follow-up
-      announcements** CSE publishes for both rights issues and share
+- [x] Corporate-actions ingestion, pairing the "initial disclosure" and
+      "(DATES)" follow-up CSE publishes for both rights issues and share
       splits — verified against three independent real events (Asia Asset
-      Finance PLC rights issue, Lanka Tiles and First Capital Holdings
-      sub-divisions). The two action types use genuinely different ratio
-      conventions (rights: new-per-held; splits: before:after) and this
-      is now handled correctly, with its own tests, rather than guessed.
-- [x] Human-confirm workflow API (`app/api/routes/corporate_actions.py`):
-      list the pending queue, view/patch/confirm/reject a draft. Confirm
-      re-uses the same domain validation the adjustment-factor build
-      itself would apply (`app.domain.corporate_actions.price_ratio_for_event`),
-      so a bad draft fails loudly at review time, not at 3am in the
-      nightly batch. Reject is a distinct state from confirm (separate
-      `rejected_by`/`rejected_at` columns) — deliberately not a shared
-      status field, so nothing that filters on "is this confirmed" can
-      accidentally include a rejected row.
-- [x] EOD price ingestion (`app/ingestion/price_loader.py`) verified shape
-- [x] Nightly reconciliation job (§7): independent adjusted-vs-raw total
-      return cross-check with ticker quarantine on >0.5% mismatch
-- [x] Scheduler (`app/jobs/scheduler.py`): EOD snapshot (15:00),
-      reconciliation (15:05), corporate-actions scan (16:00)
-- [x] FastAPI app: health, securities, corporate-actions endpoints
-- [x] 103 unit tests passing, many against real captured API payloads
+      Finance PLC rights issue; Lanka Tiles and First Capital Holdings
+      sub-divisions, which use a genuinely different ratio convention from
+      rights issues and are now handled correctly rather than guessed).
+- [x] Human-confirm workflow API for corporate actions: list/patch/confirm
+      /reject, re-validating via the same domain logic the
+      adjustment-factor build itself uses.
+- [x] **New this session: financial-statement extraction.** Verified the
+      `getFinancialAnnouncement` endpoint live (a global recent-filings
+      feed, not per-company — see README_ENDPOINTS.md), downloaded a real
+      160-page annual report, and built a deterministic line-item
+      extractor (`app/domain/financial_statement_parsing.py` +
+      `app/ingestion/financial_pdf_extractor.py`) covering the
+      totals/subtotals of the balance sheet and income statement. This is
+      explicitly NOT the "LLM-assisted line-item mapping" §5 describes —
+      see PARAMETERS.md #9 — but it's a genuine, tested capability rather
+      than a placeholder.
+- [x] Fundamentals human-confirm API: promotes AI-assisted extractions to
+      Reported (§8), the workflow the `can_enter_valuation` domain rule
+      always assumed existed but that, until now, nothing implemented.
+- [x] EOD price ingestion, nightly reconciliation job (§7, internal
+      adjusted-vs-raw check only — see PARAMETERS.md #5 for what's still
+      missing), scheduler running EOD snapshot / reconciliation /
+      corporate-actions scan / financial-statement scan
+- [x] FastAPI app: health, securities, corporate-actions,
+      fundamentals endpoints
+- [x] 145 unit tests passing, most against real captured API/PDF data
       rather than invented fixtures
 
 ## Not done yet — next in Phase 1
 
-- [ ] **PDF financial-statement extraction → human confirmation queue**
-      (§5, §8 tier `A`) — no work done yet
-- [ ] **Confirm-queue frontend** — the API exists; there's no UI yet.
-      Fine for now (can be driven via curl/httpie), but not a real
-      workflow for daily use.
-- [ ] **Plain bonus issue / consolidation**: still unverified — no live
-      example of either was captured (sub-division/share-split, which
-      looks similar, IS now verified and handled correctly — see
-      README_ENDPOINTS.md). Treat any bonus_issue/consolidation draft as
-      needing full manual reconstruction from the source PDF until a real
-      example is found and the loader is corrected against it.
+- [ ] **Confirm-queue frontend** — both confirm APIs exist; there's no UI.
+      Usable via curl/httpie for now.
+- [ ] **Second data source for reconciliation** (PARAMETERS.md #5) — the
+      internal adjusted-vs-raw check exists; an independent external
+      cross-check does not.
+- [ ] **LLM-assisted extraction** (PARAMETERS.md #9) — needs an explicit
+      decision (API key, model, cost) before it's worth building; the
+      deterministic extractor covers a real but limited subset of line
+      items until then.
+- [ ] **Financial-statement historical backfill** — `getFinancialAnnouncement`
+      is a recent-filings feed only; a different, not-yet-identified
+      source is needed to backfill history to the Part O #2 target
+      (2015-01-01).
+- [ ] **Plain bonus issue / consolidation**: still unverified after ~40
+      tickers probed across two sessions — no live example of either was
+      found. Share splits (which looked similar) ARE now verified.
 - [ ] **`notifications`/`notifications/corporate` etc.** — exist in CSE's
-      frontend code as GET calls but returned 400 live; not used by
-      anything here, re-verify before building against them
-- [ ] Second data source integration (see PARAMETERS.md #5)
+      frontend code as GET calls but returned 400 live; unused, re-verify
+      before building against them
 - [ ] 30-day consecutive reconciliation pass — can't be "done," only
       observed once the system is running continuously against live data
-- [ ] Sustained-load testing of the cse.lk client's rate limiting (this
-      session made ~60 manually-paced requests total across two
-      verification passes, not a realistic load test)
-- [ ] The rights-issue/split pairing heuristic (`_pair_rows` in
-      corporate_actions_loader.py) assumes at most one overlapping event
-      per type per company — untested against a company with two
-      concurrent rights issues, for instance
+- [ ] Sustained-load testing of the cse.lk client's rate limiting
+- [ ] The rights-issue/split announcement-pairing heuristic
+      (`_pair_rows` in corporate_actions_loader.py) is untested against a
+      company with two concurrent events of the same type
+- [ ] The financial-statement extractor's canonical label list
+      (`CANONICAL_LABELS`) is verified against exactly one real filing —
+      wording varies across companies and will need expanding as more
+      real filings are processed
 
 ## Explicitly deferred to later phases
 

@@ -92,6 +92,66 @@ subset this system types; everything else is dropped by the lenient model.
 ```
 Individual trade prints for the day, most recent first.
 
+### `getFinancialAnnouncement` — POST form (any body, params ignored)
+Master Spec §5's "Company financials ... PDF table extraction" path.
+Confirmed by comparing responses for two different `symbol` values byte-
+for-byte identical — **the `symbol` parameter is silently ignored**. This
+is a GLOBAL feed of the ~180 most recent financial-statement filings
+platform-wide, not a per-company query; there is no visible pagination
+parameter, so it's unclear how far back "recent" goes (empirically, it
+captured filings clustered around a single day — plausibly a rolling
+window rather than a fixed count). Fine for event-driven "a new filing
+just landed" ingestion; **not usable for historical backfill** (Part O #2)
+without finding a different, per-company endpoint.
+```json
+{"reqFinancialAnnouncemnets": [{"id":52726,
+  "path":"cmt/upload_report_file/3399_1786715988377.pdf",
+  "manualDate":1774895400000,
+  "uploadedDate":"14 Aug 2026 07:29:48 PM",
+  "authorizedDate":"14 Aug 2026 08:16:24 PM",
+  "fileText":"Annual Report as at 31st March 2026",
+  "name":"JF PACKAGING PLC","symbol":"JFP"}]}
+```
+(Note the misspelling `reqFinancialAnnouncemnets` — that's the live API's
+actual key, not a typo introduced here.) Field semantics, verified by
+downloading the linked PDF and cross-checking its own printed dates:
+- `symbol` is the BARE ticker without the CSE board suffix ("JFP", not
+  "JFP.N0000") — client-side filtering must account for this.
+- `path` is relative to CDN base `https://cdn.cse.lk/`. The PDF is the
+  real, full filing (the annual report example was 18.6MB, 160 pages).
+- `manualDate` is the statement's period-end ("as at"/"for the year
+  ended" date) — confirmed against the PDF's own "As at 31st March 2026"
+  heading.
+- `authorizedDate` is when CSE actually published the filing — this is
+  the correct point-in-time `first_available_date` (§6), NOT
+  `manualDate`, which is exactly the period-end-as-availability-date
+  mistake §6 warns against. `uploadedDate` is an earlier internal staging
+  timestamp; used as a fallback when `authorizedDate` is absent (observed
+  null on at least one interim filing in the same batch).
+- `fileText` distinguishes annual reports from quarterly interims via
+  simple substring matching ("Annual Report" / "Interim ... Quarter") —
+  see `classify_period_type`; wording not matching either is skipped, not
+  guessed.
+
+### Extracting line items from the PDF
+`app.domain.financial_statement_parsing` + `app.ingestion.financial_pdf_extractor`
+implement a deterministic (not LLM-based — see their docstrings for why)
+extractor, verified against the real J.F. Packaging PLC filing above.
+Two findings worth knowing before extending it:
+1. `pdfplumber`'s `extract_tables()` is useless on these documents — no
+   ruled lines/borders, so it collapses each statement page into one text
+   blob plus a column of numbers disconnected from their labels.
+   `extract_text()`'s line-by-line output works far better.
+2. Statement lines sometimes carry a note-reference number between the
+   label and the values ("Revenue 5 4,504,801 ...") and sometimes don't
+   ("Total Assets 3,807,110 ..."), and a bare note ref ("5", "13.2") is
+   indistinguishable from a genuine small/decimal value by shape alone.
+   The reliable signal turned out to be the statement's own declared
+   column count (Sri Lankan comparative statements consistently print
+   exactly 4 value columns — Group/Company × this-year/last-year, stated
+   in their own "Notes Rs.000 Rs.000 Rs.000 Rs.000" header): one extra
+   leading numeric token beyond that count is the note reference.
+
 ## Announcements / corporate actions — the Phase-1-critical path
 
 ### `getAnnouncementByCompany` — POST form, `symbol=<TICKER>`
@@ -235,8 +295,35 @@ pairing heuristic and its limits.
    identified. Not used by any loader in this codebase; re-verify before
    building against them.
 5. **Rate limiting behaviour under sustained load** was not tested (this
-   session made ~60 requests total across two verification passes, well
+   session made ~80 requests total across three verification passes, well
    under any plausible limit, spaced by manual probing rather than the
    client's actual pacing). `CseClient`'s conservative defaults (§5: ≥2s
    between calls) should be kept until there's a reason to believe
    otherwise.
+6. **Financial-statement extraction covers a specific, verified subset**
+   (see CANONICAL_LABELS in `app.domain.financial_statement_parsing`):
+   the totals/subtotals typical of a Statement of Financial Position and
+   a Statement of Profit or Loss — total assets/equity/liabilities and
+   their current/non-current splits, revenue, gross/operating profit,
+   profit before tax, net income. It does NOT extract: cash flow
+   statement lines, balance-sheet line items below the totals (PPE,
+   receivables, etc. — deliberately, since those are usually
+   note-referenced and less load-bearing for a first pass), segment data,
+   or anything from a statement laid out with a different column count
+   than the 4-column Group/Company comparative format (see
+   `DEFAULT_EXPECTED_VALUE_COLUMNS`'s docstring). Verified against exactly
+   one real filing (J.F. Packaging PLC's FY2025/26 annual report) — label
+   wording that varies across other companies' statements (e.g. "Total
+   Shareholders' Funds" instead of "Total Equity" — one synonym for this
+   is already in CANONICAL_LABELS, but there will be others) will simply
+   fail to match rather than extract something wrong, which is the safe
+   failure mode but means real coverage across all ~286 companies is
+   unknown until more filings are processed.
+7. **No LLM-assisted extraction is wired in.** The deterministic extractor
+   above is a genuine, tested Phase-1 capability, but it is not what
+   Master Spec §5 ultimately describes. Actually calling an LLM to map
+   arbitrary statement line items needs an API key, a model/cost
+   decision, and a place to put that decision — none of which belongs in
+   this file being decided unilaterally. Track it as an open item
+   (PARAMETERS.md) rather than assuming it's "coming later" without a
+   decision behind it.

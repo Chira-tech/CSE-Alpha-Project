@@ -22,6 +22,7 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
+from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.price_loader import fetch_eod_prices, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
 from app.models.securities import Security
@@ -86,6 +87,34 @@ def _job_corporate_actions_scan() -> None:
         db.close()
 
 
+def _job_financial_statement_scan() -> None:
+    """§5: "Quarterly / annual — PDF table extraction -> LLM-assisted
+    line-item mapping -> mandatory human confirm queue." See
+    app.ingestion.financial_pdf_extractor's module docstring for what this
+    Phase-1 version actually does instead of the LLM step. The feed this
+    polls (getFinancialAnnouncement) returns the ~180 most recent filings
+    platform-wide with no per-company filter available server-side — see
+    README_ENDPOINTS.md — so this job fetches once and matches client-side
+    against every known ticker, same shape as the corporate-actions scan.
+    """
+    db = SessionLocal()
+    try:
+        tickers = _all_tickers(db)
+        with CseClient() as client:
+            try:
+                total_drafted = ingest_financial_statements_for_known_tickers(client, db, tickers)
+            except Exception:
+                logger.exception("financial statement scan failed")
+                return
+        if total_drafted:
+            logger.info(
+                "financial statements: drafted %d new AI-assisted fundamentals awaiting confirmation",
+                total_drafted,
+            )
+    finally:
+        db.close()
+
+
 def build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="Asia/Colombo")
 
@@ -107,6 +136,12 @@ def build_scheduler() -> BackgroundScheduler:
         _job_corporate_actions_scan,
         CronTrigger(hour=16, minute=0, day_of_week="mon-fri"),
         id="corporate_actions_scan",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_financial_statement_scan,
+        CronTrigger(hour=16, minute=30, day_of_week="mon-fri"),
+        id="financial_statement_scan",
         replace_existing=True,
     )
 

@@ -216,6 +216,31 @@ class AnnouncementDetail(_Lenient):
     votingResultingNumOfShares: str | int | None = None
 
 
+class FinancialAnnouncementRow(_Lenient):
+    """One filing from `getFinancialAnnouncement` — verified live 16 Aug
+    2026 (see README_ENDPOINTS.md). This endpoint returns a GLOBAL feed of
+    recent financial-statement filings across every listed company; the
+    `symbol` parameter passed in the request appears to be ignored (the
+    same global list came back regardless), so per-company filtering must
+    be done client-side on the returned `symbol` field, which is the BARE
+    ticker without the CSE board suffix (e.g. "JFP", not "JFP.N0000").
+    `path` is relative to the CDN base `https://cdn.cse.lk/`.
+    """
+
+    id: int
+    symbol: str
+    name: str | None = None
+    path: str
+    manualDate: int | None = None  # epoch millis — the statement's "as at" / period-end date
+    uploadedDate: str | None = None  # "14 Aug 2026 07:29:48 PM"
+    authorizedDate: str | None = None  # "14 Aug 2026 08:16:24 PM" — when CSE published it; use as first_available_date
+    fileText: str | None = None  # e.g. "Annual Report as at 31st March 2026"
+
+
+class FinancialAnnouncementResponse(_Lenient):
+    reqFinancialAnnouncemnets: list[FinancialAnnouncementRow]  # sic — typo is in the live API response key
+
+
 class AnnouncementDetailResponse(_Lenient):
     # Optional + defaulted: both detail endpoints were observed returning
     # `{}` (HTTP 200, no reqBaseAnnouncement key at all) when queried with

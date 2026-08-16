@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, Enum, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -15,9 +15,20 @@ class Fundamental(Base):
 
     THE non-negotiable rule of the whole data layer: every model must query
     on `first_available_date <= t`, never `period_end <= t`. Restatements
-    are inserted as a new `version`, the old row is never updated in place.
-    See app.domain.point_in_time for the query helper that enforces this
-    so callers can't accidentally bypass it.
+    (the COMPANY issuing a different number for a period it already
+    reported) are inserted as a new `version`, the old row is never
+    updated in place. See app.domain.point_in_time for the query helper
+    that enforces this so callers can't accidentally bypass it.
+
+    Promoting an AI-assisted extraction to Reported after human review is
+    a DIFFERENT operation from a restatement and does NOT bump `version`:
+    the company's number hasn't changed, only our confidence in having
+    captured it correctly has. `confirmed_by`/`confirmed_at` and
+    `provenance_tier` are updated in place by
+    app.api.routes.fundamentals.confirm_extraction;
+    `first_available_date` is never touched by confirmation either — it
+    must always reflect when the market could see the filing, never when
+    this system got around to reviewing it.
     """
 
     __tablename__ = "fundamentals"
@@ -36,3 +47,12 @@ class Fundamental(Base):
     restated_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    source_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """Master Spec §8: an AI-assisted figure "must show the source
+    snippet" in the UI. Populated by the PDF extractor with the text
+    surrounding the matched value so a reviewer can sanity-check it
+    without re-opening the source PDF."""
+
+    confirmed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    confirmed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
