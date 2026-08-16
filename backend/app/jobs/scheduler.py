@@ -26,6 +26,7 @@ from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range as ingest_cbsl_range
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
+from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
@@ -80,6 +81,29 @@ def _job_capture_market_internals() -> None:
         logger.info("market internals: wrote %d new observation(s)", written)
     except Exception:
         logger.exception("market internals capture failed")
+    finally:
+        db.close()
+
+
+def _job_backfill_index_history() -> None:
+    """Re-pull the ~1 year ASPI series from `chartData` and fill any gap.
+
+    Weekly, not daily: the same-day close already arrives via
+    `_job_capture_market_internals`, and existing rows are never
+    overwritten, so this only ever repairs holes.
+
+    That repair is the point. Prices accumulate forward and a missed day
+    is gone forever, but the index series can be reconstructed for up to
+    a year afterwards — so an outage that permanently damages the price
+    history leaves the ASPI series recoverable.
+    """
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            written = ingest_index_history(client, db)
+        logger.info("ASPI history backfill: wrote %d new close(s)", written)
+    except Exception:
+        logger.exception("ASPI history backfill failed")
     finally:
         db.close()
 
@@ -219,6 +243,14 @@ def build_scheduler() -> BackgroundScheduler:
         _job_cbsl_indicators,
         _colombo_cron(16, 45),
         id="cbsl_indicators",
+        replace_existing=True,
+    )
+    # Saturday: the week's sessions have all settled and nothing else is
+    # contending for the API.
+    scheduler.add_job(
+        _job_backfill_index_history,
+        CronTrigger(day_of_week="sat", hour=6, minute=0, timezone=MARKET_TZ),
+        id="index_history_backfill",
         replace_existing=True,
     )
     scheduler.add_job(

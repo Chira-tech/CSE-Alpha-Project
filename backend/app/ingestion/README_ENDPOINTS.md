@@ -121,8 +121,44 @@ depth:
 ```json
 [{"d":1784256360000,"v":21420.8,"pc":-0.1248}]
 ```
-(`d` epoch millis, `v` index value, `pc` percent change.) Useful for the
-Phase 5 macro engine; does **not** solve per-company price backfill.
+(`d` epoch millis, `v` index value, `pc` percent change.) Does **not**
+solve per-company price backfill. Consumed by
+`app.ingestion.index_history_loader`; the arithmetic and the evidence are
+in `app.domain.index_history`.
+
+**`v` IS NOT ALWAYS THE CLOSE.** The obvious reading is wrong on ~38% of
+days, by up to 0.55% (20-50 index points) — small enough to look right on
+a chart, large enough to corrupt any volatility or regime estimate.
+
+`d`'s time-of-day tells you which reading applies, and the two populations
+are far apart (08:16 vs 14:47-14:57 Colombo; the close is 14:30):
+
+| `d` stamped | what `v` is | evidence |
+|---|---|---|
+| after 14:30 | the official close | across 69 consecutive post-close pairs, `v[i]/v[i-1]-1` equals the published `pc[i]` to **0.00000pp** |
+| before 09:30 | a provisional/carried level | the same identity is off by a median of 0.082pp |
+
+`pc` is reliable in both cases — always measured against the prior
+official close — so the close is recoverable exactly:
+
+    close[i-1] = v[i] / (1 + pc[i]/100)
+
+Confirmed against an **independent institution**, not just internal
+consistency: CBSL prints the ASPI in its Daily Economic Indicators PDF.
+On early-stamped dates, CBSL agrees with the recovery to 0.00 points and
+disagrees with the raw `v`:
+
+| date | raw `v` | recovered | CBSL |
+|---|---|---|---|
+| 2026-08-05 | 21215.84 | **21166.94** | 21,166.94 |
+| 2026-08-04 | 21101.87 | **21082.08** | 21,082.08 |
+| 2026-07-28 | 21249.84 | **21229.14** | 21,229.14 |
+
+Two consequences. The newest point has no successor, so before 14:30 it
+yields no observation at all — correct, since the close does not exist
+yet. And because the series stays recoverable for a year, an outage that
+permanently damages the forward-only price history leaves ASPI history
+repairable (hence the weekly backfill job).
 
 ### `aspi/year` — POST, no params
 Year-to-date returns only, not a series:

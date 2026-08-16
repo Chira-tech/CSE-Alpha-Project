@@ -252,10 +252,32 @@ a dated, sourced manual observation is.
       version-controlled file. Needs a deliberate mapping exercise, not
       more API work. Blocks sector-relative percentiles (§12) and the
       valuation model router (§16).
-- [ ] **ASPI daily history (~1 year) is available and not yet captured**
-      via `chartData` `chartId=1&period=5`. Worth ingesting into
-      `macro_series` for the Phase 5 macro engine, though 1 year is well
-      short of what regime estimation wants.
+- [x] **ASPI daily history captured — 239 closes, Aug 2025 to Aug 2026**
+      (`python -m app.cli backfill-index`). The only genuine historical
+      series on the public CSE API. 1 year is still well short of what
+      regime estimation wants, but it is a year more than the forward-only
+      capture had.
+      - **Reading it naively would have been wrong on 38% of days.** The
+        feed's `v` is the official close only on points stamped after the
+        14:30 close; points stamped 08:16 carry a provisional level,
+        wrong by up to 0.55% (20-50 index points). The published `pc` is
+        reliable in both cases, so the close is recovered exactly as
+        `v[i]/(1+pc[i]/100)`.
+      - **Verified against an independent institution**, not just internal
+        consistency: CBSL prints the ASPI in its daily PDF and matched the
+        recovery to 0.00 points on every testable date while disagreeing
+        with the raw `v` by 19.79-48.90. Those CBSL figures are the
+        expected values in `tests/test_index_history.py`.
+      - `source` distinguishes the two readings
+        (`cse.lk:chartData` vs `cse.lk:chartData(pc)`) — 106 direct, 133
+        recovered — so a later reader can tell which rows rest on the
+        identity. Across the full year the two independent routes never
+        disagreed on a single post-close day.
+      - Scheduled weekly (Saturday 06:00 Colombo) rather than daily: the
+        same-day close already arrives via `capture-market`, and existing
+        rows are never overwritten, so the job only repairs gaps. **That
+        makes ASPI history self-healing for up to a year** — unlike
+        prices, where a missed day is gone for good.
 - [ ] **`allSecurityCode`** exposes an `active` flag per security — the
       only endpoint found that distinguishes inactive listings, relevant
       to §7's survivorship requirement. No delisting date, and not yet

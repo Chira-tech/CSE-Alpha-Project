@@ -20,6 +20,7 @@ from app.domain.macro_view import current_spread, record_observation
 from app.ingestion.bootstrap import run_bootstrap
 from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
+from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
@@ -128,6 +129,24 @@ def cmd_capture_market(args: argparse.Namespace) -> int:
         with CseClient() as client:
             written = ingest_market_internals(client, db)
         print(f"Wrote {written} new macro observation(s).")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_backfill_index(args: argparse.Namespace) -> int:
+    """Backfill ~1 year of ASPI closes from `chartData`.
+
+    The only genuine historical series on the public CSE API, and index-
+    only — this does not give per-company price history.
+    """
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            written = ingest_index_history(client, db)
+        print(f"Wrote {written} new ASPI close(s).")
+        if not written:
+            print("Nothing new — the series was already complete.")
     finally:
         db.close()
     return 0
@@ -269,6 +288,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cm = sub.add_parser("capture-market", help="store today's market internals into macro_series")
     p_cm.set_defaults(func=cmd_capture_market)
+
+    p_bi = sub.add_parser(
+        "backfill-index", help="backfill ~1 year of ASPI closes from chartData (index only)"
+    )
+    p_bi.set_defaults(func=cmd_backfill_index)
 
     p_rm = sub.add_parser(
         "record-macro",

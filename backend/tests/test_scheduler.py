@@ -28,6 +28,11 @@ EXPECTED_JOBS = {
     "cbsl_indicators": (16, 45),
 }
 
+# Deliberately NOT weekday-scheduled: it repairs gaps in a series that
+# stays reconstructable for a year, so it wants a quiet slot rather than
+# a trading-day one.
+WEEKLY_JOBS = {"index_history_backfill": ("sat", 6, 0)}
+
 
 @pytest.fixture()
 def scheduler():
@@ -42,7 +47,7 @@ def test_market_tz_is_colombo_not_the_host_zone():
 
 
 def test_all_expected_jobs_are_registered(scheduler):
-    assert {job.id for job in scheduler.get_jobs()} == set(EXPECTED_JOBS)
+    assert {job.id for job in scheduler.get_jobs()} == set(EXPECTED_JOBS) | set(WEEKLY_JOBS)
 
 
 @pytest.mark.parametrize(("job_id", "expected"), EXPECTED_JOBS.items())
@@ -73,6 +78,20 @@ def test_jobs_only_run_on_weekdays(scheduler, job_id):
     endpoint we're meant to treat gently (§5)."""
     fields = {f.name: str(f) for f in scheduler.get_job(job_id).trigger.fields}
     assert fields["day_of_week"] == "mon-fri"
+
+
+@pytest.mark.parametrize(("job_id", "expected"), WEEKLY_JOBS.items())
+def test_weekly_jobs_run_on_their_named_day_in_colombo_time(scheduler, job_id, expected):
+    """Same timezone trap as the weekday jobs: a trigger built without an
+    explicit tz would drift onto a different DAY, not just a different
+    hour, on a host west of Colombo."""
+    day, hour, minute = expected
+    job = scheduler.get_job(job_id)
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["day_of_week"] == day
+    assert fields["hour"] == str(hour)
+    assert fields["minute"] == str(minute)
+    assert job.trigger.timezone.key == MARKET_TZ.key
 
 
 def test_eod_snapshot_runs_after_the_market_closes(scheduler):
