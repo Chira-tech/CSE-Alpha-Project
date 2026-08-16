@@ -50,7 +50,7 @@ consecutive days.
       corporate-actions scan / financial-statement scan
 - [x] FastAPI app: health, securities, corporate-actions,
       fundamentals endpoints
-- [x] 257 backend unit tests passing, most against real captured API/PDF
+- [x] 276 backend unit tests passing, most against real captured API/PDF
       data rather than invented fixtures
 - [x] **Runnable web app.** SQLite dev mode (documented fallback —
       Postgres+Timescale remains the §51 production target, and the same
@@ -169,7 +169,13 @@ consecutive days.
       not the latest one — otherwise every rate change would silently
       rewrite history.
 
-### The T-bill rate is entered by hand, deliberately
+### The T-bill rate is now scraped, not entered by hand
+
+**Superseded by the CBSL scraper below.** The manual `record-macro`
+command still exists and is still the right tool for a series CBSL
+doesn't publish daily, but the risk-free rate no longer needs it.
+
+### (Historical note) The T-bill rate was entered by hand
 
 CBSL publishes on JavaScript-rendered pages, so automated collection is a
 real integration (§5 lists it as "API + scrape, release-calendar driven")
@@ -185,10 +191,34 @@ It lands in the same point-in-time series as everything else, carries
 hard-coded constant pretending to be live data would not be acceptable;
 a dated, sourced manual observation is.
 
-- [ ] **CBSL scraper** — needs a headless browser or their statistical
-      appendix files. Would also unlock policy rate, CCPI, reserves, FX
-      (§29's full variable set) and, critically, the risk-free rate that
-      §17.2's cost of equity is built on.
+### CBSL scraper — built
+
+- [x] **CBSL Daily Economic Indicators scraper.** The pages are Drupal
+      views rendered client-side, so the data isn't in the HTML — but the
+      view (`daily_economic_indicators` over `/en/views/ajax`) lists PDF
+      editions at a fully predictable URL, archived back to **2013**:
+      `daily_economic_indicators_YYYYMMDD_e.pdf`.
+- [x] Parses 13 series per edition: 91/182/364-day T-bill yields (primary
+      AND secondary market, kept separate — §17.2 wants the primary
+      auction), policy rate, SRR, AWPR, CCPI and NCPI year-on-year, and
+      USD/LKR TT buying/selling.
+- [x] **The risk-free rate is now real**, and it corrected the manual
+      estimate: the hero spread moved from −1.43pp (hand-entered 10.2%)
+      to −1.24pp (actual 10.01% primary-market 364-day yield).
+- [x] Honours CBSL's published `robots.txt` `Crawl-delay: 10` exactly —
+      not the 2s used for CSE. A full backfill to 2013 would take many
+      hours, and that is the correct trade, not something to tune around.
+- [x] Three dates per observation, all different and all real: the
+      T-bill columns are dated 1–2 days before the edition that carries
+      them, and the edition footer says "Published on" the day AFTER its
+      cover date. Only `first_available_date` gates point-in-time queries.
+
+- [ ] **Backfill to 2013 not yet run.** The machinery works; at 10s per
+      request it is a long unattended job. `python -m app.cli cbsl
+      --start 2013-01-01` would do it, ideally in chunks.
+- [ ] Other CBSL series in §29's set (reserves, M2b, private credit,
+      trade balance, tourist arrivals) are NOT in the daily PDF — they
+      come from monthly/weekly publications that need their own parsers.
 
 ## Not done yet — next in Phase 1
 

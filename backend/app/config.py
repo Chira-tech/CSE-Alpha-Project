@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     cse_circuit_breaker_reset_seconds: float = 300.0
     cse_max_retries: int = 4
 
+    # --- CBSL (robots.txt asks for Crawl-delay: 10) --------------------------------
+    # Not a self-chosen politeness figure like the CSE one: this is the
+    # site operator's own published request, so it is honoured exactly.
+    cbsl_crawl_delay_seconds: float = 10.0
+
     # --- Backtest / historical depth (Part O #2) ----------------------------------
     historical_backfill_start_date: str = "2015-01-01"
 

@@ -18,6 +18,8 @@ from app.db.session import SessionLocal
 from app.domain.macro import SERIES_TBILL_364D
 from app.domain.macro_view import current_spread, record_observation
 from app.ingestion.bootstrap import run_bootstrap
+from app.ingestion.cbsl_client import CbslClient
+from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
@@ -197,6 +199,48 @@ def cmd_show_spread(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cbsl(args: argparse.Namespace) -> int:
+    """Ingest CBSL Daily Economic Indicators — the source for the
+    risk-free rate, policy rate, inflation and FX (§29's variable set).
+
+    Paced at CBSL's own published Crawl-delay of 10 seconds, so a long
+    backfill genuinely takes a while. That is the site operator's
+    request, not a tunable.
+    """
+    end = dt.date.fromisoformat(args.end) if args.end else dt.date.today()
+    start = dt.date.fromisoformat(args.start) if args.start else end - dt.timedelta(days=args.days - 1)
+    weekdays = sum(1 for i in range((end - start).days + 1)
+                   if (start + dt.timedelta(days=i)).weekday() < 5)
+    print(
+        f"Ingesting CBSL editions {start} -> {end} ({weekdays} weekday(s)), "
+        f"paced at {settings.cbsl_crawl_delay_seconds:.0f}s per robots.txt "
+        f"— roughly {weekdays * settings.cbsl_crawl_delay_seconds / 60:.0f} min."
+    )
+
+    def progress(day, written, note):
+        print(f"  {day}  " + (f"{written} observation(s)" if note is None else note))
+
+    db = SessionLocal()
+    try:
+        with CbslClient() as client:
+            result = ingest_range(client, db, start, end, on_progress=progress)
+    finally:
+        db.close()
+    print(
+        f"Done. {result['editions']} edition(s), {result['observations']} observation(s), "
+        f"{result['not_published']} not published, {result['failed']} failed."
+    )
+    if result["unavailable"]:
+        print(
+            f"\n  {len(result['unavailable'])} date(s) could NOT be fetched and are of unknown "
+            "status — this host 404s transiently, so these are not confirmed absent:"
+        )
+        for day in result["unavailable"]:
+            print(f"    {day}")
+        print("  Re-run the same command to retry them.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_logging()
     parser = argparse.ArgumentParser(prog="app.cli", description="CSE Alpha Engine operator commands")
@@ -248,6 +292,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_rm.add_argument("--source", default="manual", help="provenance note, default 'manual'")
     p_rm.set_defaults(func=cmd_record_macro)
+
+    p_cb = sub.add_parser("cbsl", help="ingest CBSL daily economic indicators (T-bills, policy rate, CPI, FX)")
+    p_cb.add_argument("--days", type=int, default=5, help="how many days back from --end (default 5)")
+    p_cb.add_argument("--start", help="YYYY-MM-DD; overrides --days")
+    p_cb.add_argument("--end", help="YYYY-MM-DD, default today")
+    p_cb.set_defaults(func=cmd_cbsl)
 
     p_sp = sub.add_parser("spread", help="show the equity-earnings-yield-minus-T-bill spread (§29)")
     p_sp.set_defaults(func=cmd_show_spread)

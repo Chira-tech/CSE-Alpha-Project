@@ -122,6 +122,19 @@ It holds the §52 schedule (EOD snapshot 15:00 Colombo, reconciliation
 weekdays only) and otherwise idles. All times are anchored to the
 exchange's clock regardless of where the host machine is.
 
+### Macro data (the hero spread)
+
+```bash
+python -m app.cli capture-market          # CSE market internals (P/E, turnover, foreign flow)
+python -m app.cli cbsl --days 10          # CBSL T-bills, policy rate, CPI, FX
+python -m app.cli spread                  # §29's equity-yield-minus-T-bill spread
+```
+
+`cbsl` honours CBSL's published `robots.txt` `Crawl-delay: 10`, so it is
+deliberately slow — about 10 seconds per weekday fetched. Editions are
+archived back to 2013 if you want history: `--start 2013-01-01` (expect
+many hours; run it in chunks).
+
 ### Optional: populate the review queues
 
 The Review screen is empty until ingestion has scraped something. Corporate

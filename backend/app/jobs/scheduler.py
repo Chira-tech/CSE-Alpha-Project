@@ -12,6 +12,7 @@ the live API — see app/ingestion/README_ENDPOINTS.md.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,8 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
+from app.ingestion.cbsl_client import CbslClient
+from app.ingestion.cbsl_loader import ingest_range as ingest_cbsl_range
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.market_internals import ingest_market_internals
@@ -77,6 +80,35 @@ def _job_capture_market_internals() -> None:
         logger.info("market internals: wrote %d new observation(s)", written)
     except Exception:
         logger.exception("market internals capture failed")
+    finally:
+        db.close()
+
+
+def _job_cbsl_indicators() -> None:
+    """§5: "Policy rate, AWPLR, T-bill and bond yields ... CBSL ... API +
+    scrape, release-calendar driven."
+
+    Fetches a short trailing window rather than just today, because CBSL
+    publishes an edition a day AFTER its cover date and this host 404s
+    transiently — so a date that failed yesterday gets another go without
+    anyone noticing. Re-recording an edition already stored is a no-op
+    beyond the request itself.
+
+    Paced at CBSL's published Crawl-delay of 10s, so a 5-weekday window
+    costs about a minute.
+    """
+    db = SessionLocal()
+    try:
+        end = dt.date.today()
+        start = end - dt.timedelta(days=6)
+        with CbslClient() as client:
+            result = ingest_cbsl_range(client, db, start, end)
+        logger.info(
+            "CBSL: %d edition(s), %d observation(s), %d unavailable",
+            result["editions"], result["observations"], len(result["unavailable"]),
+        )
+    except Exception:
+        logger.exception("CBSL indicator ingestion failed")
     finally:
         db.close()
 
@@ -179,6 +211,14 @@ def build_scheduler() -> BackgroundScheduler:
         _job_capture_market_internals,
         _colombo_cron(15, 2),
         id="capture_market_internals",
+        replace_existing=True,
+    )
+    # After the CSE close, and late enough that CBSL's same-day edition
+    # (published the following morning) has had time to appear.
+    scheduler.add_job(
+        _job_cbsl_indicators,
+        _colombo_cron(16, 45),
+        id="cbsl_indicators",
         replace_existing=True,
     )
     scheduler.add_job(

@@ -25,6 +25,7 @@ EXPECTED_JOBS = {
     "capture_market_internals": (15, 2),
     "corporate_actions_scan": (16, 0),
     "financial_statement_scan": (16, 30),
+    "cbsl_indicators": (16, 45),
 }
 
 
