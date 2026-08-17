@@ -80,7 +80,7 @@ def upsert_eod_prices(db: Session, as_of: dt.date, rows: list[TradeSummaryRow]) 
         existing.open = _to_decimal(row.open)
         existing.high = _to_decimal(row.high)
         existing.low = _to_decimal(row.low)
-        existing.close = _to_decimal(row.closingPrice if row.closingPrice is not None else row.price)
+        existing.close = _to_decimal(_settled_close(row))
         existing.volume = row.sharevolume
         existing.turnover = _to_decimal(row.turnover)
         existing.trades = row.tradevolume
@@ -90,6 +90,35 @@ def upsert_eod_prices(db: Session, as_of: dt.date, rows: list[TradeSummaryRow]) 
 
     db.commit()
     return written
+
+
+def _settled_close(row: TradeSummaryRow) -> float | None:
+    """`closingPrice` is 0.0 — not null, literally the float zero —
+    while the market is still in Regular Trading, and only becomes the
+    genuine official close once the session settles. `row.closingPrice
+    if row.closingPrice is not None else row.price` therefore wrote a
+    settled-looking 0.00 close for every security whenever this ran
+    during market hours: `is not None` is true for 0.0, so the fallback
+    to `price` (the real live last-traded figure) never fired.
+
+    Caught live: ABAN.N0000 mid-session on 2026-08-17, marketStatus
+    "Regular Trading", returned closingPrice=0.0 alongside a genuine
+    price=1085.0/open=1085.0/high=1085.0/low=1085.0. Writing 0.00 as that
+    day's close is not a rounding error — it is a fabricated price that
+    would corrupt every return calculated across it, exactly what §6
+    exists to prevent, and it would have kept happening silently on every
+    ingest run made before the 14:30 close.
+
+    No CSE equity is genuinely priced at zero, so treating a literal 0.0
+    the same as a missing value and falling back to the live `price` is
+    safe rather than merely convenient — and this is deliberately the
+    live price, not a guess at the eventual close: callers scheduled
+    after the close (§52's 15:00 EOD snapshot) get the real settled
+    figure once the session has actually ended.
+    """
+    if row.closingPrice not in (None, 0, 0.0):
+        return row.closingPrice
+    return row.price
 
 
 def _to_decimal(value: float | None) -> Decimal | None:

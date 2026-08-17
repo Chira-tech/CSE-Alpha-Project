@@ -222,9 +222,42 @@ a dated, sourced manual observation is.
 
 ## Not done yet — next in Phase 1
 
-- [ ] **Second data source for reconciliation** (PARAMETERS.md #5) — the
-      internal adjusted-vs-raw check exists; an independent external
-      cross-check does not.
+- [x] **A genuine external second source, for TODAY'S close** —
+      `app/jobs/second_source_reconciliation.py`, `python -m app.cli
+      second-source-check`. TradingView carries a live quote for every
+      CSE line (`CSELK:<ticker>`, matching our own symbols exactly) via
+      `/global/scan` — the one path scanner.tradingview.com's own
+      robots.txt allows (`Disallow: /` with `Allow: /global/scan`); the
+      per-symbol quote page endpoint a browser actually calls is under
+      the blanket disallow and is deliberately NOT used. A mismatch
+      >0.5% (same threshold as the internal check, Part II §5.2) raises
+      the same `DataAlert`/quarantine mechanism.
+      - **Found a real, severe pre-existing bug while building this**:
+        `price_loader.upsert_eod_prices` wrote `close=0.00` for every
+        security whenever it ran during market hours. `closingPrice` is
+        the literal float `0.0` — not null — until the session settles,
+        and `row.closingPrice if row.closingPrice is not None else
+        row.price` treats `0.0` as present. Caught live: ABAN.N0000
+        mid-session, `marketStatus` "Regular Trading", closingPrice=0.0
+        alongside a genuine price=1085.0. Fixed to fall back to the live
+        `price` whenever `closingPrice` is `None` OR `0`; no CSE equity
+        is genuinely priced at zero, so this is safe, not merely
+        convenient. This was corrupting every mid-session capture,
+        silently, before today.
+      - **Only ever compares today.** TradingView's own chart renders no
+        historical candles for CSE symbols at any timeframe — live quote
+        only — so `check_against_second_source` raises
+        `StaleComparisonError` rather than silently comparing a past
+        close against a live figure. Found by making exactly that
+        mistake in a manual test run: comparing a 3-day-stale stored
+        close against today's live quote flagged 181 of 283 tickers as
+        "mismatched", every one spurious.
+      - Scheduled at 15:07 Colombo, after both the EOD snapshot and the
+        internal reconciliation — running it mid-session compares two
+        still-moving live quotes and produces drift, not a real signal.
+      - **Does not solve independent historical depth.** See
+        PARAMETERS.md #5: live capture risk is materially reduced,
+        historical backtest risk is not.
 - [ ] **LLM-assisted extraction** (PARAMETERS.md #9) — needs an explicit
       decision (API key, model, cost) before it's worth building; the
       deterministic extractor covers a real but limited subset of line

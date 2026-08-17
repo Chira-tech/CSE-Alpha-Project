@@ -22,6 +22,7 @@ from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.archetype_loader import apply_archetype_proposals
+from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
@@ -116,9 +117,9 @@ def cmd_enrich(args: argparse.Namespace) -> int:
             f"{result['failed']} failed."
         )
         print(
-            "Note: cse_sector and archetype are NOT set — neither exists on the CSE API, and "
-            "archetype drives the valuation model router, so it needs a deliberate mapping "
-            "(Master Spec Appendix P2)."
+            "Note: this command does not touch cse_sector or archetype. Run `sectors` for the "
+            "exchange's own GICS classification and `archetypes` to propose §16 valuation "
+            "archetypes from it (Appendix P2 — every proposal still needs a human)."
         )
     finally:
         db.close()
@@ -178,6 +179,34 @@ def cmd_archetypes(args: argparse.Namespace) -> int:
                 print(f"    {ticker:14} {reason}")
             if len(review) > args.show_review:
                 print(f"    ... and {len(review) - args.show_review} more (--show-review to see more)")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_second_source_check(args: argparse.Namespace) -> int:
+    """Cross-check today's captured closes against TradingView (Part II
+    §5.2) — the first genuinely external second source in this system,
+    distinct from the internal adj_factor reconciliation. TradingView
+    carries a live quote only, no history, so this can ONLY compare
+    today's date — `--date` exists for explicitness, not to backdate."""
+    db = SessionLocal()
+    try:
+        as_of = args.date or dt.date.today()
+        tickers = [t for (t,) in db.execute(select(Security.ticker)).all()]
+        try:
+            summary = check_against_second_source(db, tickers, as_of=as_of)
+        except StaleComparisonError as exc:
+            print(f"Refused: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"Checked {summary['checked']} ticker(s) with a stored close for {as_of}: "
+            f"{summary['matched']} matched, {summary['mismatched']} mismatched."
+        )
+        if summary["mismatched"]:
+            print(f"  {summary['mismatched']} ticker(s) newly quarantined — see data_alerts.")
+        if summary["no_quote"]:
+            print(f"  {summary['no_quote']} had no TradingView coverage (not a mismatch).")
     finally:
         db.close()
     return 0
@@ -411,6 +440,13 @@ def main(argv: list[str] | None = None) -> int:
     p_at.add_argument("--overwrite-manual", action="store_true")
     p_at.add_argument("--show-review", type=int, default=20)
     p_at.set_defaults(func=cmd_archetypes)
+
+    p_ss = sub.add_parser(
+        "second-source-check",
+        help="cross-check today's closes against TradingView (Part II §5.2)",
+    )
+    p_ss.add_argument("--date", type=dt.date.fromisoformat, default=None)
+    p_ss.set_defaults(func=cmd_second_source_check)
 
     p_bp = sub.add_parser(
         "backfill-prices",

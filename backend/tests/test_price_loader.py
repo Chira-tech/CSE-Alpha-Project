@@ -70,6 +70,29 @@ def test_upsert_writes_close_from_closing_price_field(db_session):
     assert float(stored.adj_factor) == 1.0  # untouched by this loader, by design
 
 
+def test_a_zero_closing_price_during_market_hours_falls_back_to_the_live_price(db_session):
+    """Real row, captured live: ABAN.N0000 mid-session on 17 Aug 2026,
+    marketStatus "Regular Trading", closingPrice=0.0 (not yet settled)
+    alongside a genuine price=1085.0. closingPrice=0.0 is not None, so a
+    naive `is not None` fallback wrote 0.00 as the day's close for EVERY
+    security whenever this ran before the 14:30 close — a fabricated
+    price, not a rounding error, and it would have kept happening
+    silently on every run made during market hours."""
+    db_session.add(Security(ticker="ABAN.N0000", name="Abans Electricals PLC"))
+    db_session.commit()
+
+    from app.ingestion.schemas import TradeSummaryRow
+    from app.models.prices import PriceDaily
+
+    mid_session_row = dict(REAL_TRADE_SUMMARY_ROW, closingPrice=0.0, price=1085.0)
+    row = TradeSummaryRow.model_validate(mid_session_row)
+    upsert_eod_prices(db_session, dt.date(2026, 8, 17), [row])
+
+    stored = db_session.get(PriceDaily, ("ABAN.N0000", dt.date(2026, 8, 17)))
+    assert float(stored.close) == 1085.0
+    assert stored.close != 0
+
+
 def test_upsert_is_idempotent_on_rerun(db_session):
     db_session.add(Security(ticker="ABAN.N0000", name="Abans Electricals PLC"))
     db_session.commit()

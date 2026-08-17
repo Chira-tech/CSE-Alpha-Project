@@ -28,6 +28,7 @@ from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.company_price_history_loader import backfill_company_price_history
+from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
@@ -228,6 +229,30 @@ def _job_nightly_reconciliation() -> None:
         db.close()
 
 
+def _job_second_source_check() -> None:
+    """Part II §5.2: the first genuinely external second-source check in
+    this system, distinct from `_job_nightly_reconciliation`'s internal
+    adj_factor consistency test. Scheduled after both the EOD snapshot
+    and the internal reconciliation, once today's close is genuinely
+    settled — running this mid-session compares two live, still-moving
+    quotes and produces spurious drift instead of a real discrepancy
+    signal, which is exactly the mistake a manual run made before this
+    job existed.
+    """
+    db = SessionLocal()
+    try:
+        tickers = _all_tickers(db)
+        summary = check_against_second_source(db, tickers, as_of=dt.datetime.now(MARKET_TZ).date())
+        if summary["mismatched"]:
+            logger.warning("second-source check raised %d alert(s)", summary["mismatched"])
+    except StaleComparisonError:
+        logger.exception("second-source check: as_of was not today — should not happen when scheduled")
+    except Exception:
+        logger.exception("second-source check failed")
+    finally:
+        db.close()
+
+
 def _job_corporate_actions_scan() -> None:
     """Not in the §52 table under this name, but implements "Corporate
     actions (splits, rights, bonus, dividends) — Event-driven — Scrape +
@@ -356,6 +381,12 @@ def build_scheduler() -> BackgroundScheduler:
         _job_nightly_reconciliation,
         _colombo_cron(15, 5),
         id="nightly_reconciliation",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_second_source_check,
+        _colombo_cron(15, 7),
+        id="second_source_check",
         replace_existing=True,
     )
     # §5: announcements are "event-driven" in principle; polled daily here
