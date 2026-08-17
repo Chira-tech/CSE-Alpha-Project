@@ -821,6 +821,76 @@ part of it genuinely isn't untouched anymore.
         not just that it runs; `test_stationarity_view.py`;
         `test_market_stationarity_api.py`). Full suite: 831 passed.
 
+### §30 step 2 (partial) — ARDL bounds testing, the disclosed default estimator
+
+- [x] **The ARDL-bounds-testing HALF of §30 step 2 is live** —
+      `app.domain.ardl_cointegration` (pure) + `app.domain.ardl_
+      cointegration_view` (wired to real `macro_series` LEVEL data,
+      forward-filled across mismatched publication cadences — see that
+      module's own docstring), exposed on new `GET /market/cointegration?
+      dependent_series_id=...&independent_series_id=...`. Real
+      `statsmodels.tsa.ardl.UECM`/`.bounds_test()` throughout — the
+      Pesaran-Shin-Smith bounds test's critical values come from
+      simulation tables this module correctly does not reimplement.
+      §30 step 2's own text names ARDL as "THE DEFAULT" for this
+      project's own mixed I(0)/I(1), short-sample data — not a
+      substitute for the Johansen/VECM ("all I(1)") or plain-VAR
+      ("no cointegration") branches it also names, both of which remain
+      genuinely unbuilt (see below).
+      - **Forward-filled alignment across real cadences, not exact-date
+        intersection.** The dependent series (e.g. the ASPI, published
+        daily) and an independent series (e.g. the 364-day T-bill yield,
+        published on auction days) don't share observation dates;
+        intersecting on exact dates would throw away nearly all of the
+        daily series' real information. Instead every dependent-series
+        date gets the independent series' own most-recently-published
+        value as of that date — the same point-in-time "as of" principle
+        `app.domain.macro_engine_view`/`app.domain.macro_view` already
+        use for their own cross-cadence pairing, reused rather than
+        reinvented, and verified with a dedicated test seeding a daily
+        series against a weekly one and checking every date still gets a
+        real aligned value.
+      - **VALIDATED against §30 step 2's own worked example, not just a
+        synthetic series that happens to run.** `error_correction_half_
+        life`'s formula (`ln(0.5)/ln(1+ect_coefficient)`) is checked
+        directly against §30's own literal text — an ECT of −0.28 must
+        produce "a half-life of roughly 2.1 months" — the same
+        discipline `test_regime_classification.py`'s §32 worked-example
+        test already applies.
+      - **A real bug, found by a real test, not reasoned about in the
+        abstract.** The half-life formula's valid domain is `-1 <
+        ect_coefficient < 0` (needs `1 + ect_coefficient > 0` for `ln()`
+        to be defined) — the first version of this guard was written as
+        `-2 < ect_coefficient < 0`, which looked plausible but is
+        mathematically wrong. Caught immediately by `test_correctly_
+        identifies_a_known_cointegrated_pair` failing with a real
+        `ValueError` on a real fitted coefficient of `-1.103...`, not by
+        inspection. Fixed in both the source and the test file (which now
+        explicitly covers -1.0/-1.5/-2.5 as real "overshooting" cases
+        that correctly report `None` rather than raising).
+      - **`None`, never a forced conclusion, on real gaps**: too few
+        aligned observations (below `MIN_OBSERVATIONS = 50`, a real,
+        disclosed floor higher than `app.domain.stationarity`'s or
+        `app.domain.sector_sensitivity`'s own — ARDL/UECM eats degrees of
+        freedom fast with multiple lags), an independent series entirely
+        absent from `macro_series`, or a genuine `statsmodels` fit
+        failure all return `result=None` with a named `warnings` entry —
+        never a fabricated statistic.
+      - **Named precisely what remains unbuilt**: Johansen cointegration/
+        VECM (the "all I(1)" branch of step 2), VAR in first differences
+        (the "no cointegration" branch), and step 3 (impulse response/
+        FEVD/Toda-Yamamoto causality — needs a fitted cointegration model
+        from whichever step-2 branch actually applies) are all real,
+        separate, genuinely unbuilt pieces — not folded into a false
+        claim that "step 2" or "the macro engine" is complete.
+      - 18 new tests (`test_ardl_cointegration.py`'s validation against a
+        known-cointegrated synthetic pair and known-independent random
+        walks, the same "check against a series with a KNOWN true
+        property" discipline as every other statistical module this
+        phase; `test_ardl_cointegration_view.py`'s real-cadence-alignment
+        and real-database round-trip; `test_market_cointegration_api.py`).
+        Full suite: 849 passed.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —
@@ -1761,10 +1831,14 @@ SOTP, relative valuation, asset-based, scenarios, triangulation, margin
 of safety, the price ladder — §17-26) are no longer in this list — see
 above. **Macro/ARDL (§29-34) is also no longer a single untouched
 block** — §31's regime classifier, §33's sector sensitivity matrix,
-§34's national project register, and §30 step 1's stationarity/break
-testing are all live (see those entries above); only §30 steps 2-3 and 5
-(Johansen/VECM/ARDL bounds testing, impulse response/Granger causality,
-the event study) remain genuinely unbuilt within Part G, named precisely
+§34's national project register, §30 step 1's stationarity/break testing,
+and the ARDL-bounds-testing HALF of §30 step 2 (this project's own
+disclosed default estimator for its mixed I(0)/I(1), short-sample data)
+are all live (see those entries above); only the Johansen/VECM branch and
+the plain-VAR-in-differences branch of §30 step 2, step 3 (impulse
+response/FEVD/Toda-Yamamoto causality — needs a fitted cointegration
+model from whichever step-2 branch actually applies), and step 5 (the
+event study) remain genuinely unbuilt within Part G, named precisely
 rather than left as one vague "macro/ARDL" line item. Building the
 still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,

@@ -46,6 +46,7 @@ from app.domain.macro_view import (
     series_history,
     spread_history,
 )
+from app.domain.ardl_cointegration_view import ardl_bounds_test_for
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.domain.stationarity_view import stationarity_for_series
 from app.ingestion.cse_client import CseClient, ShapeChangedError
@@ -375,6 +376,79 @@ def stationarity(series_id: str, db: Session = Depends(get_db)) -> StationarityO
         zivot_andrews=_out(assessment.zivot_andrews) if assessment else None,
         consensus=assessment.consensus if assessment else None,
         note=assessment.note if assessment else None,
+        warnings=list(view.warnings),
+    )
+
+
+class BoundsTestCriticalValueOut(BaseModel):
+    lower: Decimal
+    upper: Decimal
+
+
+class BoundsTestResultOut(BaseModel):
+    dependent_name: str
+    independent_names: list[str]
+    statistic: Decimal
+    critical_values: dict[str, BoundsTestCriticalValueOut]
+    conclusion: str
+    ect_coefficient: Decimal | None
+    half_life_periods: Decimal | None
+    observation_count: int
+    note: str
+
+
+class CointegrationOut(BaseModel):
+    """§30 step 2's ARDL-bounds-testing default estimator, live, on real
+    `macro_series` LEVEL data — see `app.domain.ardl_cointegration_view`
+    for exactly how two series published on different real-world
+    cadences (e.g. ASPI daily, the T-bill yield on auction days) get
+    aligned before the fit runs. `result` is `None` — never a fabricated
+    or forced conclusion — whenever too few real aligned observations
+    exist or the underlying fit genuinely fails; `warnings` names why."""
+
+    dependent_series_id: str
+    independent_series_ids: list[str]
+    as_of: dt.date
+    aligned_observation_count: int
+    result: BoundsTestResultOut | None
+    warnings: list[str]
+
+
+@router.get("/cointegration", response_model=CointegrationOut)
+def cointegration(
+    dependent_series_id: str,
+    independent_series_id: str,
+    db: Session = Depends(get_db),
+) -> CointegrationOut:
+    """Single independent series for now — a query-string list is the
+    natural extension once a caller actually needs a multi-variate bounds
+    test; §30 step 2's own worked description is a two-series relationship
+    (market level vs. one macro level), so this starts there rather than
+    building unused generality ahead of a real need."""
+    view = ardl_bounds_test_for(db, dependent_series_id, [independent_series_id])
+    result_out = None
+    if view.result is not None:
+        r = view.result
+        result_out = BoundsTestResultOut(
+            dependent_name=r.dependent_name,
+            independent_names=list(r.independent_names),
+            statistic=r.statistic,
+            critical_values={
+                pct: BoundsTestCriticalValueOut(lower=band["lower"], upper=band["upper"])
+                for pct, band in r.critical_values.items()
+            },
+            conclusion=r.conclusion,
+            ect_coefficient=r.ect_coefficient,
+            half_life_periods=r.half_life_periods,
+            observation_count=r.observation_count,
+            note=r.note,
+        )
+    return CointegrationOut(
+        dependent_series_id=view.dependent_series_id,
+        independent_series_ids=list(view.independent_series_ids),
+        as_of=view.as_of,
+        aligned_observation_count=view.aligned_observation_count,
+        result=result_out,
         warnings=list(view.warnings),
     )
 

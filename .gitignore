@@ -24,6 +24,8 @@ frontend/*.tsbuildinfo
 
 # local sqlite dbs used for smoke-testing (real deployment is Postgres)
 *.db
+*.sqlite
+*.sqlite3
 *.db-journal
 
 # isolated git worktrees created for parallel agent sessions
