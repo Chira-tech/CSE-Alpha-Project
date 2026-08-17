@@ -22,14 +22,30 @@ therefore the first of §18-22's models that can run against a real filing
 the day book value, ROE and Ke are all present for one security — no
 further extraction work required.
 
-DDM (19.1, 19.2), BY CONTRAST, STAYS UNWIRED FOR A DIFFERENT REASON.
-Dividend history is not extracted anywhere in this system — no ingestion
-source pulls per-share dividend declarations (this is a genuine gap, not
-the cash-flow-statement gap PARAMETERS.md #9 tracks; dividends are
-typically disclosed in a company's dividend announcement, not the
-financial statements this project's PDF extractor targets). Both DDM
-functions are built and tested against caller-supplied dividend/payout
-inputs, ready for that ingestion work, not wired to a live source yet.
+DDM (19.1), UPDATE: `gordon_growth_value` (below) IS NOW WIRED — TO A
+REAL, IF CURRENTLY EMPTY, SOURCE, WHICH IS A DIFFERENT CLAIM FROM
+UNWIRED. The statement above was true when this module was first
+written and is now precisely half corrected. `app.ingestion.corporate_
+actions_loader` genuinely scrapes per-share cash dividend declarations
+from real CSE announcements into `CorporateAction` rows of type
+`DIVIDEND_CASH` (`ex_date`, `cash_amount`) — that ingestion gap is
+closed. What is NOT closed, and is the reason a caller will see `None`
+for essentially every ticker today: §8/§9 treats a `CorporateAction` as
+"the highest-consequence data in the system" and the loader never
+auto-confirms one (`confirmed_by`/`confirmed_at` start `None`); only a
+human confirm-queue workflow, not yet built, sets them. So the live dev
+database has zero CONFIRMED dividend rows for any ticker right now, even
+though the scraped drafts themselves are real — a workflow gap, not a
+data-extraction gap, and a genuinely different kind of "unwired" from
+the one this paragraph used to describe. See
+`app.domain.valuation_view.gordon_growth_ddm_for` for the live wiring
+(trailing-twelve-month D0, D1 = D0(1+g) using this module's own
+`_steady_state_growth` convention) and its own docstring for exactly
+what "real but empty" means. §19.2's multi-stage DDM (`compute_multi_
+stage_ddm`, below) is UNCHANGED by this: it still needs a multi-year
+EPS/payout forecast path no source in this system supplies, a design
+gap distinct from the §19.1 data gap that's now closed, so it remains
+built and tested only against caller-supplied inputs.
 
 `justified_price_to_book` (§19.3 and, identically, §20.2) lives in
 `app.domain.relative_valuation` rather than being duplicated here — see

@@ -1163,6 +1163,81 @@ a dated, sourced manual observation is.
       `tsc --noEmit`, a successful production build, and the dev server
       loaded in a real browser with zero console errors post-upgrade.
       `npm audit`: 0 vulnerabilities (was 2).
+- [x] **§19.1 Gordon-growth DDM wired to a real, if currently empty,
+      confirmed-dividend pipeline — the fourth live §18-26 number, and a
+      genuinely different kind of "real but empty" from anything wired
+      so far.** `dividend_residual_income.py`'s own module docstring used
+      to say "dividend history is not extracted anywhere in this
+      system" — that was true when it was written and is now precisely
+      half corrected. `app.ingestion.corporate_actions_loader` already
+      scrapes real per-share cash dividend declarations from real CSE
+      announcements into `CorporateAction` rows (`ex_date`, `cash_
+      amount`, type `DIVIDEND_CASH`) — that ingestion gap was closed
+      back in Phase 1. What was never wired is the LAST mile: §8/§9
+      treats a `CorporateAction` as "the highest-consequence data in the
+      system" and the loader never auto-confirms one (`confirmed_by`/
+      `confirmed_at` start `None`, always); only a human confirm-queue
+      workflow, not yet built, sets them. So the live dev database has
+      zero CONFIRMED dividend rows for any ticker today — expected, not
+      a bug, and the reason `gordon_growth_ddm.result` will read `None`
+      for essentially every real ticker until that workflow exists.
+      - New `app.domain.valuation_view._confirmed_dividends_as_of`:
+        §8/§9's provenance gate applied to `CorporateAction` rather than
+        `Fundamental` — `confirmed_by is not None` (a binary state, this
+        table has no AI-assisted tier the way `Fundamental` does) rather
+        than a `can_enter_valuation` tier check, point-in-time visible
+        via `ex_date <= as_of` (this table has no `first_available_date`
+        column to run through `fundamentals_as_of`, but gating on
+        `ex_date` is conservative in the same direction — CSE announces
+        a dividend before the ex-date, so this can only make a row
+        visible as late as or later than the market itself priced it in,
+        never earlier).
+      - New `_trailing_dividend_per_share`: sums `cash_amount` across
+        every confirmed dividend whose `ex_date` falls in the trailing
+        twelve months of `as_of`, deliberately a TTM sum rather than
+        just the single most recent payment — a CSE company routinely
+        pays an interim AND a final dividend in the same year, and
+        picking only "the most recent one" would over- or under-state
+        the annual rate purely depending on where `as_of` falls in the
+        cycle. Returns `None` (not zero) when no confirmed dividend
+        falls in that window, even if older confirmed rows exist further
+        back — a >12-month-old payment is stale as a "what does this
+        company currently pay" estimate, and using it unqualified would
+        misrepresent stale history as current, exactly what §15 warns
+        the whole engine exists never to do.
+      - New `gordon_growth_ddm_for` calls the real, already-tested
+        `app.domain.dividend_residual_income.gordon_growth_value` (§19.1,
+        `V0 = D1 / (Ke - g)`), reusing `cost_of_equity_for` for Ke and
+        this module's own existing `_steady_state_growth(risk_free_
+        rate)` for `g` — no new policy number invented. D1 is derived
+        from the real trailing D0 via Gordon growth's own `D1 = D0(1+g)`
+        identity (this system has no dividend-growth forecast any more
+        than it has an ROE-improvement forecast — same absence
+        `_steady_state_growth`'s docstring already explains), not a
+        second invented growth assumption layered on top of the first.
+        `check_gordon_growth_eligibility` (the five-year-payout-
+        stability/maturity gate) is deliberately not run — this system
+        tracks neither input yet, and the result is informational only
+        regardless, so there is no eligibility gate left to skip.
+      - Wired into `CompanyValuationSummary.gordon_growth_ddm` and `GET
+        /valuation/{ticker}` as `gordon_growth_ddm` — informational only,
+        same status as `current_period_fcff` and `wacc`, NEVER a
+        triangulation anchor: a Gordon-growth DDM built on zero confirmed
+        dividend history in production is not ready to move a price
+        ladder, the same reasoning that keeps the other two informational.
+      - 12 new tests in `test_valuation_view.py`: the §8 confirm/point-
+        in-time gate on `CorporateAction` rows (confirmed-but-future-
+        ex-date correctly excluded, unconfirmed row correctly excluded,
+        ordering), the TTM summation logic on hand-worked numbers
+        (single payment, interim+final summed, a stale payment outside
+        the window correctly excluded even with newer confirmed history
+        nearby), and the full `gordon_growth_ddm_for` wiring: a
+        hand-worked single-dividend case (D0=2.00, g=0.05, Ke=0.15 →
+        D1=2.10, V0=21.0), a hand-worked two-dividend case (D0=2.50 →
+        V0=26.25), the "zero confirmed dividends" named-reason case (the
+        expected common case today), the unconfirmed-row §8 regression,
+        the stale-history case, and the missing-Ke case. Full suite: 688
+        passed.
 
 ## Explicitly deferred to later phases
 

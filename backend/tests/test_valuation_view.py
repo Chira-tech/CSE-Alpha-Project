@@ -17,15 +17,19 @@ from app.domain import valuation_view
 from app.domain.cost_of_equity import CostOfEquityResult
 from app.domain.valuation_view import (
     _confirmable_line_items,
+    _confirmed_dividends_as_of,
     _latest_shares_issued,
     _steady_state_growth,
+    _trailing_dividend_per_share,
     current_period_fcff_for,
+    gordon_growth_ddm_for,
     justified_price_to_book_for,
     residual_income_for,
     valuation_summary_for,
     wacc_for,
 )
-from app.models.enums import ProvenanceTier
+from app.models.corporate_actions import CorporateAction
+from app.models.enums import CorporateActionType, ProvenanceTier
 from app.models.float_data import FloatData
 from app.models.fundamentals import Fundamental
 from app.models.securities import Security
@@ -101,6 +105,38 @@ def _seed_fcff_fundamentals(db, ticker="SWAD.N0000"):
             value=value, provenance_tier=ProvenanceTier.REPORTED,
         )
         for line, value in lines.items()
+    )
+    db.commit()
+
+
+def _seed_confirmed_dividend(
+    db, ticker="COMB.N0000", ex_date=dt.date(2022, 1, 15), cash_amount=Decimal("2.00")
+):
+    db.add(
+        CorporateAction(
+            ticker=ticker,
+            ex_date=ex_date,
+            type=CorporateActionType.DIVIDEND_CASH,
+            cash_amount=cash_amount,
+            confirmed_by="test",
+            confirmed_at=dt.datetime(2022, 1, 20, tzinfo=dt.timezone.utc),
+        )
+    )
+    db.commit()
+
+
+def _seed_unconfirmed_dividend(
+    db, ticker="COMB.N0000", ex_date=dt.date(2022, 1, 15), cash_amount=Decimal("2.00")
+):
+    db.add(
+        CorporateAction(
+            ticker=ticker,
+            ex_date=ex_date,
+            type=CorporateActionType.DIVIDEND_CASH,
+            cash_amount=cash_amount,
+            confirmed_by=None,
+            confirmed_at=None,
+        )
     )
     db.commit()
 
@@ -303,6 +339,122 @@ class TestWACCFor:
         assert view.warnings
 
 
+class TestConfirmedDividendsAsOf:
+    def test_excludes_unconfirmed_and_future_ex_date(self, db_session):
+        _seed_security(db_session)
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2022, 1, 15), cash_amount=Decimal("2.00"))
+        _seed_unconfirmed_dividend(db_session, ex_date=dt.date(2022, 2, 15), cash_amount=Decimal("9.00"))
+        # Confirmed but ex_date is AFTER AS_OF (2022-06-01) — not yet point-in-time visible.
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2022, 7, 1), cash_amount=Decimal("3.00"))
+
+        rows = _confirmed_dividends_as_of(db_session, "COMB.N0000", AS_OF)
+        assert len(rows) == 1
+        assert rows[0].cash_amount == Decimal("2.00")
+
+    def test_no_confirmed_rows_at_all(self, db_session):
+        _seed_security(db_session)
+        assert _confirmed_dividends_as_of(db_session, "COMB.N0000", AS_OF) == ()
+
+    def test_ordered_oldest_to_newest(self, db_session):
+        _seed_security(db_session)
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2022, 2, 1), cash_amount=Decimal("1.50"))
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2021, 8, 1), cash_amount=Decimal("1.00"))
+        rows = _confirmed_dividends_as_of(db_session, "COMB.N0000", AS_OF)
+        assert [r.ex_date for r in rows] == [dt.date(2021, 8, 1), dt.date(2022, 2, 1)]
+
+
+class TestTrailingDividendPerShare:
+    def _ca(self, ex_date, cash_amount):
+        return CorporateAction(
+            ticker="COMB.N0000", ex_date=ex_date, type=CorporateActionType.DIVIDEND_CASH,
+            cash_amount=cash_amount,
+        )
+
+    def test_sums_multiple_payments_within_the_trailing_window(self):
+        divs = (
+            self._ca(dt.date(2021, 8, 1), Decimal("1.00")),
+            self._ca(dt.date(2022, 2, 1), Decimal("1.50")),
+        )
+        dps, count = _trailing_dividend_per_share(divs, AS_OF)  # AS_OF = 2022-06-01
+        assert dps == Decimal("2.50")
+        assert count == 2
+
+    def test_excludes_a_payment_older_than_twelve_months(self):
+        divs = (self._ca(dt.date(2020, 1, 1), Decimal("5.00")),)
+        dps, count = _trailing_dividend_per_share(divs, AS_OF)
+        assert dps is None
+        assert count == 0
+
+    def test_mixed_window_only_sums_the_recent_one(self):
+        divs = (
+            self._ca(dt.date(2019, 1, 1), Decimal("9.00")),  # stale, excluded
+            self._ca(dt.date(2022, 1, 1), Decimal("1.00")),  # within window
+        )
+        dps, count = _trailing_dividend_per_share(divs, AS_OF)
+        assert dps == Decimal("1.00")
+        assert count == 1
+
+
+class TestGordonGrowthDDMFor:
+    def test_no_confirmed_dividends_returns_none_with_named_reason(self, db_session, monkeypatch):
+        _seed_security(db_session)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+        view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
+        assert view.result is None
+        assert view.warnings
+        assert "No confirmed DIVIDEND_CASH" in view.warnings[0]
+
+    def test_unconfirmed_dividend_is_excluded_not_used(self, db_session, monkeypatch):
+        """§8/§9 regression, mirroring `test_unconfirmed_line_excludes_
+        from_the_figure` for Fundamental rows: an unconfirmed
+        CorporateAction must never silently feed a valuation."""
+        _seed_security(db_session)
+        _seed_unconfirmed_dividend(db_session, ex_date=dt.date(2022, 1, 15), cash_amount=Decimal("2.00"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+        view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
+        assert view.result is None
+        assert "No confirmed DIVIDEND_CASH" in view.warnings[0]
+
+    def test_hand_worked_single_dividend(self, db_session, monkeypatch):
+        _seed_security(db_session)
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2022, 1, 15), cash_amount=Decimal("2.00"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))  # rf=0.12 -> g=0.05
+
+        # D0 = 2.00 (single confirmed payment in the trailing 12 months);
+        # D1 = D0*(1+g) = 2.00*1.05 = 2.10; V0 = D1/(Ke-g) = 2.10/0.10 = 21.0
+        view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
+        assert view.result is not None
+        assert abs(view.result.value_per_share - Decimal("21.0")) < Decimal("0.0001")
+
+    def test_hand_worked_sums_interim_and_final_dividends(self, db_session, monkeypatch):
+        _seed_security(db_session)
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2021, 8, 1), cash_amount=Decimal("1.00"))
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2022, 2, 1), cash_amount=Decimal("1.50"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        # D0 = 1.00 + 1.50 = 2.50; D1 = 2.50*1.05 = 2.625; V0 = 2.625/0.10 = 26.25
+        view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
+        assert abs(view.result.value_per_share - Decimal("26.25")) < Decimal("0.0001")
+        assert any("sum of 2 confirmed payments" in w for w in view.warnings)
+
+    def test_stale_dividend_outside_trailing_window_gives_no_result(self, db_session, monkeypatch):
+        _seed_security(db_session)
+        _seed_confirmed_dividend(db_session, ex_date=dt.date(2020, 1, 1), cash_amount=Decimal("5.00"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
+        assert view.result is None
+        assert "none fall within the trailing twelve months" in view.warnings[0]
+
+    def test_none_ke_gives_no_result(self, db_session, monkeypatch):
+        _seed_security(db_session)
+        _seed_confirmed_dividend(db_session)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(None))
+        view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
+        assert view.result is None
+        assert any("Cost of equity not computable" in w for w in view.warnings)
+
+
 class TestValuationSummaryFor:
     def test_end_to_end_bank_triangulation_and_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)
@@ -331,6 +483,10 @@ class TestValuationSummaryFor:
         # No capex/D&A/WC seeded for COMB.N0000 in this fixture — informational
         # only, and correctly absent rather than silently zero.
         assert summary.current_period_fcff.fcff is None
+        # No confirmed dividends seeded either — the expected state for every
+        # ticker today (§8/§9's confirm-queue workflow isn't built yet).
+        assert summary.gordon_growth_ddm.result is None
+        assert "No confirmed DIVIDEND_CASH" in summary.gordon_growth_ddm.warnings[0]
 
     def test_no_confirmed_data_gives_no_anchors_and_no_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)
