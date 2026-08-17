@@ -69,8 +69,14 @@ Earnings per Share / Diluted EPS (Rs.) 10.1 1.37 1.08 0.79 0.50
 # report, downloaded fresh (17 Aug 2026) specifically to verify cash-flow
 # extraction — the first real cash-flow-statement page this project has
 # ever read (PARAMETERS.md #9's long-tracked gap). Trimmed to the
-# canonical-line-bearing rows; the working-capital and financing detail
-# lines in between are real too but aren't mapped to a canonical key.
+# canonical-line-bearing rows, PLUS (added when change_in_net_working_
+# capital was built) the full real working-capital section between
+# "Operating Profit before Working Capital Changes" and "Cash generated
+# from Operations" — deliberately kept complete rather than trimmed
+# further, so the derivation is tested in the presence of the same noisy,
+# individually-uncanonicalised component lines the real statement has,
+# not in an artificially clean vacuum. The financing detail lines are
+# still trimmed; they aren't mapped to any canonical key either way.
 CASH_FLOW_STATEMENT_TEXT = """\
 104 J.F. PACKAGING PLC Annual Report 2025/26
 STATEMENT OF CASH FLOW
@@ -81,6 +87,29 @@ Cash Flows from Operating Activities
 Profit before Taxation 8 320,460 303,020 133,643 100,628
 Adjustment for;
 Depreciation / Amortization 11/13 111,039 90,999 69,986 71,765
+Right of Use Asset - Amortisation 12 19,842 19,783 10,750 10,797
+Interest Expense 7 199,024 264,108 135,194 206,751
+Lease Interest 7 9,019 11,855 7,328 9,320
+Unrealized (Gain) on Translation of Foreign Currency (2,556) 4,894 1,040 (238)
+Gain on Disposal of Property, Plant & Equipment 6.1 - (1,267) - (1,103)
+Interest Income 7 (3,308) (2,840) (5,922) (1,852)
+Dividend Income 6.1 - - (101,026) (145,278)
+Defined Benefit Plan Cost - Retiring Gratuity 22 14,452 10,872 7,584 5,579
+Provision/(Reversal) of Impairment of Trade Debtors 16.1 2,684 (1,266) 4,180 3,533
+Trade Receivable Write Off 16.1 - (69,797) - (53,054)
+Provision/(Reversal) for Obsolete Inventories 15.1 14,474 15,836 24,135 (1,257)
+Inventory Write Off 15.1 (3,752) (2,048) - -
+Operating Profit before Working Capital Changes 681,378 644,149 286,892 205,591
+(Increase)/Decrease in Inventories (64,006) (90,776) (33,459) (87,091)
+(Increase)/Decrease in Trade and Other Receivables (198,061) 55,279 (123,429) 108,757
+(Increase)/Decrease in Amounts due from Related Parties 42,489 6,768 3,427 (16,704)
+Increase/(Decrease) in Trade and Other Payables 34,535 31,907 28,642 12,631
+Increase/(Decrease) in Amounts due to Related Parties (2,838) (999) (7,627) (6,515)
+Cash generated from/ (Used in) Operations 493,497 646,328 154,446 216,669
+Income Tax Paid (105,484) (153,380) - -
+Interest Paid (199,024) (264,108) (135,194) (206,751)
+Retiring Gratuity Paid 22 (5,588) (4,761) (4,021) (2,393)
+Lease interest paid 20.1.2 (9,019) (11,855) (7,328) (9,320)
 Net Cash Flow from/ (used in) Operating Activities 174,382 212,224 7,903 (1,795)
 Cash Flows from Investing Activities
 Net Cash Flow generated from / (Used in) Investing Activities (244,852) (226,684) 33,545 57,031
@@ -106,6 +135,21 @@ Cash Flows From Operating Activities Notes Rs. Rs. Rs. Rs.
 Profit Before Income Tax 24,132,651 3,282,308 21,906,309 (3,713,377)
 Depreciation 12 34,338,325 38,227,897 34,338,326 38,227,897
 Amortization 13 1,564,379 1,139,229 1,564,379 1,139,229
+Bad Debt Provision Reversal/Charged 17 10,218,182 10,656,882 (13,401) 8,177,011
+Finance Income 8 (1,131,707) (2,517,152) (1,131,707) (2,517,152)
+Finance Costs 8.1 48,834,907 42,281,947 48,834,907 42,281,947
+Provision for Retirement Benefit Liability 21.1 18,057,721 14,805,014 18,057,721 14,805,014
+Provision for Slow Moving Inventories 16 116,331 4,511,951 116,331 4,511,951
+Profit from Disposal of Property, Plant & Equipment (8,298,755) - (8,298,755) -
+Operating Profit before Working Capital Changes 127,832,034 112,388,076 116,120,943 103,248,395
+(Increase) / Decrease in Inventories (15,638,710) 59,264,037 (15,638,716) 59,264,037
+Decrease / (Increase) in Trade and Other Receivables 48,278,354 (122,363,080) 56,443,222 (112,295,153)
+Decrease / (Increase) in Advances and Prepayments (145,301,689) 126,136,164 (145,301,689) 126,136,164
+Increase / (Decrease) in Trade and Other Payables (139,662,695) (24,599,591) (139,378,767) (25,163,627)
+Cash Generated from Operations (124,492,704) 150,825,606 (127,755,005) 151,189,817
+Finance Costs Paid 8.1 (48,834,907) (42,281,947) (48,834,907) (42,281,947)
+Defined Benefit Plan Costs Paid 21.1 (3,546,400) (1,416,547) (3,546,400) (1,416,547)
+Income Tax Paid (12,788,113) (52,940,812) (12,788,112) (52,940,812)
 Net Cash from / Used in Operating Activities (189,662,124) 54,186,300 (192,924,424) 54,550,510
 Cash Flows from / (Used in) Investing Activities
 Acquisition of Property, Plant and Equipment 12 (141,619,562) (78,624,298) (141,619,561) (78,624,298)
@@ -234,6 +278,8 @@ def test_extract_candidate_lines_finds_every_canonical_cash_flow_item():
     assert by_statement_line["net_cash_from_investing_activities"] == Decimal("-244852")
     assert by_statement_line["net_cash_from_financing_activities"] == Decimal("12302")
     assert by_statement_line["net_increase_in_cash"] == Decimal("-58168")
+    assert by_statement_line["operating_profit_before_working_capital_changes"] == Decimal("681378")
+    assert by_statement_line["cash_generated_from_operations"] == Decimal("493497")
     # CFO + investing + financing = net change in cash, on the extracted numbers
     assert (
         by_statement_line["cash_flow_from_operations"]
@@ -260,6 +306,8 @@ def test_extract_candidate_lines_finds_every_canonical_item_on_a_second_independ
     assert by_statement_line["net_increase_in_cash"] == Decimal("-142108917")
     assert by_statement_line["depreciation_expense"] == Decimal("34338325")
     assert by_statement_line["amortisation_expense"] == Decimal("1564379")
+    assert by_statement_line["operating_profit_before_working_capital_changes"] == Decimal("127832034")
+    assert by_statement_line["cash_generated_from_operations"] == Decimal("-124492704")
     # the combined line itself was never printed on this statement
     assert "depreciation_and_amortisation" not in by_statement_line
 
@@ -288,6 +336,60 @@ class TestDeriveAdditionalLineItems:
 
     def test_empty_input_derives_nothing(self):
         assert derive_additional_line_items({}) == {}
+
+    def test_derives_change_in_net_working_capital_from_the_two_bookend_subtotals(self):
+        """J.F. Packaging's real figures: 681,378 - 493,497 = 187,881 —
+        independently matches the hand-summed total of all 5 real
+        working-capital component lines on that statement (inventories,
+        receivables, payables, amounts due from/to related parties), a
+        cross-check performed when this derivation was designed, not
+        re-asserted here since the two subtotals already encode it."""
+        derived = derive_additional_line_items(
+            {
+                "operating_profit_before_working_capital_changes": Decimal("681378"),
+                "cash_generated_from_operations": Decimal("493497"),
+            }
+        )
+        assert derived == {"change_in_net_working_capital": Decimal("187881")}
+
+    def test_working_capital_derivation_handles_a_negative_subtotal(self):
+        """Swadeshi's real figures: cash_generated_from_operations is
+        itself negative (-124,492,704) — the subtraction must still give
+        the correct sign, not accidentally cancel or double-negate."""
+        derived = derive_additional_line_items(
+            {
+                "operating_profit_before_working_capital_changes": Decimal("127832034"),
+                "cash_generated_from_operations": Decimal("-124492704"),
+            }
+        )
+        assert derived["change_in_net_working_capital"] == Decimal("252324738")
+
+    def test_working_capital_derivation_never_overwrites_a_directly_extracted_value(self):
+        derived = derive_additional_line_items(
+            {
+                "change_in_net_working_capital": Decimal("999"),
+                "operating_profit_before_working_capital_changes": Decimal("681378"),
+                "cash_generated_from_operations": Decimal("493497"),
+            }
+        )
+        assert "change_in_net_working_capital" not in derived
+
+    def test_both_derived_concepts_can_apply_at_once(self):
+        """Swadeshi's real shape: both split D&A and the two WC subtotals
+        are present on the same filing — both derivations should fire
+        together, independently."""
+        derived = derive_additional_line_items(
+            {
+                "depreciation_expense": Decimal("34338325"),
+                "amortisation_expense": Decimal("1564379"),
+                "operating_profit_before_working_capital_changes": Decimal("127832034"),
+                "cash_generated_from_operations": Decimal("-124492704"),
+            }
+        )
+        assert derived == {
+            "depreciation_and_amortisation": Decimal("35902704"),
+            "change_in_net_working_capital": Decimal("252324738"),
+        }
 
 
 def test_identities_pass_on_the_second_independent_cash_flow_filing():

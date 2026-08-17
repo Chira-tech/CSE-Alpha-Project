@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.financial_statement_parsing import (
+    DERIVED_DIFFERENCES,
     DERIVED_SUMS,
     ExtractedLine,
     check_accounting_identities,
@@ -218,16 +219,18 @@ def build_derived_fundamental_drafts(
     source_url: str,
     candidates: list[tuple[int, ExtractedLine]],
 ) -> list[Fundamental]:
-    """Additional draft rows for canonical concepts derived by summing
-    OTHER extracted lines — currently just `depreciation_and_
-    amortisation`, when a company reports Depreciation and Amortization
-    as two separate cash-flow-statement lines rather than one combined
-    line (see `app.domain.financial_statement_parsing.derive_additional_
-    line_items`). Kept as a separate function from `build_fundamental_
-    drafts` rather than folded in, because a derived value has no single
-    `raw_text`/`source_page` of its own — it's the sum of two — and the
-    draft's `source_snippet` says so explicitly rather than pretending to
-    quote one line CSE printed.
+    """Additional draft rows for canonical concepts derived arithmetically
+    from OTHER extracted lines — a sum (e.g. `depreciation_and_
+    amortisation`, when Depreciation and Amortization print as two
+    separate cash-flow-statement lines rather than one combined line) or
+    a difference (`change_in_net_working_capital`, from the two bookend
+    subtotals of the working-capital-changes section) — see
+    `app.domain.financial_statement_parsing.derive_additional_line_items`
+    for both. Kept as a separate function from `build_fundamental_drafts`
+    rather than folded in, because a derived value has no single
+    `raw_text`/`source_page` of its own — it's computed from two others —
+    and the draft's `source_snippet` says so explicitly, and cites both
+    real inputs, rather than pretending to quote one line CSE printed.
     """
     values = {
         line.statement_line: line.primary_value
@@ -240,8 +243,12 @@ def build_derived_fundamental_drafts(
 
     drafts: list[Fundamental] = []
     for statement_line, value in derived.items():
-        component_keys = DERIVED_SUMS[statement_line]
-        component_note = "; ".join(f"{k} = {values[k]:,}" for k in component_keys)
+        if statement_line in DERIVED_SUMS:
+            component_keys = DERIVED_SUMS[statement_line]
+            note = "sum of " + "; ".join(f"{k} = {values[k]:,}" for k in component_keys)
+        else:
+            minuend_key, subtrahend_key = DERIVED_DIFFERENCES[statement_line]
+            note = f"{minuend_key} = {values[minuend_key]:,} minus {subtrahend_key} = {values[subtrahend_key]:,}"
         drafts.append(
             Fundamental(
                 ticker=ticker,
@@ -257,9 +264,8 @@ def build_derived_fundamental_drafts(
                 source_url=source_url,
                 source_page=None,
                 source_snippet=(
-                    f"DERIVED, not read from a single printed line — sum of {component_note} "
-                    f"= {value:,}. Check both components against the source PDF before "
-                    "confirming, not just the total."
+                    f"DERIVED, not read from a single printed line — {note} = {value:,}. "
+                    "Check both inputs against the source PDF before confirming, not just the total."
                 ),
                 confirmed_by=None,
                 confirmed_at=None,

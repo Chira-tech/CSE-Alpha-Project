@@ -926,11 +926,62 @@ a dated, sourced manual observation is.
         5 such lines, Swadeshi has 4, and the exact components differ —
         "Amounts due from Related Parties" vs "Advances and Prepayments")
         rather than two fixed, known labels — a genuinely different,
-        larger design problem than the D&A sum, and not attempted here
-        without more real examples to design a general rule against.
+        larger design problem than the D&A sum. At the time, correctly
+        not attempted without more real examples — closed the same
+        session by finding a different angle on the SAME two real
+        filings rather than needing a third; see the next entry.
       - 6 new tests (the derive function directly, plus the ingestion-
         level draft-building pass on both real filings' shapes). Full
         suite: 645 passed.
+- [x] **Working-capital delta derived too — Swadeshi becomes the first
+      real company with ALL THREE of DCF's cash-flow inputs individually
+      extractable.** The insight that unblocked this: rather than
+      summing the unpredictable, company-varying SET of individual
+      working-capital lines (already ruled out, above), use the
+      statement's own two BOOKEND SUBTOTALS instead — "Operating Profit
+      before Working Capital Changes" (the subtotal before any
+      working-capital line item) and "Cash generated from Operations"
+      (the subtotal after all of them, before tax and interest). Checked
+      against both real filings already on hand, no new download needed:
+      the first label is verified BYTE-IDENTICAL on J.F. Packaging PLC
+      and Swadeshi Industrial Works PLC, real, confirmed reusable
+      wording rather than a hopeful guess; the second needed a second
+      variant, same as every other cash-flow line here.
+      - `change_in_net_working_capital` = operating_profit_before_
+        working_capital_changes − cash_generated_from_operations — the
+        sign §18's DCF convention wants (an INCREASE in working capital
+        is POSITIVE and reduces FCFF when subtracted), derived directly
+        rather than computed the other way and negated.
+      - Verified against J.F. Packaging's real figures — 681,378 -
+        493,497 = 187,881 — exactly matching the independently hand-
+        summed total of its own 5 real working-capital component lines
+        (inventories, receivables, payables, amounts due from/to related
+        parties), a genuine cross-check that the subtotal-based
+        shortcut gives the identical answer the harder line-by-line sum
+        would have, not just a plausible-looking one.
+      - `derive_additional_line_items` generalised from sums-only
+        (`DERIVED_SUMS`) to also support differences (`DERIVED_
+        DIFFERENCES`), still one small function driven by two data
+        tables rather than per-concept branches — a third derived shape
+        later (a ratio, say) would still be a clean, small addition.
+      - Verified end-to-end against the real downloaded PDF a second
+        time, not just the test fixtures: `capital_expenditure` = real,
+        `depreciation_and_amortisation` (derived) = 35,902,704,
+        `change_in_net_working_capital` (derived) = 252,324,738, all
+        three from one live extraction run on Swadeshi's real filing.
+      - **Still not the same as DCF being wired to live data** —
+        `app/domain/dcf.py`'s own docstring is explicit about the
+        remaining gap: DCF is a multi-year forecast built from
+        assumptions (§18.2's growth/margin/tax fade paths), and having
+        one period's real capex/D&A/ΔNWC figures is not the same as
+        having a designed way to turn them into a 10-year projection.
+        That wiring is real, separate, not-yet-built work now, genuinely
+        no longer a data-availability gap for at least this one company.
+      - 4 new tests for the difference-derivation logic directly, plus
+        both existing real-filing fixtures extended with their full real
+        working-capital sections (rather than trimmed vacuum text) and
+        every existing assertion on them re-checked against the new
+        lines. Full suite: 649 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

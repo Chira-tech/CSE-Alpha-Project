@@ -19,31 +19,47 @@ reverse DCF solver, which belongs next to the forward model it inverts.
 Pure functions over caller-supplied assumptions, exactly like
 `app.domain.cost_of_equity` — no I/O, no ORM.
 
-WHY THIS IS NOT WIRED TO LIVE DATA YET, AND WHY THAT'S HONEST RATHER THAN
-AN OVERSIGHT. FCFF needs depreciation & amortisation, capital expenditure,
-and the change in non-cash working capital. `app.domain.financial_
-statement_parsing.CANONICAL_LABELS` extracts `cash_flow_from_operations`
-(verified on two independent real filings, J.F. Packaging PLC and
-Swadeshi Industrial Works PLC) and now, for Swadeshi specifically, BOTH
-`capital_expenditure` AND `depreciation_and_amortisation` — the latter
-via `derive_additional_line_items`, which sums Swadeshi's separately-
-printed Depreciation and Amortization lines into the one combined figure
-this module's `depreciation_amortisation_pct_revenue` assumption means.
-(J.F. Packaging still lacks capex specifically — its label wraps across
-two physical lines, a real, separate, still-open limitation, ROADMAP.md.)
-So Swadeshi is, as of this session, the first real company with two of
-DCF's three required cash-flow inputs simultaneously extractable. The
-change in non-cash working capital is STILL the one that blocks every
-company checked so far — no canonical label maps its components (trade
-receivables/payables/inventory movements) on either filing yet, even
-though the real lines exist on both statements; summing an unpredictable,
-company-varying SET of working-capital lines is a different, larger
-problem than summing two fixed, known ones, and is intentionally not
-attempted here without more real examples to design it against.
-Building this module anyway, fully tested against hand-worked numbers,
-means the arithmetic is verified and ready the day the remaining gaps
-close, rather than being designed and debugged for the first time under
-pressure once real cash-flow data exists. §18.2's "never a free parameter" table
+WHY THIS IS STILL NOT WIRED TO LIVE DATA, EVEN THOUGH EVERY INPUT IT
+NEEDS IS NOW, INDIVIDUALLY, EXTRACTABLE FOR AT LEAST ONE REAL COMPANY.
+FCFF needs depreciation & amortisation, capital expenditure, and the
+change in non-cash working capital. As of this session, Swadeshi
+Industrial Works PLC's real FY2025/26 filing has all three:
+`capital_expenditure` and `cash_flow_from_operations` extract directly;
+`depreciation_and_amortisation` is derived by summing Swadeshi's
+separately-printed Depreciation and Amortization lines
+(`derive_additional_line_items`); and `change_in_net_working_capital` is
+derived from the same statement's two bookend subtotals — "Operating
+Profit before Working Capital Changes" minus "Cash generated from
+Operations" — rather than summing an unpredictable, company-varying set
+of individual working-capital lines (4 on this filing, 5 differently-
+named ones on J.F. Packaging's), because those two subtotal labels are
+verified byte-identical (the first one) or near-identical (the second)
+across both real filings checked, where the individual component lines
+are not. All of `app.domain.financial_statement_parsing.CANONICAL_
+LABELS`, `DERIVED_SUMS` and `DERIVED_DIFFERENCES` together are what make
+this possible — see that module's docstring for the full extraction
+picture, not repeated here.
+
+So why not wired up yet? Two reasons, both real: first, this is
+per-COMPANY, not universal — J.F. Packaging still lacks capex (its label
+wraps across two physical lines, unsolved, ROADMAP.md), so a caller still
+can't assume any given company has all three; the extraction layer would
+need to report per-company which inputs are actually available, and the
+view/API layer that would do that (mirroring `app.domain.valuation_view`'s
+existing pattern for justified P/B and residual income) hasn't been
+built for DCF yet. Second, and more fundamentally, DCF is a multi-YEAR
+projection (§18.2's whole assumption table — growth, margin, tax fade
+paths) built from ONE period's cash-flow figures; turning "Swadeshi's
+FY2025/26 capex was X" into "Swadeshi's Y1-10 capex assumption is X% of
+revenue, fading how" is a forecasting decision this module already
+refuses to make silently (see `DCFAssumptions`' own field-by-field
+sourcing notes), and building that wiring is real, separate work, not a
+data-availability gap anymore. Building this module anyway, fully tested
+against hand-worked numbers, means the arithmetic is verified and ready
+the day that wiring gets built, rather than being designed and debugged
+for the first time under pressure once the data existed — which, for
+capex, D&A and working capital, it now genuinely does, at least for one
+real company. §18.2's "never a free parameter" table
 is honoured in the shape of `DCFAssumptions` — every field is named for
 where §18.2 says it comes from — even though wiring each one to a live
 source (sector median growth, macro regime multiplier) is itself blocked

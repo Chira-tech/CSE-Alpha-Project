@@ -205,10 +205,11 @@ def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():
 
 def test_build_derived_fundamental_drafts_sums_split_depreciation_and_amortisation():
     """Swadeshi's real shape: Depreciation and Amortization printed as
-    two separate lines. build_fundamental_drafts alone would store them
-    under depreciation_expense/amortisation_expense only; this covers the
-    second pass that also derives the combined figure other code (§18's
-    DCF) expects."""
+    two separate lines, AND (a differently-worded, real subtotal pair)
+    the working-capital change is derivable too. build_fundamental_drafts
+    alone would store the raw parts only; this covers the second pass
+    that also derives both combined figures other code (§18's DCF)
+    expects."""
     with patch(
         "app.ingestion.financial_pdf_extractor.pdfplumber.open",
         return_value=_FakePdf([_FakePage(CASH_FLOW_STATEMENT_TEXT_SWAD)]),
@@ -224,22 +225,33 @@ def test_build_derived_fundamental_drafts_sums_split_depreciation_and_amortisati
         candidates=candidates,
     )
 
-    assert len(derived_drafts) == 1
-    draft = derived_drafts[0]
-    assert draft.statement_line == "depreciation_and_amortisation"
+    by_line = {d.statement_line: d for d in derived_drafts}
+    assert set(by_line) == {"depreciation_and_amortisation", "change_in_net_working_capital"}
+
+    da = by_line["depreciation_and_amortisation"]
     # 34,338,325 + 1,564,379 = 35,902,704
-    assert draft.value == Decimal("35902704")
-    assert draft.source_page is None  # not from one printed line
-    assert "DERIVED" in draft.source_snippet
-    assert "depreciation_expense" in draft.source_snippet
-    assert "amortisation_expense" in draft.source_snippet
-    assert draft.provenance_tier is ProvenanceTier.AI_ASSISTED
-    assert draft.confirmed_by is None
+    assert da.value == Decimal("35902704")
+    assert da.source_page is None  # not from one printed line
+    assert "DERIVED" in da.source_snippet
+    assert "depreciation_expense" in da.source_snippet
+    assert "amortisation_expense" in da.source_snippet
+
+    wc = by_line["change_in_net_working_capital"]
+    # 127,832,034 - (-124,492,704) = 252,324,738
+    assert wc.value == Decimal("252324738")
+    assert "operating_profit_before_working_capital_changes" in wc.source_snippet
+    assert "cash_generated_from_operations" in wc.source_snippet
+
+    for draft in derived_drafts:
+        assert draft.provenance_tier is ProvenanceTier.AI_ASSISTED
+        assert draft.confirmed_by is None
 
 
-def test_build_derived_fundamental_drafts_produces_nothing_when_the_combined_line_is_already_present():
-    """J.F. Packaging's real shape: the combined line IS printed, so
-    there is nothing to derive — must not double-insert."""
+def test_build_derived_fundamental_drafts_never_overwrites_an_already_printed_line():
+    """J.F. Packaging's real shape: the combined D&A line IS printed, so
+    that one must not be derived — but working-capital change still
+    derives, since J.F. Packaging never prints that combined figure
+    directly either."""
     with patch(
         "app.ingestion.financial_pdf_extractor.pdfplumber.open",
         return_value=_FakePdf([_FakePage(CASH_FLOW_STATEMENT_TEXT)]),
@@ -254,7 +266,12 @@ def test_build_derived_fundamental_drafts_produces_nothing_when_the_combined_lin
         source_url="https://cdn.cse.lk/cmt/upload_report_file/3399_1786715988377.pdf",
         candidates=candidates,
     )
-    assert derived_drafts == []
+    assert len(derived_drafts) == 1
+    draft = derived_drafts[0]
+    assert draft.statement_line == "change_in_net_working_capital"
+    # 681,378 - 493,497 = 187,881 — matches the 5 real component lines'
+    # own hand-summed total exactly (see test_financial_statement_parsing.py)
+    assert draft.value == Decimal("187881")
 
 
 @respx.mock

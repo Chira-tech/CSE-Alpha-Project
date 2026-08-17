@@ -176,6 +176,28 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # so a company with material intangible capex will read slightly
     # low here, a real, stated incompleteness rather than a silent one.
     "capital_expenditure": ("acquisition of property, plant and equipment",),  # SWAD
+    # The two bookend subtotals of the operating-activities working-
+    # capital section — verified on BOTH real filings, and the reason
+    # `change_in_net_working_capital` below can be derived at all without
+    # summing an unpredictable, company-varying set of component lines
+    # (J.F. Packaging lists 5 such lines — inventories, receivables,
+    # payables, amounts due from/to related parties; Swadeshi lists 4
+    # differently-named ones — inventories, receivables, advances and
+    # prepayments, payables). "Operating Profit before Working Capital
+    # Changes" is worded byte-identically on both companies' statements,
+    # a genuine, confirmed reusable label rather than one that happened
+    # to match once. "Cash generated from Operations" (the subtotal AFTER
+    # working-capital movements, BEFORE tax and interest — the same line
+    # `cash_flow_from_operations`'s own docstring already distinguishes
+    # from CFO) needed a second wording, same as every other cash-flow
+    # line here.
+    "operating_profit_before_working_capital_changes": (
+        "operating profit before working capital changes",  # JFP + SWAD, identical
+    ),
+    "cash_generated_from_operations": (
+        "cash generated from/ (used in) operations",  # JFP
+        "cash generated from operations",  # SWAD
+    ),
 }
 
 _LABEL_TO_STATEMENT_LINE: dict[str, str] = {
@@ -372,30 +394,76 @@ DERIVED_SUMS: dict[str, tuple[str, ...]] = {
     "depreciation_and_amortisation": ("depreciation_expense", "amortisation_expense"),
 }
 
+#: Canonical keys derived as (minuend - subtrahend) of two OTHER
+#: canonical keys — the same "data, not a hardcoded branch" discipline
+#: as DERIVED_SUMS, for concepts that are a DIFFERENCE rather than a
+#: total. `change_in_net_working_capital`: the operating-activities
+#: section of the cash-flow statement runs
+#:   Operating Profit before Working Capital Changes
+#:     + (net cash effect of every working-capital line item)
+#:     = Cash generated from Operations
+#: — verified on BOTH J.F. Packaging PLC and Swadeshi Industrial Works
+#: PLC's real filings, where the two bookend subtotals are consistently
+#: worded even though the individual component lines between them are
+#: not (5 differently-named lines on one filing, 4 on the other — see
+#: CANONICAL_LABELS' own comment on these two keys). Rearranging:
+#:   net cash effect = cash_generated_from_operations
+#:                        - operating_profit_before_working_capital_changes
+#: which is POSITIVE when working capital released cash and NEGATIVE
+#: when it absorbed cash. §18's DCF convention is the opposite sign — an
+#: INCREASE in net working capital (cash absorbed) is a POSITIVE
+#: `change_in_net_working_capital` that REDUCES FCFF when subtracted —
+#: so the derived value here is the negation, expressed directly as
+#: (operating_profit_before_working_capital_changes - cash_generated_
+#: from_operations) rather than computing the cash effect and flipping
+#: its sign in a second step. Verified against J.F. Packaging's real
+#: figures: 681,378 - 493,497 = 187,881, matching the independently
+#: hand-summed total of all 5 real working-capital component lines on
+#: that filing exactly.
+DERIVED_DIFFERENCES: dict[str, tuple[str, str]] = {
+    "change_in_net_working_capital": (
+        "operating_profit_before_working_capital_changes",
+        "cash_generated_from_operations",
+    ),
+}
+
 
 def derive_additional_line_items(values: dict[str, Decimal]) -> dict[str, Decimal]:
-    """A company reports Depreciation and Amortization as two separate
-    cash-flow-statement lines (verified: Swadeshi Industrial Works PLC)
-    rather than one combined line (verified: J.F. Packaging PLC) — this
-    sums the two into the same `depreciation_and_amortisation` canonical
-    concept other code (§18's DCF assumption) already expects, so a
-    caller never needs to know which of the two real shapes a given
-    filing used.
+    """Canonical concepts that only exist as an arithmetic combination of
+    OTHER extracted lines on at least one real filing shape — currently:
 
-    Only derives a key when ALL of its components are present AND the
-    key itself wasn't already directly extracted — a company that prints
-    a combined line is trusted on its own combined figure, never silently
-    overwritten by a sum of parts extracted from elsewhere on the same
-    page. A partial sum (only one of two components present) is never
-    produced either; that would understate the figure while looking
-    exactly as precise as a real one.
+      - `depreciation_and_amortisation`, when a company reports
+        Depreciation and Amortization as two separate cash-flow-statement
+        lines (verified: Swadeshi Industrial Works PLC) rather than one
+        combined line (verified: J.F. Packaging PLC).
+      - `change_in_net_working_capital`, computed from the two bookend
+        subtotals of the working-capital-changes section rather than
+        summing its unpredictable, company-varying set of component
+        lines — see `DERIVED_DIFFERENCES`'s own comment for the identity
+        this rests on.
+
+    Both follow the same two rules: a key is only derived when ALL of its
+    inputs are present, and NEVER when the key itself was already
+    directly extracted (a company that prints a figure directly is
+    trusted on that figure, never silently overwritten by a derived one
+    computed from elsewhere on the same page). A partial derivation is
+    never produced either — a missing input skips that key entirely
+    rather than guessing, which would look exactly as precise as a real
+    figure while being wrong.
     """
     derived: dict[str, Decimal] = {}
     for target_key, component_keys in DERIVED_SUMS.items():
         if target_key in values:
-            continue  # already directly extracted — never overwritten by a derived sum
+            continue
         if all(k in values for k in component_keys):
             derived[target_key] = sum((values[k] for k in component_keys), Decimal(0))
+
+    for target_key, (minuend_key, subtrahend_key) in DERIVED_DIFFERENCES.items():
+        if target_key in values:
+            continue
+        if minuend_key in values and subtrahend_key in values:
+            derived[target_key] = values[minuend_key] - values[subtrahend_key]
+
     return derived
 
 
