@@ -106,7 +106,7 @@ class CompanyValuationOut(BaseModel):
         return cls(
             ticker=s.ticker,
             as_of=s.as_of,
-            current_price=s.price_ladder.current_price if s.price_ladder else None,
+            current_price=s.current_price,
             routing=RoutingOut(
                 archetype=s.routing.archetype,
                 in_published_table=s.routing.in_published_table,

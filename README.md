@@ -162,6 +162,23 @@ single well-documented company is 75+ paced requests on its own, and a
 weekly sweep of the whole exchange would be a genuinely heavy load on an
 unofficial endpoint (§5).
 
+### Checking a real fair value (§18-26, wired to live data)
+
+```
+GET /valuation/{ticker}
+```
+
+Runs the full Phase 3 pipeline for one company: archetype routing, the
+two valuation models that don't need still-unextracted data (justified
+P/B and residual income, §20.2/§19.3), triangulation, margin of safety,
+and the price ladder. Open `http://localhost:8000/docs` and try it
+against a ticker with a confirmed fundamentals period — most tickers
+don't have one yet (§8: an AI-assisted extraction must be human-
+confirmed before it can enter a valuation), and the endpoint says so
+explicitly rather than guessing. See `app/domain/valuation_view.py` and
+ROADMAP.md's Phase 3 section for exactly which of §18-26's nine models
+this is and isn't wired to live data.
+
 ### Macro data (the hero spread)
 
 ```bash

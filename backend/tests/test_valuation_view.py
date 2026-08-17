@@ -184,6 +184,7 @@ class TestValuationSummaryFor:
         # FV=15, MoS=10% → strong_accumulate = 15*0.82=12.30; current=12 is below it.
         assert summary.price_ladder is not None
         assert summary.price_ladder.current_zone == "strong_accumulate"
+        assert summary.current_price == Decimal(12)
 
     def test_no_confirmed_data_gives_no_anchors_and_no_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)
@@ -193,3 +194,10 @@ class TestValuationSummaryFor:
         )
         assert summary.triangulation.blended_fair_value_per_share is None
         assert summary.price_ladder is None
+        # Regression: a real current price must still be reported even when
+        # there's no fair value yet to build a price ladder from — caught
+        # live against a real bootstrapped ticker (COMB.N0000, 17 Aug),
+        # where `CompanyValuationOut.current_price` was silently None
+        # because it was derived from `price_ladder.current_price` instead
+        # of being carried on `CompanyValuationSummary` independently.
+        assert summary.current_price == Decimal(12)

@@ -245,6 +245,16 @@ def residual_income_for(db: Session, ticker: str, as_of: dt.date | None = None) 
 class CompanyValuationSummary:
     ticker: str
     as_of: dt.date
+    current_price: Decimal | None
+    """The price actually passed in to `valuation_summary_for`, kept
+    independent of `price_ladder` — a real current price should still be
+    reported even when no fair value exists yet to build a ladder from.
+    `price_ladder.current_price` and this field are the same value when
+    `price_ladder` is not None; this one is the one that's ALWAYS
+    populated whenever a price was found, which is the bug this field
+    exists to prevent: a caller reading `price_ladder.current_price` and
+    getting None can't tell "no price known" from "no fair value yet."""
+
     routing: RoutingDecision
     justified_pb: JustifiedPBView
     residual_income: ResidualIncomeView
@@ -301,6 +311,7 @@ def valuation_summary_for(
     )
 
     return CompanyValuationSummary(
-        ticker=ticker, as_of=stamp, routing=routing, justified_pb=jpb, residual_income=ri,
-        triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder, note=note,
+        ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
+        residual_income=ri, triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder,
+        note=note,
     )
