@@ -95,6 +95,7 @@ from app.domain.dividend_residual_income import (
     gordon_growth_value,
 )
 from app.domain.macro_engine_view import RegimeView, regime_for
+from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
@@ -803,6 +804,27 @@ def dcf_for(
             f"to the same steady-state g ({steady_state_g:.4f}) used for stage-2/"
             "terminal growth, i.e. a 'no growth view' assumption, not a forecast of "
             "acceleration or decline."
+        )
+
+    # §18.2's own words: Y1/Y2 revenue growth is "Trailing 3-year CAGR,
+    # adjusted by sector macro sensitivity (§33) and any confirmed
+    # project in the register (§34)." The §33 half of that sentence
+    # isn't applied here — `app.domain.sector_sensitivity`'s real,
+    # estimated coefficients aren't yet threaded into this function, a
+    # separate, named gap — but the §34 half is real: whichever confirmed,
+    # base-case-eligible projects in the register name this ticker's
+    # revenue as an affected line, summed into one adjustment.
+    project_adjustment, contributing_impacts = confirmed_base_case_revenue_growth_adjustment_for(
+        db, ticker, stamp
+    )
+    if project_adjustment is not None:
+        revenue_growth_y1 = revenue_growth_y1 + project_adjustment
+        revenue_growth_y2 = revenue_growth_y2 + project_adjustment
+        warnings.append(
+            f"Y1/Y2 growth further adjusted by {project_adjustment:+.4f} from "
+            f"{len(contributing_impacts)} confirmed §34 national-project-register "
+            "impact(s) naming this ticker's revenue (§18.2: 'adjusted by... any "
+            "confirmed project in the register')."
         )
     warnings.append(
         "minority_interest and pension_deficit are not extracted anywhere in this "

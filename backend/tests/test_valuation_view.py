@@ -34,9 +34,16 @@ from app.domain.valuation_view import (
     wacc_for,
 )
 from app.models.corporate_actions import CorporateAction
-from app.models.enums import CorporateActionType, ProvenanceTier
+from app.models.enums import (
+    CorporateActionType,
+    NationalProjectImpactMetric,
+    NationalProjectStatus,
+    NationalProjectTransmissionChannel,
+    ProvenanceTier,
+)
 from app.models.float_data import FloatData
 from app.models.fundamentals import Fundamental
+from app.models.national_projects import NationalProject, NationalProjectTickerImpact
 from app.models.securities import Security
 
 PERIOD_END = dt.date(2021, 12, 31)
@@ -539,6 +546,44 @@ class TestDCFFor:
         view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
         assert view.result is None
         assert view.period_end is None
+
+    def test_confirmed_national_project_adjusts_y1_y2_growth(self, db_session, monkeypatch):
+        """§18.2's own words: Y1/Y2 revenue growth is adjusted by "any
+        confirmed project in the register (§34)". Same flat, one-period
+        fixture as `test_hand_worked_flat_no_growth_view` (so the
+        baseline 0.05 steady-state growth is already independently
+        verified there), plus one confirmed, financing-closed §34
+        project naming this ticker's revenue — the resulting Y1 growth
+        should be exactly 0.05 + the project's own quantified impact."""
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_dcf_fundamentals(db_session)
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        project = NationalProject(
+            name="Test reconstruction project",
+            status=NationalProjectStatus.FINANCING_CLOSED,
+            confirmed_by="analyst",
+            confirmed_at=dt.datetime(2022, 1, 1, tzinfo=dt.timezone.utc),
+        )
+        db_session.add(project)
+        db_session.flush()
+        db_session.add(
+            NationalProjectTickerImpact(
+                project_id=project.id, ticker="SWAD.N0000",
+                transmission_channel=NationalProjectTransmissionChannel.MATERIALS_SUPPLIER,
+                impact_metric=NationalProjectImpactMetric.REVENUE,
+                quantified_impact_pct=Decimal("0.01"),
+                impact_description="Test fixture.", provenance_tag=ProvenanceTier.ESTIMATED,
+            )
+        )
+        db_session.commit()
+
+        view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is not None
+        # Baseline (no project) is 0.05 (test_hand_worked_flat_no_growth_view) + 0.01 project adjustment.
+        assert view.result.years[0].revenue_growth == Decimal("0.06")
+        assert any("national-project-register" in w for w in view.warnings)
 
 
 class TestConfirmedDividendsAsOf:

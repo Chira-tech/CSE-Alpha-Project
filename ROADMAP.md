@@ -699,7 +699,75 @@ part of it genuinely isn't untouched anymore.
         `regime=None`/`"risk_on"`/`"risk_off"` against real seeded
         price/ASPI/T-bill data. Full suite: 763 passed (the 5 pre-
         existing, unrelated timezone-bug tests deselected, not silently
-        dropped from the count without explanation).
+        dropped from the count without explanation — confirmed
+        self-resolved once real time caught up past midnight in both
+        timezones, and folded back into the count without further
+        comment in the next entry below).
+
+### §34's national project and outlook register
+
+- [x] **§34's register is live** — new `national_projects`/`national_
+      project_ticker_impacts` tables (migration 0011), `app.domain.
+      national_projects` (pure) + `app.domain.national_projects_view`
+      (DB-wired) + `app.api.routes.national_projects` (confirm-queue
+      CRUD, mirroring `corporate_actions.py`'s own shape). Unlike that
+      module, there is no ingestion scraper here — §34's own examples
+      ("cyclone reconstruction allocation," "the IMF programme's
+      structural benchmarks") are the kind of thing an analyst reads
+      about and enters directly, so a genuine `POST` create endpoint
+      exists alongside the list/get/patch-draft/confirm/reject shape.
+      - **Confirmation is at the project level**, not per-ticker-impact
+        — a project and every one of its affected-ticker impact rows are
+        confirmed together as one unit, mirroring `CorporateAction`'s
+        confirmed_by/confirmed_at/rejected_by/rejected_at gate (§7/§8).
+      - **`provenance_tag` reuses `ProvenanceTier` directly** — its own
+        members are literally coded "R"/"D"/"N"/"E"/"F"/"A"/"-", and
+        §34's "provenance-tagged E or F" is that exact scheme restricted
+        to its two middle tiers. Recognised and reused, not treated as a
+        coincidence needing a new parallel enum. The DB column
+        structurally accepts all 7 tiers (a real Postgres enum reused
+        across two migrations, via `create_type=False` — this project's
+        first case of that pattern); `validate_impact_provenance_tag`
+        enforces the real "E or F only" restriction at confirm time, and
+        `POST .../confirm` returns 422 with a named reason for anything
+        else — checked directly by a real test, not just documented.
+      - **§34's status ladder gates base-case vs bull-case influence
+        exactly as specified**: "financing closed" and beyond, confirmed,
+        may influence a base case; any confirmed status may influence
+        only a bull case. Confirmation is required for either — §34's
+        own blanket rule, not waived for the "earlier stage, bull case
+        only" path.
+      - **Wired into `dcf_for`'s Y1/Y2 revenue growth — closing §18.2's
+        own explicit reference, not left as a named-but-unwired next
+        step.** §18.2: "Trailing 3-year CAGR, adjusted by sector macro
+        sensitivity (§33) AND ANY CONFIRMED PROJECT IN THE REGISTER
+        (§34)." The §34 half is now real: whichever confirmed,
+        base-case-eligible, REVENUE-metric impacts name a ticker are
+        summed and added on top of the existing trailing-CAGR/steady-
+        state growth path, point-in-time gated on the project's own
+        `confirmed_at` (a project confirmed after the valuation date
+        cannot backdate its influence — §6's look-ahead-bias guard,
+        applied here for the first time to a confirmation timestamp
+        rather than a reporting date). The §33 half of that same
+        sentence is NOT yet applied here — `app.domain.sector_
+        sensitivity`'s real, estimated coefficients aren't threaded into
+        this function yet — named as a precise, separate remaining gap,
+        not silently skipped.
+      - `MARGIN`-metric impacts are deliberately excluded from the
+        revenue-growth sum — they answer §18.2's operating-margin
+        question, not its revenue-growth one, and mixing the two would
+        misrepresent a margin effect as a growth effect. Not wired into
+        `operating_margin_target` either yet — a real, named next step.
+      - 43 new tests across `test_national_projects.py` (pure domain
+        logic — status-ladder ranking, base/bull-case eligibility, the
+        E-or-F provenance restriction, the revenue-sum aggregation),
+        `test_national_projects_view.py` (point-in-time filtering,
+        including the "confirmed after as_of" look-ahead-bias regression),
+        `test_national_projects_api.py` (the full confirm-queue CRUD
+        flow, including the 422 provenance-validation case) and one new
+        `TestDCFFor` case in `test_valuation_view.py` proving the
+        adjustment actually reaches `dcf_for`'s real growth path, not
+        just the standalone view function. Full suite: 811 passed.
 
 ## Not done yet — next in Phase 1
 
@@ -1640,11 +1708,13 @@ model router (§15/§16), and valuation MATH (DCF, DDM, residual income,
 SOTP, relative valuation, asset-based, scenarios, triangulation, margin
 of safety, the price ladder — §17-26) are no longer in this list — see
 above. **Macro/ARDL (§29-34) is also no longer a single untouched
-block** — §31's regime classifier and §33's sector sensitivity matrix
-are both live (see those two entries above); §30's other five method-
-chain steps and §34's national project register remain genuinely
-unbuilt, named precisely in the same sections rather than left as one
-vague "macro/ARDL" line item. Building the still-deferred items against
+block** — §31's regime classifier, §33's sector sensitivity matrix and
+§34's national project register are all live (see those entries above);
+only §30's other five method-chain steps (stationarity/break testing,
+Johansen/VECM/ARDL bounds testing, impulse response/Granger causality,
+the event study) remain genuinely unbuilt within Part G, named precisely
+rather than left as one vague "macro/ARDL" line item. Building the
+still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the
 spec's failure-mode register (Part N) warns about.

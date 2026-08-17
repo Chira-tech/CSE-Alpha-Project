@@ -11,6 +11,7 @@ from app.api.routes import (
     fundamentals,
     health,
     market,
+    national_projects,
     securities,
     valuation,
 )
@@ -35,7 +36,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -46,3 +47,4 @@ app.include_router(corporate_actions.router)
 app.include_router(fundamentals.router)
 app.include_router(data_health.router)
 app.include_router(valuation.router)
+app.include_router(national_projects.router)
