@@ -23,6 +23,12 @@ statsmodels>=0.14
 numpy>=2.0
 pandas>=2.2
 scipy>=1.13
+# statsmodels has no native Phillips-Perron test — arch (Kevin
+# Sheppard's econometrics library, real and widely used, not a
+# CPU-architecture package despite the name) supplies
+# arch.unitroot.PhillipsPerron, needed to cover all four of §30 step
+# 1's named stationarity tests faithfully rather than skip one.
+arch>=7.0
 
 # dev / test
 pytest>=8.3

@@ -47,6 +47,7 @@ from app.domain.macro_view import (
     spread_history,
 )
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
+from app.domain.stationarity_view import stationarity_for_series
 from app.ingestion.cse_client import CseClient, ShapeChangedError
 from app.ingestion.schemas import AspiData, SectorIndexRow
 
@@ -313,6 +314,67 @@ def sector_sensitivity(db: Session = Depends(get_db)) -> SectorSensitivityOut:
         ],
         thin_sectors=[[sector, count] for sector, count in view.thin_sectors],
         shocks_used=list(view.shocks_used),
+        warnings=list(view.warnings),
+    )
+
+
+class UnitRootTestOut(BaseModel):
+    test_name: str
+    statistic: Decimal
+    p_value: Decimal
+    lags_used: int
+    critical_values: dict[str, Decimal]
+    null_hypothesis: str
+    stationarity_conclusion: str
+    break_index: int | None = None
+    """Only populated for Zivot-Andrews — the 0-indexed position in the
+    series identified as the most likely structural break."""
+
+
+class StationarityOut(BaseModel):
+    """§30 step 1, live, on one real `macro_series` series' LEVEL values
+    (not returns — see `app.domain.stationarity_view`'s own docstring
+    for why that distinction matters). Real series ids this system
+    actually has coverage of: `cbsl.policy_rate`, `cbsl.tbill_364d`,
+    `cbsl.ccpi_yoy`, `cbsl.usd_lkr_tt_buying` (all via `app.domain.
+    cbsl_parsing`), `cse.aspi` (via `app.domain.index_history_loader`)."""
+
+    series_id: str
+    as_of: dt.date
+    observation_count: int
+    adf: UnitRootTestOut | None
+    phillips_perron: UnitRootTestOut | None
+    kpss: UnitRootTestOut | None
+    zivot_andrews: UnitRootTestOut | None
+    consensus: str | None
+    note: str | None
+    warnings: list[str]
+
+
+@router.get("/stationarity", response_model=StationarityOut)
+def stationarity(series_id: str, db: Session = Depends(get_db)) -> StationarityOut:
+    view = stationarity_for_series(db, series_id)
+
+    def _out(result) -> UnitRootTestOut | None:
+        if result is None:
+            return None
+        return UnitRootTestOut(
+            test_name=result.test_name, statistic=result.statistic, p_value=result.p_value,
+            lags_used=result.lags_used, critical_values=result.critical_values,
+            null_hypothesis=result.null_hypothesis,
+            stationarity_conclusion=result.stationarity_conclusion,
+            break_index=getattr(result, "break_index", None),
+        )
+
+    assessment = view.assessment
+    return StationarityOut(
+        series_id=view.series_id, as_of=view.as_of, observation_count=view.observation_count,
+        adf=_out(assessment.adf) if assessment else None,
+        phillips_perron=_out(assessment.phillips_perron) if assessment else None,
+        kpss=_out(assessment.kpss) if assessment else None,
+        zivot_andrews=_out(assessment.zivot_andrews) if assessment else None,
+        consensus=assessment.consensus if assessment else None,
+        note=assessment.note if assessment else None,
         warnings=list(view.warnings),
     )
 

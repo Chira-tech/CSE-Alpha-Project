@@ -769,6 +769,58 @@ part of it genuinely isn't untouched anymore.
         adjustment actually reaches `dcf_for`'s real growth path, not
         just the standalone view function. Full suite: 811 passed.
 
+### §30 step 1 — stationarity and break testing
+
+- [x] **All four of §30 step 1's named tests are live** — `app.domain.
+      stationarity` (pure) + `app.domain.stationarity_view` (wired to
+      real `macro_series` LEVEL data, not returns — see that module's
+      own docstring for why the distinction matters for what §30 step 2
+      will eventually need), exposed on new `GET /market/stationarity?
+      series_id=...`. New real dependency: `arch` (Kevin Sheppard's
+      econometrics library) — `statsmodels` has ADF/KPSS/Zivot-Andrews
+      natively but no Phillips-Perron, and skipping one of the four
+      named tests to avoid a new dependency would have been a worse
+      compromise than adding a real, respected, widely-used one.
+      - **Two opposite null hypotheses, handled correctly, not just
+        documented.** ADF/Phillips-Perron/Zivot-Andrews all null on "the
+        series has a unit root" (non-stationary) — a LOW p-value means
+        stationary. KPSS's null is the reverse: "the series IS
+        stationary" — a LOW p-value there means NON-stationary. Every
+        test function returns an already-direction-corrected
+        `stationarity_conclusion`, so a caller never has to remember
+        which way a given test's raw p-value points — a real, easy
+        mistake this module exists specifically to prevent, checked by
+        a dedicated test class (`TestKpssTest`) built to catch exactly a
+        reversed-direction regression.
+      - **Zivot-Andrews matters for a real, named reason, not just
+        completeness**: §30 step 1's own text calls out the 2022
+        sovereign default as a structural break in nearly every Sri
+        Lankan macro series, and an ordinary ADF/PP/KPSS test can
+        spuriously fail to reject a unit root on a series that's
+        actually stationary within each side of a real break. Validated
+        against a synthetic two-regime series with a genuine level
+        shift: the identified break index lands within the expected
+        window of the real regime change, not at a random point.
+      - **`assess_stationarity` reports disagreement honestly** when the
+        four tests don't all reach the same conclusion — the same
+        "combine independent reads, report agreement/disagreement, never
+        average it away" discipline `app.domain.regime_classification.
+        classify_regime` already established for its own two-read blend.
+      - **Named precisely what this module feeds and doesn't build**:
+        §30 step 2 (Johansen cointegration/VECM/ARDL bounds testing —
+        the actual long-run macro-to-market relationship) is the real
+        next consumer of this module's output and remains genuinely
+        unbuilt; so do step 3 (impulse response/FEVD/Toda-Yamamoto) and
+        step 5 (the event study). This module answers "is one series
+        stationary," not "what relationship exists between several" —
+        a real, disclosed scope boundary, not an oversight.
+      - 20 new tests (`test_stationarity.py`'s validation against known
+        stationary/non-stationary synthetic series — the same `test_
+        regime_classification.py`-style discipline of checking a
+        statistical method against a series with a KNOWN true property,
+        not just that it runs; `test_stationarity_view.py`;
+        `test_market_stationarity_api.py`). Full suite: 831 passed.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —
@@ -1708,10 +1760,10 @@ model router (§15/§16), and valuation MATH (DCF, DDM, residual income,
 SOTP, relative valuation, asset-based, scenarios, triangulation, margin
 of safety, the price ladder — §17-26) are no longer in this list — see
 above. **Macro/ARDL (§29-34) is also no longer a single untouched
-block** — §31's regime classifier, §33's sector sensitivity matrix and
-§34's national project register are all live (see those entries above);
-only §30's other five method-chain steps (stationarity/break testing,
-Johansen/VECM/ARDL bounds testing, impulse response/Granger causality,
+block** — §31's regime classifier, §33's sector sensitivity matrix,
+§34's national project register, and §30 step 1's stationarity/break
+testing are all live (see those entries above); only §30 steps 2-3 and 5
+(Johansen/VECM/ARDL bounds testing, impulse response/Granger causality,
 the event study) remain genuinely unbuilt within Part G, named precisely
 rather than left as one vague "macro/ARDL" line item. Building the
 still-deferred items against
