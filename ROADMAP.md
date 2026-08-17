@@ -1223,6 +1223,66 @@ a dated, sourced manual observation is.
         residual income inside the "intrinsic" triangulation bucket
         rather than merely computing a number nobody consumes. Full
         suite: 686 passed.
+- [x] **The full multi-year DCF verified genuinely end-to-end against
+      Swadeshi's real FY2025/26 filing — through the actual ingestion
+      pipeline, a simulated §8 confirm, and `dcf_for` — not just unit
+      tests with hand-typed fixtures.** Re-downloaded the real PDF,
+      re-ran `extract_financial_statement_candidates` →
+      `build_fundamental_drafts` → `build_derived_fundamental_drafts`
+      (the actual production functions), and found ANOTHER real gap:
+      `income_tax_expense` came back `None`. Root cause: Swadeshi prints
+      "Income Tax (Expense) / Reversal" — the loss-period alternative
+      folded into the label itself — not the plain "Income Tax Expense"
+      wording J.F. Packaging's filing uses, which is all the canonical
+      label recognised. Every other DCF input (revenue, operating
+      profit, D&A, capex, working capital, debt, interest) extracted
+      correctly; this one line, needed for `effective_tax_rate` and
+      therefore both WACC's cost of debt and the DCF's own tax path,
+      silently didn't. Fixed by adding the real wording as a second
+      verified variant, with a permanent regression test
+      (`test_extract_candidate_lines_finds_swadeshis_income_tax_expense_
+      variant_wording`) using the real page-26 text as its fixture.
+      After the fix, promoted every extracted draft to `REPORTED`
+      provenance with `confirmed_by` set (simulating the human §8
+      confirm-queue action a real reviewer would take) in a throwaway
+      in-memory DB, seeded the real disclosed share count (149,333 —
+      "Total number of shares issued," Investor's Information, page 67,
+      cross-checked against the disclosed Float Adjusted Market
+      Capitalization: 67,082 public shares × Rs 15,000 last-traded price
+      ≈ Rs 1,006,205,754, matching the filing's own figure exactly), and
+      called `dcf_for` for real.
+      - **The result: a real, mechanically complete 10-year projection
+        and a NEGATIVE fair value per share (~Rs -13,273).** Not a bug —
+        Swadeshi's real FY2025/26 operating margin is 1.55%
+        (`operating_profit ÷ revenue` = 71,835,851 ÷ 4,649,049,764), held
+        flat for all 10 years per `operating_margin_target`'s own "no
+        fade" convention, and that thin margin combined with real
+        working capital (~24% of revenue) and capex (~3% of revenue)
+        produces negative unlevered FCFF in every single projected year.
+        The real effective tax rate for this specific year is unusually
+        high (93.84% — `22,646,628 ÷ 24,132,651`, likely a one-off
+        deferred-tax item, not a durable rate) and correctly fades
+        toward the real 30% statutory rate by Year 5 per the tax-fade
+        path, but the margin has no such correction under this project's
+        current "flat, no-view" convention, so it dominates the result.
+        This is the DCF being honest about what one real, thin-margin
+        year looks like held flat for a decade — exactly the kind of
+        result a human reviewer is supposed to interrogate (is FY2025/26
+        an anomalous down year, and does a multi-period history exist to
+        check?) rather than a reason to distrust the arithmetic.
+      - Ke/WACC used a clearly-labelled STAND-IN in this verification
+        run only (`app.domain.cost_of_equity_view.cost_of_equity_for`
+        needs real T-bill and beta series this throwaway script didn't
+        seed) — every OTHER figure in the run (revenue, margin, tax,
+        D&A, capex, working capital, debt, shares) is Swadeshi's real,
+        extracted, now-confirmed FY2025/26 data, the same "cross-check
+        against real figures, not synthetic ones" discipline this whole
+        session has followed throughout.
+      - Confirms `dcf_for`'s directional-safety warnings fire correctly
+        on a real company too: `minority_interest`/`pension_deficit`
+        zero-defaults and the "no growth view" fallback all appeared in
+        `warnings` exactly as designed.
+      - 1 new regression test. Full suite: 699 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

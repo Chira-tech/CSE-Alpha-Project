@@ -159,6 +159,38 @@ Net Increase/(Decrease) in Cash & Cash Equivalents during the year (58,168) (23,
 # line below is worded differently from the JFP equivalent, and this
 # statement's capex line — unlike JFP's — does NOT wrap across two
 # lines, which is what makes `capital_expenditure` extractable at all.
+# Real text from page 26 of Swadeshi Industrial Works PLC's FY2025/26
+# annual report, downloaded fresh (17 Aug 2026) specifically because
+# `income_tax_expense` was found MISSING when the full multi-year DCF
+# was verified end-to-end against this real filing for the first time —
+# Swadeshi prints this line as "Income Tax (Expense) / Reversal", not
+# J.F. Packaging's plain "Income Tax Expense", carrying the loss-period
+# alternative inline in the label itself rather than as a separate line.
+# Group/Company columns kept exactly as printed (this extractor reads
+# the first, Group/consolidated, column — see `primary_value`), because
+# trimming to only the Group column would hide the real ambiguity a
+# label-matcher has to resolve on an unmodified real page.
+INCOME_STATEMENT_TEXT_SWAD = """\
+STATEMENT OF PROFIT OR LOSS
+Year Ended 31st March 2026
+Group Company
+Notes 2026 2025 2026 2025
+Rs. Rs. Rs. Rs.
+Revenue 6 4,649,049,764 4,473,404,964 4,645,451,221 4,470,354,600
+Cost of Sales (2,427,514,294) (2,153,213,142) (2,427,528,873) (2,156,923,193)
+Gross Profit 2,221,535,470 2,320,191,822 2,217,922,348 2,313,431,407
+Other Operating Income 7 18,912,472 15,706,083 18,902,472 9,645,459
+Administrative Expenses (856,728,254) (836,863,985) (855,352,517) (834,164,710)
+Selling and Distribution Expenses (1,311,883,837) (1,455,986,817) (1,311,862,794) (1,452,860,738)
+Operating Profit 71,835,851 43,047,103 69,609,509 36,051,418
+Finance Income 8 1,131,707 2,517,152 1,131,707 2,517,152
+Finance Cost 8.1 (48,834,907) (42,281,947) (48,834,907) (42,281,947)
+Profit Before Tax 9 24,132,651 3,282,308 21,906,309 (3,713,377)
+Income Tax (Expense) / Reversal 10 (22,646,628) 338,664 (21,980,129) 338,664
+Profit for the Year 1,486,023 3,620,972 (73,820) (3,374,713)
+Earnings Per Share - Basic 11 10.00 24.37 (0.49) (22.60)
+"""
+
 CASH_FLOW_STATEMENT_TEXT_SWAD = """\
 STATEMENT OF CASH FLOWS
 Year Ended 31st March 2026
@@ -367,6 +399,32 @@ def test_extract_candidate_lines_finds_every_canonical_income_statement_item():
     assert by_statement_line["total_comprehensive_income"] == Decimal("12566")
     # revenue - cost of sales = gross profit, on the extracted numbers
     assert by_statement_line["revenue"] + by_statement_line["cost_of_sales"] == by_statement_line["gross_profit"]
+
+
+def test_extract_candidate_lines_finds_swadeshis_income_tax_expense_variant_wording():
+    """Regression for a real gap found 17 Aug while verifying the full
+    multi-year DCF end-to-end against Swadeshi's real filing: every
+    other required DCF input extracted correctly, but `income_tax_
+    expense` — and therefore `effective_tax_rate`, WACC's cost of debt,
+    and the DCF itself — silently came back `None` because the real
+    printed label is "Income Tax (Expense) / Reversal", not the plain
+    "Income Tax Expense" wording J.F. Packaging's filing uses."""
+    lines = extract_candidate_lines(INCOME_STATEMENT_TEXT_SWAD)
+    by_statement_line = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+
+    assert by_statement_line["revenue"] == Decimal("4649049764")
+    assert by_statement_line["operating_profit"] == Decimal("71835851")
+    assert by_statement_line["profit_before_tax"] == Decimal("24132651")
+    assert by_statement_line["income_tax_expense"] == Decimal("-22646628")
+    assert by_statement_line["net_income"] == Decimal("1486023")
+    # profit_before_tax + income_tax_expense = net_income, on the real
+    # extracted figures — the same accounting identity
+    # check_accounting_identities enforces, checked here directly against
+    # the values this specific label variant produced.
+    assert (
+        by_statement_line["profit_before_tax"] + by_statement_line["income_tax_expense"]
+        == by_statement_line["net_income"]
+    )
 
 
 def test_extract_candidate_lines_finds_every_canonical_cash_flow_item():

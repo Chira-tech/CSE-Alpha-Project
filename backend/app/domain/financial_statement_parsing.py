@@ -109,7 +109,18 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "gross_profit": ("gross profit",),
     "operating_profit": ("operating profit",),
     "profit_before_tax": ("profit before tax",),
-    "income_tax_expense": ("income tax expense",),
+    "income_tax_expense": (
+        "income tax expense",
+        # Swadeshi Industrial Works PLC's real FY2025/26 income statement
+        # (17 Aug) — the line's own printed wording carries the
+        # loss-period alternative inline rather than as a separate line,
+        # unlike every other canonical key's variants seen so far. Found
+        # live: without this, `income_tax_expense` — and therefore
+        # `effective_tax_rate` and every model that needs it (DCF, WACC's
+        # cost of debt) — silently failed to extract for this real
+        # filing despite every other required DCF input succeeding.
+        "income tax (expense) / reversal",
+    ),
     "net_income": ("profit for the year", "profit for the period"),
     "total_comprehensive_income": ("total comprehensive income for the year", "total comprehensive income for the period"),
     # Cash-flow-statement lines — verified against TWO real, independent
