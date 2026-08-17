@@ -1,15 +1,23 @@
 """
 Company list and company file.
 
-WHAT IS DELIBERATELY ABSENT: composite scores, fair values, buy-below
-prices, coverage tiers. Those are Phase 2/3 (§12-26) and the engines that
-compute them do not exist yet. The UI spec's anti-pattern list is explicit
+WHAT IS DELIBERATELY STILL ABSENT HERE, AND WHAT ISN'T ANY MORE: composite
+scores, coverage tiers, and most of §18-26's valuation math (DCF, DDM,
+SOTP, asset-based) are still not exposed — the engines exist
+(`app/domain/dcf.py` etc.) but aren't wired to live data (ROADMAP.md's
+Phase 3 section). Fair value and a buy-below price are no longer
+categorically absent: `GET /valuation/{ticker}` (`app/api/routes/
+valuation.py`) now returns a real, partial triangulation (justified P/B
+and residual income, §20.2/§19.3) for a company with confirmed
+fundamentals — kept as a separate endpoint rather than added to
+`SecurityDetail` below, so this route's own contract doesn't change
+underneath existing callers. The UI spec's anti-pattern list is explicit
 that "placeholder or lorem content in any shipped state" is forbidden
 because "a fake number that reaches a user once destroys trust
 permanently" — so rather than emitting a null score the UI might render as
-"0", this API doesn't expose those fields at all, and the company file
-returns an explicit `not_yet_built` list the UI renders as a plain
-statement of what the system cannot yet tell you.
+"0", this API doesn't expose composite-score/coverage-tier fields at all
+yet, and the company file returns an explicit `not_yet_built` list the UI
+renders as a plain statement of what the system cannot yet tell you.
 """
 from __future__ import annotations
 
