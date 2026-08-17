@@ -272,6 +272,50 @@ Interest Bearing Loans and Borrowings 15 634,163,111 317,834,179 634,163,111 317
 Total Equity and Liabilities 3,812,290,448 3,561,440,158 3,684,568,731 3,435,660,859
 """
 
+# Real text from page 164 of Asian Hotels and Properties PLC's FY2023/24
+# annual report (downloaded 17 Aug from https://cdn.cse.lk/cmt/
+# upload_report_file/690_1716340840640.pdf — its most recent currently-
+# public annual report), sought out specifically for §22 rule 1's hard-
+# book input (revaluation reserves), deliberately from the sector §22
+# itself names ("plantations, property and hotels") rather than reusing
+# J.F. Packaging/Swadeshi, neither of which is likely to carry a
+# material revaluation reserve. AHPL (owns Cinnamon Grand Colombo) prints
+# a single COMBINED line, "Other components of equity" — not a pure
+# revaluation-reserve figure (its own Note 23 breaks this down into a
+# Revaluation Reserve plus a smaller Other Capital Reserve), used as the
+# best genuinely available real proxy — see `app.domain.financial_
+# statement_parsing.CANONICAL_LABELS`' own comment and `app.domain.
+# valuation_view.hard_book_for`'s docstring for the full picture,
+# including two other real companies checked: Kelani Valley Plantations
+# PLC, which genuinely has NO such line at all (99-year government
+# leases, nothing to revalue — real, not a gap), and Galadari Hotels
+# (Lanka) PLC, whose real "Revaluation reserve" line is pure but whose
+# 2-column filing shape isn't extractable through this pipeline for an
+# unrelated, pre-existing reason.
+BALANCE_SHEET_TEXT_AHPL = """\
+STATEMENT OF FINANCIAL POSITION
+GROUP COMPANY
+As at 31st March 2024 2023 2024 2023
+In Rs.'000s Note
+ASSETS
+Non current assets
+Property, plant and equipment 12 39,773,775 37,685,819 35,187,698 33,620,536
+Total non current assets 46,236,276 44,230,736 38,352,277 36,949,791
+Current assets
+Total current assets 2,145,026 1,680,911 1,213,271 976,209
+Total assets 48,381,302 45,911,647 39,565,548 37,926,000
+EQUITY & LIABILITIES
+Equity
+Stated capital 22 3,345,117 3,345,117 3,345,117 3,345,117
+Revenue reserves 4,851,535 4,916,727 3,359,649 3,498,432
+Other components of equity 23 21,752,125 20,613,338 21,142,080 20,112,228
+Equity attributable to equity holders of the parent 29,948,777 28,875,182 27,846,846 26,955,777
+Non-controlling interest 3,600,350 3,362,706 - -
+Total equity 33,549,127 32,237,888 27,846,846 26,955,777
+Total liabilities 14,832,175 13,673,759 11,718,702 10,970,223
+Total equity and liabilities 48,381,302 45,911,647 39,565,548 37,926,000
+"""
+
 
 @pytest.mark.parametrize(
     ("line", "expected_label", "expected_statement_line", "expected_primary"),
@@ -488,6 +532,24 @@ def test_extract_candidate_lines_finds_both_occurrences_of_a_split_maturity_debt
     assert by_statement_line["trade_receivables"] == Decimal("645602031")
     assert by_statement_line["advances_and_prepayments"] == Decimal("243913244")
     assert by_statement_line["trade_payables"] == Decimal("377836430")
+
+
+def test_extract_candidate_lines_finds_ahpls_combined_revaluation_reserve_proxy():
+    """§22 rule 1's hard-book input, verified against a real filing in
+    the sector §22 itself names ("plantations, property and hotels")
+    rather than reused from J.F. Packaging/Swadeshi. Confirms the single
+    occurrence extracted is the correct one (page 164's real value,
+    21,752,125 — Group, 2024) — not a notes-page duplicate — and that
+    every other canonical line on the same real page still extracts
+    correctly alongside it."""
+    lines = extract_candidate_lines(BALANCE_SHEET_TEXT_AHPL)
+    by_statement_line = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+
+    assert by_statement_line["revaluation_reserves"] == Decimal("21752125")
+    assert by_statement_line["total_equity"] == Decimal("33549127")
+    assert by_statement_line["total_assets"] == Decimal("48381302")
+    assert by_statement_line["total_liabilities"] == Decimal("14832175")
+    assert by_statement_line["total_equity_and_liabilities"] == Decimal("48381302")
 
 
 class TestDeriveAdditionalLineItems:

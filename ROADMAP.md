@@ -1283,6 +1283,68 @@ a dated, sourced manual observation is.
         zero-defaults and the "no growth view" fallback all appeared in
         `warnings` exactly as designed.
       - 1 new regression test. Full suite: 699 passed.
+- [x] **§22 rule 1's hard book value wired to live data — `app.domain.
+      valuation_view.hard_book_for`, the fifth live §18-26 number.**
+      `revaluation_reserves` (a new canonical label, sought out
+      specifically in the sectors §22 names — "plantations, property and
+      hotels" — rather than reused from J.F. Packaging/Swadeshi, which
+      are unlikely to carry a material one) was originally researched by
+      a subagent that hit its own session usage limit mid-task; its
+      findings across real filings were recovered and re-verified
+      directly before wiring:
+      - Kelani Valley Plantations PLC's real Statement of Financial
+        Position has NO revaluation-related equity line at all — a real,
+        verified zero, not an extraction gap: Sri Lanka's regional
+        plantation companies hold estate land on 99-year government
+        leases from the 1992 privatisation, not freehold, so there is
+        nothing to revalue.
+      - Asian Hotels and Properties PLC (owns Cinnamon Grand Colombo)
+        prints a single combined line, "Other components of equity" —
+        re-verified end-to-end 17 Aug against its actual currently-public
+        FY2023/24 filing (an earlier draft of this research cited a later
+        report and figures that could not be found or reproduced;
+        corrected rather than left standing) — extracts correctly through
+        the real pipeline with no notes-page or double-count issue. Its
+        own Note 23 breaks the combined figure into a Revaluation Reserve
+        plus a smaller Other Capital Reserve, confirming it's a real,
+        revaluation-dominated proxy, never presented as an exact figure.
+      - Galadari Hotels (Lanka) PLC prints a genuinely pure, standalone
+        "Revaluation reserve" line — added as a verified wording for a
+        4-column filing, but Galadari's OWN filing is 2-column and not
+        yet extractable through this pipeline for an unrelated,
+        pre-existing reason (`DEFAULT_EXPECTED_VALUE_COLUMNS`'s own
+        "KNOWN LIMITATION").
+      - `hard_book_for` computes a result whenever `total_equity` exists,
+        even with no `revaluation_reserves` line found — absence is
+        usually the real, correct case (Kelani Valley Plantations proves
+        it) — but ALWAYS flags the ambiguity in `warnings`, because a
+        missing line could ALSO mean a real reserve this extractor hasn't
+        matched yet, which would silently OVERSTATE hard book if trusted
+        without comment — the same "flag the dangerous-direction default
+        every time" discipline `app.domain.wacc`'s missing-cost-of-debt
+        rule and `dcf_for`'s missing-`minority_interest`/`pension_
+        deficit` warnings already established.
+      - Kept informational only, like `wacc`/`current_period_fcff`/
+        `gordon_growth_ddm` — NOT a §24 triangulation anchor, even though
+        §24's own weight table gives asset-based methods real weight for
+        property/plantation/hotel archetypes (0.55 for `"property"`).
+        Reason: `revaluation_reserves` has verified nonzero real-world
+        coverage on exactly one filing so far, and even that one is a
+        combined proxy, not a pure figure — not enough evidence to
+        promote to an anchor without risking exactly the "confident,
+        precise, entirely fictional number" §15 warns against.
+      - The other four §22 tools (`value_land`, `hotel_replacement_
+        cost_check`, `compute_plantation_hard_nav`, `compute_liquidation_
+        value`) remain correctly unwired — they need independent
+        external reference data (land valuations, hotel build-cost
+        benchmarks, estate transaction prices, a liquidation-basis PP&E
+        mark) no source in this project provides.
+      - New `GET /valuation/{ticker}` field `hard_book`. 6 new tests
+        across `test_financial_statement_parsing.py` (the real AHPL
+        extraction, using the real re-verified page-164 text as its
+        fixture) and `test_valuation_view.py` (hand-worked with and
+        without a real reserve, missing-total_equity, §8 exclusion).
+        Full suite: 704 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

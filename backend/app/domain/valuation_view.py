@@ -84,6 +84,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.domain.asset_based_valuation import HardBookResult, compute_hard_book
 from app.domain.cost_of_equity_view import cost_of_equity_for
 from app.domain.dcf import DCFAssumptions, DCFResult, compute_fcff, dcf_equity_value
 from app.domain.wacc import WACCResult, compute_cost_of_debt, compute_wacc
@@ -834,6 +835,114 @@ def dcf_for(
 
 
 @dataclass(frozen=True)
+class HardBookView:
+    period_end: dt.date | None
+    result: HardBookResult | None
+    excluded_unconfirmed_lines: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> HardBookView:
+    """§22 rule 1: hard book value = reported book value − revaluation
+    reserves — "necessary for plantations, property and hotels, and
+    dangerous, because reported book value in these sectors is inflated
+    by property revaluation." `total_equity` has been live-extractable
+    since Phase 1; `revaluation_reserves` is new (17 Aug), verified
+    against real filings deliberately sought out in the sectors §22
+    names, not reused from J.F. Packaging/Swadeshi — see `CANONICAL_
+    LABELS`' own comment for the full picture: Asian Hotels and
+    Properties PLC prints a combined "Other components of equity" line
+    (revaluation-dominated per its own Note 23 breakdown, a real, usable
+    proxy but not an exact figure — see `CANONICAL_LABELS`' own comment
+    for the verified real page/values, re-checked end-to-end 17 Aug
+    against its actual currently-public FY2023/24 filing); Kelani Valley
+    Plantations PLC genuinely has NO such
+    line at all (99-year government leases, not freehold — nothing to
+    revalue, a real zero, not a gap); Galadari Hotels (Lanka) PLC prints
+    a pure standalone figure but its filing's 2-column layout isn't yet
+    extractable through this pipeline for an unrelated, pre-existing
+    reason.
+
+    WHY A MISSING `revaluation_reserves` LINE DEFAULTS TO ZERO, AND WHY
+    THAT DEFAULT IS FLAGGED EVERY TIME RATHER THAN TRUSTED SILENTLY.
+    Zero is the CORRECT figure for a company with genuinely no
+    revaluation reserve — Kelani Valley Plantations proves this is a
+    real, common case, not just a convenient placeholder. But zero is
+    ALSO what a company gets when it has a real reserve this system
+    simply hasn't matched yet (a wording variant not yet added, or a
+    filing shape — like Galadari's — this pipeline can't parse at all).
+    Treating "confirmed zero" and "not yet extracted" identically means
+    a missing line can silently OVERSTATE hard book for the second case
+    (hard book should be lower once a real reserve is subtracted) — the
+    same dangerous-direction problem `app.domain.wacc`'s missing-cost-
+    of-debt rule and `dcf_for`'s missing-`minority_interest`/`pension_
+    deficit` warnings already name elsewhere in this module. So this
+    function always computes a result when `total_equity` exists (never
+    silently withholds one over an absent reserve line, since absence is
+    usually the true, correct case), but ALWAYS appends a warning
+    naming the ambiguity when no `revaluation_reserves` line was found,
+    rather than only warning when one WAS found — the asymmetry a
+    caller needs to know about is "this could be an unmatched real
+    reserve," not "a reserve was matched."
+
+    Deliberately kept informational only, like `wacc`/`current_period_
+    fcff`/`gordon_growth_ddm` — NOT one of `valuation_summary_for`'s
+    triangulation anchors — even though §24's own weight table gives
+    asset-based methods real weight for property/plantation/hotel
+    archetypes (`app.domain.triangulation.TRIANGULATION_WEIGHTS`'s
+    `"property"` row: 0.55 asset_sotp weight). The reason is coverage,
+    not the arithmetic: `revaluation_reserves` has been verified nonzero
+    on exactly one real filing so far (AHPL), and even that one is a
+    combined proxy figure, not a pure revaluation number — promoting
+    this to an anchor on that little real-world coverage would be
+    exactly the "confident, precise, entirely fictional number" §15
+    warns the whole valuation engine exists to prevent. Ready to become
+    a real anchor for property/plantation/hotel archetypes once more of
+    the sector has been verified, the same trajectory `current_period_
+    fcff`/`wacc` followed before `dcf_for` was ready to consume them.
+    """
+    stamp = as_of or dt.date.today()
+    period_end, items, excluded = _confirmable_line_items(db, ticker, stamp)
+    warnings: list[str] = []
+    if excluded:
+        warnings.append(
+            f"{excluded} present for this period but still AI-assisted/unconfirmed — "
+            "excluded from this figure per §8."
+        )
+    if period_end is None:
+        warnings.append("No fundamentals visible as of this date at all.")
+        return HardBookView(period_end, None, excluded, tuple(warnings))
+
+    equity_item = items.get("total_equity")
+    if equity_item is None:
+        warnings.append("total_equity not available from confirmed fundamentals.")
+        return HardBookView(period_end, None, excluded, tuple(warnings))
+
+    reval_item = items.get("revaluation_reserves")
+    if reval_item is None:
+        warnings.append(
+            "No revaluation_reserves line found for this company as of this period — "
+            "treated as zero. This is the CORRECT figure for a company with genuinely "
+            "no revaluation reserve (verified real for at least one company checked, "
+            "Kelani Valley Plantations PLC), but could OVERSTATE hard book if this "
+            "company actually carries a reserve under wording this extractor hasn't "
+            "matched yet, or on a filing shape it can't parse at all (both real, "
+            "separately-documented cases — see this function's own docstring)."
+        )
+
+    shares = _latest_shares_issued(db, ticker, stamp)
+    if shares is None:
+        warnings.append("shares_issued not available (no FloatData row on or before this date).")
+
+    result = compute_hard_book(
+        reported_book_value=equity_item.value,
+        revaluation_reserves=reval_item.value if reval_item else Decimal(0),
+        diluted_shares_outstanding=Decimal(shares) if shares else None,
+    )
+    return HardBookView(period_end, result, excluded, tuple(warnings))
+
+
+@dataclass(frozen=True)
 class CompanyValuationSummary:
     ticker: str
     as_of: dt.date
@@ -876,6 +985,15 @@ class CompanyValuationSummary:
     production is not ready to move a price ladder. Never one of
     `triangulation`'s anchors below."""
 
+    hard_book: HardBookView
+    """Informational only, same status as `wacc`/`current_period_fcff`/
+    `gordon_growth_ddm` — see `hard_book_for`'s own docstring for why:
+    real, tested, live-wireable code, but `revaluation_reserves` has
+    verified real-world coverage on only one filing so far, not enough
+    to promote to a §24 triangulation anchor yet even though §22/§24
+    would weight it heavily for a property/plantation/hotel archetype
+    once it is."""
+
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
     price_ladder: PriceLadderResult | None
@@ -901,6 +1019,7 @@ def valuation_summary_for(
     wacc_view = wacc_for(db, ticker, current_price, stamp)
     dcf_view = dcf_for(db, ticker, current_price, stamp)
     ddm_view = gordon_growth_ddm_for(db, ticker, stamp)
+    hard_book_view = hard_book_for(db, ticker, stamp)
 
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
@@ -937,6 +1056,6 @@ def valuation_summary_for(
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
-        gordon_growth_ddm=ddm_view,
+        gordon_growth_ddm=ddm_view, hard_book=hard_book_view,
         triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder, note=note,
     )

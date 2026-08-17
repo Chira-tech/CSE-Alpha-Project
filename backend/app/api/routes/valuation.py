@@ -170,6 +170,21 @@ class DDMOut(BaseModel):
     warnings: list[str]
 
 
+class HardBookOut(BaseModel):
+    period_end: dt.date | None
+    reported_book_value: Decimal | None
+    revaluation_reserves: Decimal | None
+    hard_book_value: Decimal | None
+    hard_book_per_share: Decimal | None
+    """§22 rule 1 — informational only, never one of `triangulation`'s
+    anchors below. See `app.domain.valuation_view.hard_book_for`'s own
+    docstring for why: real, tested, live-wireable code, but
+    `revaluation_reserves` has verified real-world coverage on only one
+    filing so far, not enough to promote to an anchor yet."""
+
+    warnings: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -183,6 +198,7 @@ class CompanyValuationOut(BaseModel):
     wacc: WACCOut
     dcf: DCFOut
     gordon_growth_ddm: DDMOut
+    hard_book: HardBookOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
     price_ladder: PriceLadderOut | None
@@ -261,6 +277,14 @@ class CompanyValuationOut(BaseModel):
                     s.gordon_growth_ddm.result.value_per_share if s.gordon_growth_ddm.result else None
                 ),
                 warnings=list(s.gordon_growth_ddm.warnings),
+            ),
+            hard_book=HardBookOut(
+                period_end=s.hard_book.period_end,
+                reported_book_value=s.hard_book.result.reported_book_value if s.hard_book.result else None,
+                revaluation_reserves=s.hard_book.result.revaluation_reserves if s.hard_book.result else None,
+                hard_book_value=s.hard_book.result.hard_book_value if s.hard_book.result else None,
+                hard_book_per_share=s.hard_book.result.hard_book_per_share if s.hard_book.result else None,
+                warnings=list(s.hard_book.warnings),
             ),
             triangulation=TriangulationOut(
                 triangulation_category=t.triangulation_category,

@@ -256,24 +256,32 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # §22 rule 1's hard-book input — verified against FOUR real filings,
     # deliberately sought out in the sector §22 itself names ("plantations,
     # property and hotels"), and genuinely NOT one consistent shape.
-    # Kelani Valley Plantations PLC's real FY2025/26 Statement of Financial
-    # Position has NO revaluation-related equity line at all — real,
-    # verified, zero-nonzero evidence, not an extraction gap: Sri Lanka's
-    # regional plantation companies (KVPL among them) hold estate land on
-    # 99-year GOVERNMENT LEASES from the 1992 privatisation, not freehold,
-    # so freehold PP&E/bearer biological assets are carried at cost, and
-    # there is nothing to revalue. Asian Hotels and Properties PLC's real
-    # FY2025/26 Statement of Financial Position (owns Cinnamon Grand
-    # Colombo) prints a single COMBINED line instead, "Other components of
-    # equity" (23,239,546 as at 31.03.2026) — its own Statement of Changes
-    # in Equity (a differently-shaped, multi-reserve-column statement this
-    # extractor cannot parse — see below) breaks this into a Revaluation
-    # Reserve of 23,054,073 and a much smaller Other Capital Reserve of
-    # 185,473, confirming the combined line is 99.2% revaluation-
-    # attributable for this company but is NOT a pure revaluation-reserve
-    # figure — used here as the best genuinely available real proxy, never
-    # silently presented as an exact revaluation figure (see
-    # `app.domain.valuation_view.hard_book_for`'s own docstring). Galadari
+    # Kelani Valley Plantations PLC's real Statement of Financial Position
+    # has NO revaluation-related equity line at all — real, verified,
+    # zero-nonzero evidence, not an extraction gap: Sri Lanka's regional
+    # plantation companies (KVPL among them) hold estate land on 99-year
+    # GOVERNMENT LEASES from the 1992 privatisation, not freehold, so
+    # freehold PP&E/bearer biological assets are carried at cost, and
+    # there is nothing to revalue. Asian Hotels and Properties PLC (owns
+    # Cinnamon Grand Colombo) prints a single COMBINED line instead,
+    # "Other components of equity" — CORRECTED 17 Aug, re-verified
+    # directly against the actual currently-public filing after an
+    # earlier version of this comment cited a later FY2025/26 report and
+    # figures that could not be found or reproduced: AHPL's real FY2023/24
+    # Statement of Financial Position (page 164, downloaded fresh from
+    # `https://cdn.cse.lk/cmt/upload_report_file/690_1716340840640.pdf`)
+    # prints "Other components of equity 23 21,752,125 20,613,338
+    # 21,142,080 20,112,228" — extracted end-to-end through the real
+    # pipeline (`extract_financial_statement_candidates`) without a
+    # notes-page or double-count issue. Its own Statement of Changes in
+    # Equity/Note 23 (a differently-shaped, multi-reserve-column statement
+    # this extractor cannot parse — see below) breaks the combined figure
+    # down into a Revaluation Reserve plus a smaller Other Capital
+    # Reserve, confirming the combined line is REVALUATION-DOMINATED for
+    # this company but is NOT a pure revaluation-reserve figure — used
+    # here as the best genuinely available real proxy, never silently
+    # presented as an exact revaluation figure (see `app.domain.
+    # valuation_view.hard_book_for`'s own docstring). Galadari
     # Hotels (Lanka) PLC's real FY2025 Statement of Financial Position
     # prints a genuinely PURE, standalone "Revaluation reserve" line
     # (6,454,099,241) — no bundling at all — but that filing's statement is
@@ -292,7 +300,7 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # equity balance has no current/non-current maturity split to sum —
     # it is one number, printed once, on every real filing checked.
     "revaluation_reserves": (
-        "other components of equity",  # AHPL — combined, ~99.2% revaluation-attributable (verified)
+        "other components of equity",  # AHPL — combined, revaluation-dominated proxy (verified end-to-end)
         "revaluation reserve",  # Galadari — pure, but not yet live-extractable (2-column filing)
     ),
 }

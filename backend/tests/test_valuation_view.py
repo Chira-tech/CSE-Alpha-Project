@@ -27,6 +27,7 @@ from app.domain.valuation_view import (
     current_period_fcff_for,
     dcf_for,
     gordon_growth_ddm_for,
+    hard_book_for,
     justified_price_to_book_for,
     residual_income_for,
     valuation_summary_for,
@@ -654,6 +655,93 @@ class TestGordonGrowthDDMFor:
         view = gordon_growth_ddm_for(db_session, "COMB.N0000", AS_OF)
         assert view.result is None
         assert any("Cost of equity not computable" in w for w in view.warnings)
+
+
+class TestHardBookFor:
+    def test_hand_worked_with_a_real_reserve(self, db_session):
+        """AHPL-shaped fixture: a real, non-zero revaluation_reserves
+        line present alongside total_equity."""
+        _seed_security(db_session, ticker="AHPL.N0000")
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="AHPL.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line="total_equity",
+                    value=Decimal("33549127"), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="AHPL.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line="revaluation_reserves",
+                    value=Decimal("21752125"), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+            ]
+        )
+        db_session.commit()
+        _seed_shares(db_session, ticker="AHPL.N0000", shares=100)
+
+        view = hard_book_for(db_session, "AHPL.N0000", AS_OF)
+        assert view.result is not None
+        assert view.result.reported_book_value == Decimal("33549127")
+        assert view.result.revaluation_reserves == Decimal("21752125")
+        # 33,549,127 - 21,752,125 = 11,797,002
+        assert view.result.hard_book_value == Decimal("11797002")
+        assert view.result.hard_book_per_share == Decimal("117970.02")
+        # A real reserve WAS found — no ambiguity warning about a missing line.
+        assert not any("No revaluation_reserves line found" in w for w in view.warnings)
+
+    def test_no_revaluation_reserve_line_defaults_to_zero_but_warns(self, db_session):
+        """Kelani-Valley-Plantations-shaped fixture: total_equity exists,
+        no revaluation_reserves line at all. Per `hard_book_for`'s own
+        documented choice, this still returns a result (absence is
+        usually the real, correct case) but ALWAYS flags the ambiguity —
+        this could be a genuine zero or an unmatched real reserve."""
+        _seed_security(db_session, ticker="KVPL.N0000")
+        db_session.add(
+            Fundamental(
+                ticker="KVPL.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1, statement_line="total_equity",
+                value=Decimal(1000), provenance_tier=ProvenanceTier.REPORTED,
+            )
+        )
+        db_session.commit()
+        _seed_shares(db_session, ticker="KVPL.N0000", shares=100)
+
+        view = hard_book_for(db_session, "KVPL.N0000", AS_OF)
+        assert view.result is not None
+        assert view.result.revaluation_reserves == Decimal(0)
+        assert view.result.hard_book_value == Decimal(1000)  # unchanged — no reserve to strip
+        assert any("No revaluation_reserves line found" in w for w in view.warnings)
+
+    def test_missing_total_equity_gives_no_result(self, db_session):
+        _seed_security(db_session, ticker="AHPL.N0000")
+        # A confirmed period exists (net_income), but not total_equity —
+        # distinct from the "no fundamentals visible at all" case.
+        db_session.add(
+            Fundamental(
+                ticker="AHPL.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1, statement_line="net_income",
+                value=Decimal(100), provenance_tier=ProvenanceTier.REPORTED,
+            )
+        )
+        db_session.commit()
+        view = hard_book_for(db_session, "AHPL.N0000", AS_OF)
+        assert view.result is None
+        assert any("total_equity not available" in w for w in view.warnings)
+
+    def test_unconfirmed_line_excludes_from_the_figure(self, db_session):
+        _seed_security(db_session, ticker="AHPL.N0000")
+        db_session.add(
+            Fundamental(
+                ticker="AHPL.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1, statement_line="total_equity",
+                value=Decimal(1000), provenance_tier=ProvenanceTier.AI_ASSISTED,
+            )
+        )
+        db_session.commit()
+
+        view = hard_book_for(db_session, "AHPL.N0000", AS_OF)
+        assert view.result is None
+        assert "total_equity" in view.excluded_unconfirmed_lines
 
 
 class TestValuationSummaryFor:
