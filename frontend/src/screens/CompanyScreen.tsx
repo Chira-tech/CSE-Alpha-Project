@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiRequestError, getSecurity } from "../api";
 import { EvidencePanel, type Evidence } from "../components/EvidencePanel";
+import { PriceHistoryChart } from "../components/PriceHistoryChart";
 import { ProvenanceChip } from "../components/ProvenanceChip";
 import { RatioTable } from "../components/RatioTable";
 import { EmptyState, ErrorState, QuarantineNotice, SkeletonCard } from "../components/states";
@@ -221,7 +222,9 @@ export function CompanyScreen({
             </p>
           </EmptyState>
         ) : (
-          <div className="table-wrap table-scroll">
+          <>
+            <PriceHistoryChart history={data.price_history} />
+            <div className="table-wrap table-scroll">
             <table className="data-table">
               <thead>
                 <tr>
@@ -256,7 +259,8 @@ export function CompanyScreen({
                 ))}
               </tbody>
             </table>
-          </div>
+            </div>
+          </>
         )}
       </section>
 
