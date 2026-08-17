@@ -3,18 +3,19 @@ Bridges stored `macro_series` rows to `app.domain.ardl_cointegration` —
 the I/O layer that module deliberately doesn't have.
 
 ALIGNMENT ACROSS DIFFERENT PUBLICATION CADENCES, FORWARD-FILLED, NOT
-INTERSECTED. The dependent series (e.g. ASPI, published daily) and an
-independent series (e.g. the 364-day T-bill yield, published on auction
-days — weekly) don't share observation dates. Intersecting on exact
-dates would throw away nearly all of the daily series' real information
-for no good reason; instead, for every date the dependent series has a
-real observation, this module takes whichever independent-series value
-was MOST RECENTLY PUBLISHED on or before that date — genuinely
-"as of that date," the same point-in-time principle `app.domain.macro_
-engine_view._latest_and_window_ago` and `app.domain.macro_view.
-spread_history`'s own pairing logic already use for exactly this kind of
-cross-cadence alignment, applied here to a third real case rather than a
-new one invented from scratch.
+INTERSECTED — via `app.domain.series_alignment.forward_filled_independent`,
+shared with `app.domain.johansen_vecm_view` (§30 step 2's other real
+multi-series estimator), not reimplemented per module. The dependent
+series (e.g. ASPI, published daily) and an independent series (e.g. the
+364-day T-bill yield, published on auction days — weekly) don't share
+observation dates. Intersecting on exact dates would throw away nearly
+all of the daily series' real information for no good reason; instead,
+for every date the dependent series has a real observation, the shared
+helper takes whichever independent-series value was MOST RECENTLY
+PUBLISHED on or before that date — genuinely "as of that date," the same
+point-in-time principle `app.domain.macro_engine_view._latest_and_
+window_ago` and `app.domain.macro_view.spread_history`'s own pairing
+logic already use for exactly this kind of cross-cadence alignment.
 
 TESTED ON LEVELS, LIKE `app.domain.stationarity_view`, FOR THE SAME
 REASON. §30 step 2's actual question is about the long-run relationship
@@ -35,6 +36,7 @@ from app.domain.ardl_cointegration import (
     ardl_bounds_test,
 )
 from app.domain.macro_view import series_history
+from app.domain.series_alignment import forward_filled_independent
 
 DEFAULT_LOOKBACK_LIMIT = 400
 
@@ -47,26 +49,6 @@ class ArdlBoundsTestView:
     aligned_observation_count: int
     result: BoundsTestResult | None
     warnings: tuple[str, ...]
-
-
-def _forward_filled_independent(
-    dependent_dates: list[dt.date], independent_rows: list
-) -> dict[dt.date, Decimal]:
-    """For each `dependent_dates` entry, the independent series' own
-    most-recently-published value on or before that date — `None`
-    (simply absent from the returned dict) for a dependent date that
-    predates every independent observation."""
-    independent_sorted = sorted(independent_rows, key=lambda r: r.obs_date)
-    aligned: dict[dt.date, Decimal] = {}
-    idx = 0
-    latest_value: Decimal | None = None
-    for date in dependent_dates:
-        while idx < len(independent_sorted) and independent_sorted[idx].obs_date <= date:
-            latest_value = independent_sorted[idx].value
-            idx += 1
-        if latest_value is not None:
-            aligned[date] = latest_value
-    return aligned
 
 
 def ardl_bounds_test_for(
@@ -97,7 +79,7 @@ def ardl_bounds_test_for(
         if not rows:
             warnings.append(f"No real observations of {series_id!r} available at all.")
             continue
-        aligned_independents[series_id] = _forward_filled_independent(dependent_dates, rows)
+        aligned_independents[series_id] = forward_filled_independent(dependent_dates, rows)
 
     # Keep only dependent dates where EVERY independent series has a
     # real (forward-filled) value — an ARDL fit needs a complete row per

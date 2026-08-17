@@ -891,6 +891,120 @@ part of it genuinely isn't untouched anymore.
         and real-database round-trip; `test_market_cointegration_api.py`).
         Full suite: 849 passed.
 
+### §30 step 2 — complete: Johansen/VECM, VAR-in-differences, and the estimator-selection capstone
+
+The "named precisely what remains unbuilt" bullet directly above is now
+STALE for two of its three items — this entry supersedes it. All three
+estimators §30 step 2 names are live, and a new capstone module actually
+runs the FULL routing decision end to end for the first time.
+
+- [x] **The Johansen/VECM branch ("all I(1)") is live** —
+      `app.domain.johansen_vecm` (pure) + `app.domain.johansen_vecm_view`,
+      exposed on new `GET /market/johansen-vecm?dependent_series_id=...&
+      independent_series_id=...`. Real `statsmodels.tsa.vector_ar.vecm.
+      coint_johansen`/`select_coint_rank`/`VECM` throughout. Scoped to the
+      same two-series case `app.domain.ardl_cointegration` itself commits
+      to, for the same reason (§30's own worked description is a
+      two-series relationship; an N-variable system is real, separate,
+      unbuilt generality nothing here needs yet).
+      - **Case choice matches ARDL's own, not coincidentally.** Johansen's
+        own five-case deterministic-term table is the same table
+        Pesaran-Shin-Smith's bounds test reuses — `det_order=0` /
+        `deterministic="co"` (Johansen's "Case III": unrestricted
+        constant, no trend) is the same economic case `app.domain.ardl_
+        cointegration.DEFAULT_PSS_CASE = 3` already commits to. One
+        disclosed default reused across both estimators.
+      - **The half-life math is reused from ARDL, not rederived.** A
+        VECM's own `alpha` coefficient for the dependent series' own
+        equation plays exactly the ECT coefficient's role, same sign
+        convention, same domain — so `app.domain.ardl_cointegration.
+        error_correction_half_life` is imported directly rather than
+        copy-pasted, and its own validation against §30's worked example
+        already covers this use.
+      - **A rank other than 1 is refused, not clamped.** For a two-
+        variable system, Johansen's cointegration rank can only sensibly
+        be 0 or 1; a reported rank of 2 would mean both series are
+        individually stationary, contradicting the "all I(1)" premise
+        this branch exists for — `fit_vecm` names this honestly rather
+        than guessing what a rank-2 cointegrating vector would even mean.
+      - Validated the same way as every other statistical module this
+        phase: a known-cointegrated synthetic pair correctly recovers
+        `conclusion="cointegrated"`, `selected_rank=1`, a negative
+        `alpha_dependent`, and a `beta` close to the true DGP's own
+        coefficient (2.0); known-independent random walks correctly
+        recover `conclusion="not_cointegrated"`, `selected_rank=0`.
+- [x] **The VAR-in-differences branch ("no cointegration") is live** —
+      `app.domain.var_differences` (pure) + `app.domain.var_differences_
+      view`, exposed on new `GET /market/var-differences?...`. Real
+      `statsmodels.tsa.api.VAR` throughout.
+      - **Real short-run content, not a consolation prize.** A "no
+        cointegration" verdict means no long-run equilibrium to correct
+        toward, but a real short-run link (does a shock to the
+        independent series' own lagged difference help predict the
+        dependent series' own next difference?) can still exist and still
+        matter — this module reports exactly that coefficient and its
+        real p-value, the VAR-in-differences equivalent of an ECT
+        coefficient, with an explicit note that there is no half-life to
+        report here by construction (nothing to correct toward).
+      - **Same signature shape as the other two branches, deliberately**:
+        takes LEVEL series like `ardl_bounds_test` and `fit_vecm` do, and
+        differences internally, so a caller implementing the actual
+        three-way routing doesn't have to reshape its own real data
+        differently per branch (this is exactly what `app.domain.
+        estimator_selection_view` then does).
+      - Validated against a real known lagged short-run relationship (y's
+        own difference responds to x's own lagged difference with a true
+        coefficient of 0.5) — the fitted coefficient recovers within
+        0.2 of the true value and is correctly flagged significant;
+        independent random walks are correctly flagged not significant.
+- [x] **The cross-cadence alignment logic used by all three branches was
+      extracted into `app.domain.series_alignment`** (`app.domain.ardl_
+      cointegration_view` refactored to use it too) rather than left
+      triplicated once a second, then third, view module needed the exact
+      same forward-fill-not-intersect logic.
+- [x] **§30 step 2's actual three-way routing decision runs end to end
+      for the first time** — `app.domain.estimator_selection` (pure
+      router: given each series' own real `app.domain.stationarity`
+      consensus, which estimator to ATTEMPT) + `app.domain.estimator_
+      selection_view` (runs the attempt against real data and follows the
+      real fallback chain), exposed on new `GET /market/estimator-
+      selection?dependent_series_id=...&independent_series_id=...`.
+      - **The pure router only decides what to ATTEMPT, not the fallback
+        chain** — a Johansen candidate that finds no real cointegration,
+        or an ARDL bounds test that concludes "not cointegrated," both
+        genuinely fall through to VAR-in-differences, but only the view
+        layer (which actually runs each estimator and can see its real
+        conclusion) can know that happened. Kept as two separate,
+        separately-tested layers rather than one that silently conflates
+        "which estimator looked right on paper" with "which estimator's
+        result actually got reported."
+      - **Both-I(0) is routed to ARDL, not treated as a missing case.**
+        §30's own text only names three cases (all I(1) / mixed I(0)/I(1)
+        / no cointegration), but Pesaran-Shin-Smith's bounds test is
+        explicitly designed to work regardless of whether regressors are
+        I(0), I(1), or a mixture — that is the entire point of a BOUNDS
+        test. Two genuinely stationary series route to the same
+        `"ardl_bounds_test"` choice as a mixed pair, a disclosed
+        extension of §30's own three cases, not a shortcut.
+      - **A real, named gap: no I(2) check.** §30 step 2's own text
+        assumes "none I(2)" as a precondition; this module doesn't itself
+        verify it (that would mean re-running `assess_stationarity` on
+        each series' own first difference too). A genuinely I(2) input
+        would be routed as if it were I(1) or I(0) with no warning —
+        named honestly in the module docstring rather than silently
+        assumed away.
+      - Validated end to end against real stored `macro_series` rows: a
+        known-cointegrated I(1) pair correctly routes to and through a
+        real Johansen/VECM fit; two independent I(1) random walks
+        correctly get routed to Johansen first (both non-stationary) and
+        then correctly fall back to a real VAR-in-differences fit once
+        Johansen itself finds nothing.
+      - 34 new tests across seven files spanning all of the above (pure
+        domain, view, and API layers for both new estimators, the shared
+        alignment helper's continued correctness, the pure router, and
+        the capstone view + its own API endpoint). Full suite: 883
+        passed, no regressions.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —
@@ -1832,15 +1946,15 @@ of safety, the price ladder — §17-26) are no longer in this list — see
 above. **Macro/ARDL (§29-34) is also no longer a single untouched
 block** — §31's regime classifier, §33's sector sensitivity matrix,
 §34's national project register, §30 step 1's stationarity/break testing,
-and the ARDL-bounds-testing HALF of §30 step 2 (this project's own
-disclosed default estimator for its mixed I(0)/I(1), short-sample data)
-are all live (see those entries above); only the Johansen/VECM branch and
-the plain-VAR-in-differences branch of §30 step 2, step 3 (impulse
-response/FEVD/Toda-Yamamoto causality — needs a fitted cointegration
-model from whichever step-2 branch actually applies), and step 5 (the
-event study) remain genuinely unbuilt within Part G, named precisely
-rather than left as one vague "macro/ARDL" line item. Building the
-still-deferred items against
+and now ALL of §30 step 2 (all three named estimators — ARDL bounds
+testing, Johansen/VECM, VAR-in-differences — plus the estimator-selection
+capstone that actually routes between them using each series' own real
+stationarity read) are live (see those entries above); only step 3
+(impulse response/FEVD/Toda-Yamamoto causality — needs a fitted
+cointegration model from whichever step-2 branch actually applies) and
+step 5 (the event study) remain genuinely unbuilt within Part G, named
+precisely rather than left as one vague "macro/ARDL" line item. Building
+the still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the
 spec's failure-mode register (Part N) warns about.

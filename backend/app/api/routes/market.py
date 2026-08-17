@@ -47,8 +47,11 @@ from app.domain.macro_view import (
     spread_history,
 )
 from app.domain.ardl_cointegration_view import ardl_bounds_test_for
+from app.domain.estimator_selection_view import select_and_fit_estimator
+from app.domain.johansen_vecm_view import johansen_vecm_for
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.domain.stationarity_view import stationarity_for_series
+from app.domain.var_differences_view import var_in_differences_for
 from app.ingestion.cse_client import CseClient, ShapeChangedError
 from app.ingestion.schemas import AspiData, SectorIndexRow
 
@@ -414,6 +417,23 @@ class CointegrationOut(BaseModel):
     warnings: list[str]
 
 
+def _bounds_test_result_out(r) -> BoundsTestResultOut:
+    return BoundsTestResultOut(
+        dependent_name=r.dependent_name,
+        independent_names=list(r.independent_names),
+        statistic=r.statistic,
+        critical_values={
+            pct: BoundsTestCriticalValueOut(lower=band["lower"], upper=band["upper"])
+            for pct, band in r.critical_values.items()
+        },
+        conclusion=r.conclusion,
+        ect_coefficient=r.ect_coefficient,
+        half_life_periods=r.half_life_periods,
+        observation_count=r.observation_count,
+        note=r.note,
+    )
+
+
 @router.get("/cointegration", response_model=CointegrationOut)
 def cointegration(
     dependent_series_id: str,
@@ -426,23 +446,7 @@ def cointegration(
     (market level vs. one macro level), so this starts there rather than
     building unused generality ahead of a real need."""
     view = ardl_bounds_test_for(db, dependent_series_id, [independent_series_id])
-    result_out = None
-    if view.result is not None:
-        r = view.result
-        result_out = BoundsTestResultOut(
-            dependent_name=r.dependent_name,
-            independent_names=list(r.independent_names),
-            statistic=r.statistic,
-            critical_values={
-                pct: BoundsTestCriticalValueOut(lower=band["lower"], upper=band["upper"])
-                for pct, band in r.critical_values.items()
-            },
-            conclusion=r.conclusion,
-            ect_coefficient=r.ect_coefficient,
-            half_life_periods=r.half_life_periods,
-            observation_count=r.observation_count,
-            note=r.note,
-        )
+    result_out = _bounds_test_result_out(view.result) if view.result is not None else None
     return CointegrationOut(
         dependent_series_id=view.dependent_series_id,
         independent_series_ids=list(view.independent_series_ids),
@@ -450,6 +454,195 @@ def cointegration(
         aligned_observation_count=view.aligned_observation_count,
         result=result_out,
         warnings=list(view.warnings),
+    )
+
+
+class JohansenTestOut(BaseModel):
+    dependent_name: str
+    independent_name: str
+    trace_statistics: list[Decimal]
+    trace_critical_values: list[dict[str, Decimal]]
+    selected_rank: int
+    conclusion: str
+    observation_count: int
+    note: str
+
+
+class VecmFitOut(BaseModel):
+    johansen: JohansenTestOut
+    alpha_dependent: Decimal | None
+    alpha_independent: Decimal | None
+    beta: Decimal | None
+    half_life_periods: Decimal | None
+    note: str
+
+
+class JohansenVecmOut(BaseModel):
+    """§30 step 2's "all I(1)" branch, live, on real `macro_series` LEVEL
+    data — same real cross-cadence alignment as `GET /market/
+    cointegration`, see `app.domain.johansen_vecm_view`'s own docstring.
+    `result` is `None` only when too few real aligned observations exist
+    or the rank test itself fails; once real data clears that bar,
+    `result` is always present even for a non-cointegrated outcome (see
+    `app.domain.johansen_vecm.fit_vecm`)."""
+
+    dependent_series_id: str
+    independent_series_id: str
+    as_of: dt.date
+    aligned_observation_count: int
+    result: VecmFitOut | None
+    warnings: list[str]
+
+
+def _vecm_fit_out(r) -> VecmFitOut:
+    return VecmFitOut(
+        johansen=JohansenTestOut(
+            dependent_name=r.johansen.dependent_name,
+            independent_name=r.johansen.independent_name,
+            trace_statistics=list(r.johansen.trace_statistics),
+            trace_critical_values=[dict(band) for band in r.johansen.trace_critical_values],
+            selected_rank=r.johansen.selected_rank,
+            conclusion=r.johansen.conclusion,
+            observation_count=r.johansen.observation_count,
+            note=r.johansen.note,
+        ),
+        alpha_dependent=r.alpha_dependent,
+        alpha_independent=r.alpha_independent,
+        beta=r.beta,
+        half_life_periods=r.half_life_periods,
+        note=r.note,
+    )
+
+
+@router.get("/johansen-vecm", response_model=JohansenVecmOut)
+def johansen_vecm(
+    dependent_series_id: str,
+    independent_series_id: str,
+    db: Session = Depends(get_db),
+) -> JohansenVecmOut:
+    view = johansen_vecm_for(db, dependent_series_id, independent_series_id)
+    result_out = _vecm_fit_out(view.result) if view.result is not None else None
+    return JohansenVecmOut(
+        dependent_series_id=view.dependent_series_id,
+        independent_series_id=view.independent_series_id,
+        as_of=view.as_of,
+        aligned_observation_count=view.aligned_observation_count,
+        result=result_out,
+        warnings=list(view.warnings),
+    )
+
+
+class VarDifferencesResultOut(BaseModel):
+    dependent_name: str
+    independent_name: str
+    lags: int
+    is_stable: bool
+    dependent_on_independent_lag1_coefficient: Decimal
+    dependent_on_independent_lag1_p_value: Decimal
+    significant: bool
+    observation_count: int
+    note: str
+
+
+class VarDifferencesOut(BaseModel):
+    """§30 step 2's "no cointegration" branch, live, on real
+    `macro_series` LEVEL data (differenced internally — see `app.domain.
+    var_differences`'s own docstring). `result` is `None` only when too
+    few real aligned observations exist or the underlying fit fails."""
+
+    dependent_series_id: str
+    independent_series_id: str
+    as_of: dt.date
+    aligned_observation_count: int
+    result: VarDifferencesResultOut | None
+    warnings: list[str]
+
+
+def _var_differences_result_out(r) -> VarDifferencesResultOut:
+    return VarDifferencesResultOut(
+        dependent_name=r.dependent_name,
+        independent_name=r.independent_name,
+        lags=r.lags,
+        is_stable=r.is_stable,
+        dependent_on_independent_lag1_coefficient=r.dependent_on_independent_lag1_coefficient,
+        dependent_on_independent_lag1_p_value=r.dependent_on_independent_lag1_p_value,
+        significant=r.significant,
+        observation_count=r.observation_count,
+        note=r.note,
+    )
+
+
+@router.get("/var-differences", response_model=VarDifferencesOut)
+def var_differences(
+    dependent_series_id: str,
+    independent_series_id: str,
+    db: Session = Depends(get_db),
+) -> VarDifferencesOut:
+    view = var_in_differences_for(db, dependent_series_id, independent_series_id)
+    result_out = _var_differences_result_out(view.result) if view.result is not None else None
+    return VarDifferencesOut(
+        dependent_series_id=view.dependent_series_id,
+        independent_series_id=view.independent_series_id,
+        as_of=view.as_of,
+        aligned_observation_count=view.aligned_observation_count,
+        result=result_out,
+        warnings=list(view.warnings),
+    )
+
+
+class EstimatorSelectionOut(BaseModel):
+    """§30 step 2 assembled end to end: real stationarity assessments for
+    both series pick which of the three named estimators to attempt
+    (`app.domain.estimator_selection.select_estimator`'s own routing
+    rule), the attempt actually runs against real `macro_series` data,
+    and a real "not cointegrated" verdict falls back to a VAR in first
+    differences — see `app.domain.estimator_selection_view`'s own
+    docstring. At most one of `johansen_vecm`/`ardl_bounds_test`/
+    `var_differences` is populated unless a fallback occurred, in which
+    case both the initial attempt and the fallback are present so a
+    caller can see exactly what happened, not just the final answer."""
+
+    dependent_series_id: str
+    independent_series_id: str
+    as_of: dt.date
+    dependent_consensus: str | None
+    independent_consensus: str | None
+    initial_choice: str
+    estimator_used: str
+    reason: str
+    johansen_vecm: VecmFitOut | None = None
+    ardl_bounds_test: BoundsTestResultOut | None = None
+    var_differences: VarDifferencesResultOut | None = None
+
+
+@router.get("/estimator-selection", response_model=EstimatorSelectionOut)
+def estimator_selection(
+    dependent_series_id: str,
+    independent_series_id: str,
+    db: Session = Depends(get_db),
+) -> EstimatorSelectionOut:
+    result = select_and_fit_estimator(db, dependent_series_id, independent_series_id)
+    johansen_out = None
+    if result.johansen_vecm is not None and result.johansen_vecm.result is not None:
+        johansen_out = _vecm_fit_out(result.johansen_vecm.result)
+    ardl_out = None
+    if result.ardl_bounds_test is not None and result.ardl_bounds_test.result is not None:
+        ardl_out = _bounds_test_result_out(result.ardl_bounds_test.result)
+    var_out = None
+    if result.var_differences is not None and result.var_differences.result is not None:
+        var_out = _var_differences_result_out(result.var_differences.result)
+    return EstimatorSelectionOut(
+        dependent_series_id=result.dependent_series_id,
+        independent_series_id=result.independent_series_id,
+        as_of=result.as_of,
+        dependent_consensus=result.dependent_consensus,
+        independent_consensus=result.independent_consensus,
+        initial_choice=result.initial_choice,
+        estimator_used=result.estimator_used,
+        reason=result.reason,
+        johansen_vecm=johansen_out,
+        ardl_bounds_test=ardl_out,
+        var_differences=var_out,
     )
 
 
