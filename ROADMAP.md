@@ -374,6 +374,36 @@ so each is ready to wire up the moment its blocking data source exists,
 without touching the arithmetic that's already tested today. 107 new
 tests; full suite 611 passed.
 
+- [x] **Justified P/B and residual income wired to live data**
+      (`app/domain/valuation_view.py`, `GET /valuation/{ticker}`). The
+      two models above that need only book value, ROE and Ke — all
+      already extracted or computed — now run against a real company's
+      stored fundamentals rather than only caller-supplied test inputs.
+      Enforces §8 explicitly: re-selects line items filtered through
+      `can_enter_valuation` rather than reusing `fundamentals_view`'s
+      ratio-display selection, so an AI-assisted figure can be shown as a
+      ratio on the company file but still cannot reach a fair value.
+      Residual income's one-year forecast is deliberately flat
+      persistence of the latest confirmed ROE (the "no view" baseline),
+      not a fabricated improvement trajectory. New policy default
+      `settings.long_run_nominal_growth_pct` (PARAMETERS.md #11).
+      - **Found and fixed a real bug on the first live request against
+        this endpoint, not in a fixture.** Bootstrapped real data for
+        COMB.N0000 (real close 205.75, 17 Aug) and hit
+        `GET /valuation/COMB.N0000` for the first time — `current_price`
+        came back `null` despite the real price being on file, because
+        the response derived it from `price_ladder.current_price`, and
+        `price_ladder` is `None` whenever no fair value exists yet to
+        build a ladder from (true for nearly every ticker today, since
+        almost none have a confirmed fundamentals period). Fixed by
+        carrying `current_price` on `CompanyValuationSummary`
+        independently of whether a ladder could be built. A fixture-only
+        test suite would not have caught this — the existing
+        "no confirmed data" test exercised the exact code path but wasn't
+        asserting on `current_price` — which is the reason this project
+        keeps checking new endpoints against one real bootstrapped
+        request before calling a feature done.
+
 ## Phase 5 groundwork — the hero variable
 
 - [x] **§29's hero spread is live**: equity earnings yield (1 ÷ market
