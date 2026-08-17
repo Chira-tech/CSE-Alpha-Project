@@ -12,7 +12,13 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from app.domain.fundamentals_view import latest_period_line_items, ratios_for
+from app.domain.fundamentals_view import (
+    historical_ratios_for,
+    latest_period_line_items,
+    ratio_trends_for,
+    ratios_for,
+)
+from app.domain.trend_detection import Direction
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 from app.models.securities import Security
@@ -161,3 +167,97 @@ def test_period_type_filter_separates_annual_from_quarterly(db_session):
     )
     assert annual_period == dt.date(2026, 3, 31)
     assert annual_items["net_income"].value == Decimal("189908")
+
+
+def test_a_single_real_period_reports_insufficient_history_not_a_trend(db_session):
+    """The honest baseline case for most tickers today: J.F. Packaging's
+    real, verified FY2025/26 figures are the only period this system has
+    ever ingested for it, via the deterministic extractor. §13's trend
+    detection must say so plainly rather than reporting a direction from
+    one point pretending to be a trajectory."""
+    _seed_company(db_session)
+    _add(db_session, "net_income", "189908", period_end=dt.date(2026, 3, 31), first_available=dt.date(2026, 8, 14))
+    _add(db_session, "total_equity", "1643031", period_end=dt.date(2026, 3, 31), first_available=dt.date(2026, 8, 14))
+    db_session.commit()
+
+    trends = ratio_trends_for(db_session, TICKER, as_of=dt.date(2026, 9, 1))
+    roe_trend = trends["return_on_equity"]
+    assert roe_trend.periods_used == 1
+    assert roe_trend.direction.direction == Direction.INSUFFICIENT_HISTORY
+
+
+def test_historical_ratios_groups_by_period_across_multiple_years(db_session):
+    """Synthetic multi-year series — no real filing history exists yet
+    for any ticker (getFinancialAnnouncement is recent-filings only), so
+    this documents the shape the trend engine will consume once the
+    extractor has run across several annual reports rather than one."""
+    _seed_company(db_session)
+    for year, net_income, equity in (
+        (2022, "100000", "1000000"),
+        (2023, "130000", "1080000"),
+        (2024, "160000", "1150000"),
+        (2025, "189908", "1643031"),
+    ):
+        _add(
+            db_session, "net_income", net_income,
+            period_end=dt.date(year, 3, 31), first_available=dt.date(year, 8, 14),
+        )
+        _add(
+            db_session, "total_equity", equity,
+            period_end=dt.date(year, 3, 31), first_available=dt.date(year, 8, 14),
+        )
+    db_session.commit()
+
+    by_period = historical_ratios_for(db_session, TICKER, as_of=dt.date(2026, 1, 1))
+    assert list(by_period.keys()) == [
+        dt.date(2022, 3, 31), dt.date(2023, 3, 31), dt.date(2024, 3, 31), dt.date(2025, 3, 31),
+    ]
+    roe_2025 = next(r for r in by_period[dt.date(2025, 3, 31)] if r.key == "return_on_equity")
+    assert round(roe_2025.value, 4) == Decimal("0.1156")
+
+
+def test_a_four_year_improving_roe_reports_as_increasing(db_session):
+    """Rising net income against a slower-growing equity base — a real
+    trend shape, and enough periods (4) for the direction test to run."""
+    _seed_company(db_session)
+    for year, net_income, equity in (
+        (2022, "80000", "1000000"),
+        (2023, "110000", "1020000"),
+        (2024, "150000", "1040000"),
+        (2025, "189908", "1060000"),
+    ):
+        _add(
+            db_session, "net_income", net_income,
+            period_end=dt.date(year, 3, 31), first_available=dt.date(year, 8, 14),
+        )
+        _add(
+            db_session, "total_equity", equity,
+            period_end=dt.date(year, 3, 31), first_available=dt.date(year, 8, 14),
+        )
+    db_session.commit()
+
+    trends = ratio_trends_for(db_session, TICKER, as_of=dt.date(2026, 1, 1))
+    roe_trend = trends["return_on_equity"]
+    assert roe_trend.periods_used == 4
+    assert roe_trend.direction.direction == Direction.INCREASING
+
+
+def test_point_in_time_applies_to_trend_history_too(db_session):
+    """A restatement filed after `as_of` must not leak into the trend any
+    more than it may leak into a single-period ratio — the whole point of
+    routing this through `fundamentals_as_of` rather than a raw query."""
+    _seed_company(db_session)
+    _add(db_session, "net_income", "100000", period_end=dt.date(2024, 3, 31), first_available=dt.date(2024, 8, 1))
+    _add(db_session, "total_equity", "1000000", period_end=dt.date(2024, 3, 31), first_available=dt.date(2024, 8, 1))
+    _add(db_session, "net_income", "150000", period_end=dt.date(2025, 3, 31), first_available=dt.date(2025, 8, 1))
+    _add(db_session, "total_equity", "1000000", period_end=dt.date(2025, 3, 31), first_available=dt.date(2025, 8, 1))
+    # A restatement of the 2024 figure, published well after both periods above.
+    _add(
+        db_session, "net_income", "20000", period_end=dt.date(2024, 3, 31),
+        first_available=dt.date(2026, 6, 1), version=2,
+    )
+    db_session.commit()
+
+    by_period = historical_ratios_for(db_session, TICKER, as_of=dt.date(2025, 9, 1))
+    roe_2024 = next(r for r in by_period[dt.date(2024, 3, 31)] if r.key == "return_on_equity")
+    assert roe_2024.value == Decimal("0.1")  # the original 100000/1000000, not the restated 20000

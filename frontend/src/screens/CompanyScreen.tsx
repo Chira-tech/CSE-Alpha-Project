@@ -314,8 +314,79 @@ export function CompanyScreen({
           ratios={data.ratios}
           notComputable={data.ratios_not_yet_computable}
           periodEnd={data.ratio_period_end}
+          trends={data.ratio_trends}
           onExplain={setEvidence}
         />
+      </section>
+
+      <section aria-labelledby="routing-heading" className="stack-tight">
+        <h2 id="routing-heading">Valuation routing</h2>
+        <p className="prose t-body">
+          §15/§16: which valuation methods apply to this company, and which are actively wrong for
+          it. Not a valuation — the DCF/DDM/residual-income math itself is Phase 3 work not yet
+          built (see below); this only decides which of those methods, once built, would run.
+        </p>
+        {data.valuation_routing.primary_models.length === 0 ? (
+          <div className="notice notice-neutral">
+            <h3>{data.archetype ? "No routing table entry" : "No archetype confirmed"}</h3>
+            <p className="prose t-body">{data.valuation_routing.note}</p>
+          </div>
+        ) : (
+          <div className="card">
+            {!data.valuation_routing.in_published_table && (
+              <p className="prose t-caption" style={{ marginBottom: "var(--s3)" }}>
+                {data.valuation_routing.note}
+              </p>
+            )}
+            <span className="t-label">Primary models</span>
+            <ul className="not-built-list">
+              {data.valuation_routing.primary_models.map((m) => (
+                <li key={m}>{m}</li>
+              ))}
+            </ul>
+            {data.valuation_routing.suppressed.length > 0 && (
+              <>
+                <span className="t-label">Suppressed, and why</span>
+                <ul className="not-built-list">
+                  {data.valuation_routing.suppressed.map((s) => (
+                    <li key={s.model}>
+                      <strong>{s.model}</strong> — {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {data.valuation_routing.meaningless_metrics.length > 0 && (
+              <>
+                <span className="t-label">Meaningless for this archetype</span>
+                <ul className="not-built-list">
+                  {data.valuation_routing.meaningless_metrics.map((m) => (
+                    <li key={m}>{m}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {data.valuation_routing.requires_earnings_normalisation && (
+              <p className="prose t-caption" style={{ marginTop: "var(--s3)" }}>
+                Cyclical or commodity-linked — earnings need normalising to a mid-cycle average
+                before any multiple is applied (§15).
+              </p>
+            )}
+          </div>
+        )}
+        <details>
+          <summary className="t-caption" style={{ cursor: "pointer" }}>
+            {data.valuation_routing.unanswered_questions.length} of §16's routing questions cannot
+            be answered yet
+          </summary>
+          <ul className="not-built-list" style={{ marginTop: "var(--s2)" }}>
+            {data.valuation_routing.unanswered_questions.map((q) => (
+              <li key={q.question}>
+                {q.question} — {q.missing_input}
+              </li>
+            ))}
+          </ul>
+        </details>
       </section>
 
       <section aria-labelledby="fundamentals-heading" className="stack-tight">

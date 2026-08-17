@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.ratios import LineItem, RatioResult, compute_all
+from app.domain.trend_detection import RatioSeriesPoint, RatioTrend, analyse_ratio_trend
 from app.models.fundamentals import Fundamental
 
 
@@ -57,3 +58,51 @@ def ratios_for(
     stamp = as_of or dt.date.today()
     period_end, items = latest_period_line_items(db, ticker, stamp, period_type)
     return period_end, compute_all(items)
+
+
+def historical_ratios_for(
+    db: Session, ticker: str, as_of: dt.date | None = None, period_type: str | None = None
+) -> dict[dt.date, list[RatioResult]]:
+    """Every point-in-time-visible period's ratios, keyed by period_end —
+    the input `analyse_ratio_trend` (§13) needs, and the reason it lives
+    next to `ratios_for` rather than in the trend module itself: this is
+    the only place that owns turning stored `Fundamental` rows into
+    ratios, and duplicating that logic elsewhere would risk the two
+    falling out of sync.
+    """
+    stamp = as_of or dt.date.today()
+    rows = fundamentals_as_of(db, ticker, stamp)
+    if period_type is not None:
+        rows = [r for r in rows if r.period_type == period_type]
+
+    by_period: dict[dt.date, dict[str, LineItem]] = {}
+    for row in rows:
+        items = by_period.setdefault(row.period_end, {})
+        existing = items.get(row.statement_line)
+        if existing is None:
+            items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
+
+    return {period: compute_all(items) for period, items in sorted(by_period.items())}
+
+
+def ratio_trends_for(
+    db: Session, ticker: str, as_of: dt.date | None = None, period_type: str | None = None
+) -> dict[str, RatioTrend]:
+    """§13's trend metadata for every ratio with at least one computed
+    value across the visible history. A ratio present in only one period
+    still appears here — `analyse_ratio_trend` reports
+    `insufficient_history` for it explicitly rather than the ratio simply
+    not showing up, which would look like an omission rather than a fact
+    about the data."""
+    by_period = historical_ratios_for(db, ticker, as_of, period_type)
+
+    series_by_key: dict[str, list[RatioSeriesPoint]] = {}
+    for period_end, results in by_period.items():
+        for result in results:
+            if result.value is None:
+                continue
+            series_by_key.setdefault(result.key, []).append(
+                RatioSeriesPoint(period_end=period_end, value=result.value)
+            )
+
+    return {key: analyse_ratio_trend(key, series) for key, series in series_by_key.items()}

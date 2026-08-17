@@ -2,7 +2,7 @@ import type { Evidence } from "./EvidencePanel";
 import { ProvenanceChip } from "./ProvenanceChip";
 import { EmptyState } from "./states";
 import { UNAVAILABLE } from "../format";
-import type { Ratio, UncomputableRatio } from "../types";
+import type { Ratio, RatioTrend, UncomputableRatio } from "../types";
 
 /**
  * §12's ratio set, with §5.1's display rules: percentages to one decimal,
@@ -12,18 +12,38 @@ import type { Ratio, UncomputableRatio } from "../types";
  * Every row is clickable into the evidence panel (§14, "every number is a
  * door") because a ratio's whole value here is that you can see the two
  * figures underneath it.
+ *
+ * The Trend column is §13, and for most companies today it will read
+ * "1 period" — most tickers have exactly one filing this system has ever
+ * ingested (`getFinancialAnnouncement` is a recent-filings feed, not a
+ * historical archive). That is not a bug in the column; it is the
+ * honest state of the data, displayed rather than hidden, and it fills
+ * in on its own as more periods accumulate.
  */
+function trendLabel(trend: RatioTrend | undefined): string {
+  if (!trend || trend.direction === "insufficient_history") {
+    const n = trend?.periods_used ?? 0;
+    return n <= 1 ? `${n} period` : `${n} periods — too few for a trend`;
+  }
+  const arrow = trend.direction === "increasing" ? "▲" : trend.direction === "decreasing" ? "▼" : "→";
+  const word = trend.direction === "no_trend" ? "no trend" : trend.direction;
+  return `${arrow} ${word}${trend.significant ? "" : " (not significant)"}`;
+}
+
 export function RatioTable({
   ratios,
   notComputable,
   periodEnd,
+  trends = [],
   onExplain,
 }: {
   ratios: Ratio[];
   notComputable: UncomputableRatio[];
   periodEnd: string | null;
+  trends?: RatioTrend[];
   onExplain: (evidence: Evidence) => void;
 }) {
+  const trendByKey = new Map(trends.map((t) => [t.ratio_key, t]));
   const computable = ratios.filter((r) => r.value !== null);
   const blocked = ratios.filter((r) => r.value === null);
 
@@ -52,6 +72,7 @@ export function RatioTable({
               <tr>
                 <th scope="col">Ratio</th>
                 <th scope="col" className="right">Value</th>
+                <th scope="col">Trend (§13)</th>
                 <th scope="col">Provenance</th>
               </tr>
             </thead>
@@ -83,6 +104,7 @@ export function RatioTable({
                     {r.label}
                   </th>
                   <td className="right num">{formatRatio(r)}</td>
+                  <td className="t-caption">{trendLabel(trendByKey.get(r.key))}</td>
                   <td>{r.provenance && <ProvenanceChip tier={r.provenance} />}</td>
                 </tr>
               ))}

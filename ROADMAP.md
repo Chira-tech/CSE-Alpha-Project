@@ -145,6 +145,61 @@ consecutive days.
       stored and stamp a prominent warning onto every draft from a filing
       that doesn't balance. The identity check catches this class of
       corruption independently of the regex.
+- [x] **Trend detection (§13)** — `app/domain/trend_detection.py`,
+      surfaced as a "Trend (§13)" column on the company file's ratio
+      table. Direction (Mann-Kendall, implemented by hand — no
+      scipy/numpy dependency exists in this project), acceleration
+      (second-difference sign) and consistency (fraction of moves
+      matching the series' overall direction) for any ratio's history.
+      - **Honest about the real state of the data**: §12 targets 10
+        years / 8 quarters of history per company; `getFinancialAnnouncement`
+        (the only ingestion source wired up) is a recent-filings feed,
+        not a historical archive, so most tickers have exactly ONE period
+        stored. Below 3 periods the module reports
+        `insufficient_history` rather than a direction from a single
+        point pretending to be a trajectory — verified against J.F.
+        Packaging's real, single, confirmed period, which is today's
+        actual baseline case, not a contrived edge case.
+      - The Mann-Kendall cases are hand-verified against the textbook
+        S-statistic (not just against the module's own output) — the
+        spec's own worked example, "ROE moved 11% → 14% → 16% → 18%",
+        is one of the test fixtures.
+      - `direction` and `significant` are reported separately: a 3-period
+        series can be directionally informative without clearing 95%
+        confidence, and collapsing the two into one flag would either
+        hide the direction or overstate the confidence.
+- [x] **Model router (§15/§16)** — `app/domain/valuation_router.py`,
+      the front door of Phase 3. Does NOT compute a valuation; decides
+      which valuation METHODS apply to a company and which are actively
+      wrong for it, from the archetype already on the security record.
+      Every suppression carries a stated reason, per §16's own
+      requirement ("the user sees which one and why").
+      - All 15 Appendix P2 archetypes route to something; the 12 with a
+        published §15 table row are marked as such, and the 3 that
+        aren't (healthcare, logistics, other) say so explicitly rather
+        than borrowing a neighbouring row's guidance silently.
+      - **The case the whole module is built around**: a bank never gets
+        a firm-side model. FCFF DCF, EV/EBIT, EV/EBITDA and
+        sum-of-the-parts are suppressed outright for bank/non_bank_finance
+        /insurance, with the reason stated ("a bank's debt is its raw
+        material, not its financing").
+      - `archetype=None` blocks routing entirely rather than defaulting
+        to a generic profile — the failure mode that would otherwise
+        silently apply an industrial DCF to a bank the moment archetype
+        confirmation lagged behind. Verified live: JKH.N0000 (flagged
+        for manual review by the conglomerate-name guard, §16's earlier
+        commit) correctly returns no routing at all.
+      - **Two of §16's five routing questions, and distress/option-value
+        routing, are honestly reported as unanswerable** rather than
+        answered from a substitute proxy: "are cash flows predictable"
+        needs CFO/FCF (not extracted — no cash-flow-statement line exists
+        in `CANONICAL_LABELS`, PARAMETERS.md #9's gap), "are dividends a
+        meaningful proxy" needs a dividend history (not extracted), and
+        distress routing needs an Altman Z-score (not computed). Treating
+        net income as a stand-in for cash flow, or a leverage ratio as a
+        stand-in for a Z-score, would be exactly the "confident, precise,
+        entirely fictional number" §15 warns the whole router exists to
+        prevent — just relocated from valuation into routing.
 
 ## Phase 5 groundwork — the hero variable
 
@@ -461,8 +516,13 @@ a dated, sourced manual observation is.
 
 ## Explicitly deferred to later phases
 
-Fundamental ratios, valuation models, macro/ARDL, factor library, scoring,
-AI research writer, decision capture UI, frontend — all Phase 2+ per §54.
-Building these against unvalidated data would produce exactly the
-look-ahead-biased, false-precision numbers the spec's failure-mode register
-(Part N) warns about.
+Valuation MATH (DCF, DDM, residual income, SOTP, §18-24), the earnings
+integrity veto (§14 — needs CFO, related-party revenue, auditor and
+director-dealings data this system does not extract), macro/ARDL, factor
+library, scoring, AI research writer, decision capture UI — all Phase 2+
+per §54. Fundamental ratios (§12), trend detection (§13) and the model
+router (§15/§16) are no longer in this list — see above. Building the
+still-deferred items against unvalidated data, or against inputs this
+system doesn't actually have, would produce exactly the look-ahead-biased,
+false-precision numbers the spec's failure-mode register (Part N) warns
+about.

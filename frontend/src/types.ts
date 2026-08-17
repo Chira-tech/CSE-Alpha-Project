@@ -147,6 +147,39 @@ export interface UncomputableRatio {
   missing_inputs: string[];
 }
 
+export interface RatioTrend {
+  ratio_key: string;
+  direction: "increasing" | "decreasing" | "no_trend" | "insufficient_history";
+  significant: boolean;
+  accelerating: boolean | null;
+  fraction_same_direction: string | null;
+  periods_used: number;
+  first_period: string | null;
+  last_period: string | null;
+}
+
+export interface Suppression {
+  model: string;
+  reason: string;
+}
+
+export interface UnansweredQuestion {
+  question: string;
+  missing_input: string;
+}
+
+export interface ValuationRouting {
+  in_published_table: boolean;
+  primary_models: string[];
+  suppressed: Suppression[];
+  meaningless_metrics: string[];
+  requires_earnings_normalisation: boolean;
+  is_financial_firm: boolean;
+  is_holding_company: boolean;
+  note: string;
+  unanswered_questions: UnansweredQuestion[];
+}
+
 export interface SecurityDetail {
   ticker: string;
   name: string;
@@ -169,6 +202,8 @@ export interface SecurityDetail {
   ratio_period_end: string | null;
   ratios: Ratio[];
   ratios_not_yet_computable: UncomputableRatio[];
+  ratio_trends: RatioTrend[];
+  valuation_routing: ValuationRouting;
   not_yet_built: string[];
 }
 

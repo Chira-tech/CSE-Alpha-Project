@@ -22,8 +22,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.domain.fundamentals_view import ratios_for
+from app.domain.fundamentals_view import ratio_trends_for, ratios_for
 from app.domain.ratios import NOT_YET_COMPUTABLE
+from app.domain.valuation_router import route_valuation
 from app.jobs.reconciliation import is_quarantined
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import ProvenanceTier
@@ -101,6 +102,42 @@ class UncomputableRatioOut(BaseModel):
     missing_inputs: list[str]
 
 
+class SuppressionOut(BaseModel):
+    model: str
+    reason: str
+
+
+class UnansweredQuestionOut(BaseModel):
+    question: str
+    missing_input: str
+
+
+class ValuationRoutingOut(BaseModel):
+    """§15/§16. Never a valuation — only which methods apply to this
+    company and which are actively wrong for it, and why."""
+
+    in_published_table: bool
+    primary_models: list[str]
+    suppressed: list[SuppressionOut]
+    meaningless_metrics: list[str]
+    requires_earnings_normalisation: bool
+    is_financial_firm: bool
+    is_holding_company: bool
+    note: str
+    unanswered_questions: list[UnansweredQuestionOut]
+
+
+class RatioTrendOut(BaseModel):
+    ratio_key: str
+    direction: str
+    significant: bool
+    accelerating: bool | None
+    fraction_same_direction: Decimal | None
+    periods_used: int
+    first_period: dt.date | None
+    last_period: dt.date | None
+
+
 class SecurityDetail(BaseModel):
     ticker: str
     name: str
@@ -126,16 +163,22 @@ class SecurityDetail(BaseModel):
     ratio_period_end: dt.date | None
     ratios: list[RatioOut]
     ratios_not_yet_computable: list[UncomputableRatioOut]
+    ratio_trends: list[RatioTrendOut]
+    valuation_routing: ValuationRoutingOut
     not_yet_built: list[str]
 
 
 # Kept in one place so the company file and any future screen tell the
 # user the same story about what this system can't do yet.
 _NOT_YET_BUILT = [
-    "Fair value and buy-below price (Phase 3 — valuation engine, Master Spec §16-26)",
+    "Fair value and buy-below price (Phase 3 — the model router (§16) now runs and names which "
+    "methods apply, but the DCF/DDM/residual-income/SOTP math itself, §18-24, is not built)",
     "Composite score (Phase 2 — §38; needs the full ratio set plus sector-relative percentiles)",
     "Coverage tier (Phase 2 — §11; the gate logic exists but needs liquidity history and free float)",
-    "Trend direction and sector percentiles (Phase 2 — §13; needs several periods of history)",
+    "Sector-relative percentiles (Phase 2 — §12; trend DIRECTION now runs per company (§13), but "
+    "ranking a ratio against its sector needs a full-universe computation not yet built)",
+    "Earnings integrity veto (§14 — Beneish M-Score, Sloan accrual ratio, related-party revenue, "
+    "auditor tier and director dealings all need statement lines this system does not yet extract)",
     "Macro regime and sector fit (Phase 5 — macro engine, §29-33)",
     "Research note (Phase 7 — AI research writer, §44)",
 ]
@@ -239,6 +282,8 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
     )
 
     ratio_period_end, ratio_results = ratios_for(db, ticker)
+    ratio_trends = ratio_trends_for(db, ticker)
+    routing = route_valuation(security.archetype)
 
     siblings = (
         db.scalars(
@@ -321,5 +366,32 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
             UncomputableRatioOut(key=key, label=label, missing_inputs=list(needs))
             for key, label, needs in NOT_YET_COMPUTABLE
         ],
+        ratio_trends=[
+            RatioTrendOut(
+                ratio_key=t.ratio_key,
+                direction=t.direction.direction.value,
+                significant=t.direction.significant,
+                accelerating=t.acceleration.accelerating,
+                fraction_same_direction=t.consistency.fraction_same_direction,
+                periods_used=t.periods_used,
+                first_period=t.first_period,
+                last_period=t.last_period,
+            )
+            for t in ratio_trends.values()
+        ],
+        valuation_routing=ValuationRoutingOut(
+            in_published_table=routing.in_published_table,
+            primary_models=list(routing.primary_models),
+            suppressed=[SuppressionOut(model=s.model, reason=s.reason) for s in routing.suppressed],
+            meaningless_metrics=list(routing.meaningless_metrics),
+            requires_earnings_normalisation=routing.requires_earnings_normalisation,
+            is_financial_firm=routing.is_financial_firm,
+            is_holding_company=routing.is_holding_company,
+            note=routing.note,
+            unanswered_questions=[
+                UnansweredQuestionOut(question=q.question, missing_input=q.missing_input)
+                for q in routing.unanswered_questions
+            ],
+        ),
         not_yet_built=_NOT_YET_BUILT,
     )
