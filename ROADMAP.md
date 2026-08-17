@@ -233,18 +233,33 @@ a dated, sourced manual observation is.
       is a recent-filings feed only; a different, not-yet-identified
       source is needed to backfill history to the Part O #2 target
       (2015-01-01).
-- [ ] **Price history is one day deep — now confirmed unsolvable from the
-      CSE API.** A full sweep of the site's own endpoint list (see the
-      inventory in README_ENDPOINTS.md) found `chartData`, which returns
-      up to ~1 year of daily points but **for the ASPI index only** —
-      every per-company id returns `[]`. `companyInfoSummery`'s
-      hi/lo/volume fields are period aggregates, not a series. So there is
-      no per-company historical price source on the public API, and this
-      genuinely blocks the factor library, momentum, Dimson beta and
-      Amihud liquidity — most of Phases 2 and 6. **A broker EOD file is
-      now the only identified route**, and it would also satisfy
-      PARAMETERS.md #5's second-source requirement: one decision, two
-      blockers cleared.
+- [x] **Per-company price history — reverses the "confirmed unsolvable"
+      finding above.** That conclusion tested `chartData` (param
+      `chartId`) against every security id and got `[]` for all of them.
+      It was the wrong endpoint. `companyChartDataByStock` (param
+      `stockId`, a DIFFERENT id space from `allSecurityCode`'s `id`)
+      returns a genuine ~241-session daily series per line — high, low,
+      close, volume — and was found the same way sectors and CBSL were:
+      opening the CSE's own "Company Data" page and reading its network
+      calls, not by guessing endpoint names.
+      - Verified exact against `companyInfoSummery`'s independently
+        fetched hiTrade/lowTrade/closingPrice/tdyShareVolume for
+        COMB.N0000 on 2026-08-14, not just internally consistent.
+      - Full 283-ticker backfill run 17 Aug 2026: **65,211 rows written,
+        0 failures, 0 missing ids.** `app.domain.company_price_history`
+        records that ~1-in-4 tickers trigger a close-outside-its-own-range
+        warning (2,058 across 115 tickers, concentrated in thinly-traded
+        small caps) — the guard drops only the contradicted bound and
+        keeps the close, so nothing was silently fabricated.
+      - Fills gaps only: never overwrites a date the daily EOD job already
+        captured live, never touches today's still-forming session.
+        Scheduled weekly (Saturday 07:00 Colombo) as a standing repair.
+      - **Still does not satisfy PARAMETERS.md #5** — it is cse.lk, the
+        same institution as every other price figure here, not an
+        independent second source. That decision is unchanged.
+      - Unblocks the factor library, momentum, Dimson beta and Amihud
+        liquidity — most of Phases 2 and 6 — which is the part that was
+        genuinely blocked and no longer is.
 - [x] **`cse_sector` is now populated from the exchange's own GICS
       publication — 257 of 283 lines (90.8%).** This reverses a
       conclusion recorded twice in this file ("confirmed not available

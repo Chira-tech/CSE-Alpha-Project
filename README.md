@@ -109,18 +109,31 @@ apply unchanged.
 
 ### Keeping data collection running
 
-With no historical price source available on the CSE API, forward capture
-is the only way price history accumulates — and a day missed cannot be
-recovered. Run the worker alongside the API:
+Forward capture at the close is still how a day's own price gets in, and
+a day the worker was down for is still gone — `companyChartDataByStock`
+(below) repairs gaps within the trailing ~year, not beyond it. Run the
+worker alongside the API:
 
 ```bash
 python -m app.worker
 ```
 
-It holds the §52 schedule (EOD snapshot 15:00 Colombo, reconciliation
-15:05, corporate-actions scan 16:00, financial-statement scan 16:30,
-weekdays only) and otherwise idles. All times are anchored to the
-exchange's clock regardless of where the host machine is.
+It holds the §52 schedule — EOD snapshot 15:00 Colombo, reconciliation
+15:05, corporate-actions scan 16:00, financial-statement scan 16:30
+weekdays, plus Saturday's issuer-registry / sector / price-gap-repair
+jobs — and otherwise idles. All times are anchored to the exchange's
+clock regardless of where the host machine is.
+
+### Backfilling ~1 year of per-company price history
+
+```bash
+python -m app.cli backfill-prices          # all ~283 lines, ~10 min at CSE pacing
+```
+
+Fills gaps only — a date already captured live at the close is never
+touched, and today's still-forming session is always skipped. Also runs
+automatically every Saturday. This is still a single-source (cse.lk)
+series; see PARAMETERS.md #5 for what it does and doesn't solve.
 
 ### Macro data (the hero spread)
 
