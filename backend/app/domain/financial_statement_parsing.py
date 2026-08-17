@@ -253,6 +253,48 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "amounts_due_from_related_parties_non_trade": ("amounts due from related parties - non trade",),  # JFP
     "amounts_due_to_related_parties_trade": ("amounts due to related parties - trade",),  # JFP
     "amounts_due_to_related_parties_non_trade": ("amounts due to related parties - non trade",),  # JFP
+    # §22 rule 1's hard-book input — verified against FOUR real filings,
+    # deliberately sought out in the sector §22 itself names ("plantations,
+    # property and hotels"), and genuinely NOT one consistent shape.
+    # Kelani Valley Plantations PLC's real FY2025/26 Statement of Financial
+    # Position has NO revaluation-related equity line at all — real,
+    # verified, zero-nonzero evidence, not an extraction gap: Sri Lanka's
+    # regional plantation companies (KVPL among them) hold estate land on
+    # 99-year GOVERNMENT LEASES from the 1992 privatisation, not freehold,
+    # so freehold PP&E/bearer biological assets are carried at cost, and
+    # there is nothing to revalue. Asian Hotels and Properties PLC's real
+    # FY2025/26 Statement of Financial Position (owns Cinnamon Grand
+    # Colombo) prints a single COMBINED line instead, "Other components of
+    # equity" (23,239,546 as at 31.03.2026) — its own Statement of Changes
+    # in Equity (a differently-shaped, multi-reserve-column statement this
+    # extractor cannot parse — see below) breaks this into a Revaluation
+    # Reserve of 23,054,073 and a much smaller Other Capital Reserve of
+    # 185,473, confirming the combined line is 99.2% revaluation-
+    # attributable for this company but is NOT a pure revaluation-reserve
+    # figure — used here as the best genuinely available real proxy, never
+    # silently presented as an exact revaluation figure (see
+    # `app.domain.valuation_view.hard_book_for`'s own docstring). Galadari
+    # Hotels (Lanka) PLC's real FY2025 Statement of Financial Position
+    # prints a genuinely PURE, standalone "Revaluation reserve" line
+    # (6,454,099,241) — no bundling at all — but that filing's statement is
+    # two-column (2025/2024 only, no Group/Company split), which this
+    # extractor's note-reference-stripping heuristic does not yet handle
+    # (see DEFAULT_EXPECTED_VALUE_COLUMNS's own "KNOWN LIMITATION" comment)
+    # — added as a verified real wording for when a 4-column filing uses it,
+    # but Galadari's OWN filing is not correctly end-to-end extractable
+    # through this pipeline today, a pre-existing, separately-tracked gap,
+    # not fixed here. Ceylon Hotels Corporation PLC and Serendib Hotels PLC
+    # were also checked and bundle the same way AHPL does, but each under a
+    # generic wording ("Reserves", "Other Components of Equity") too broad
+    # or duplicative to add safely as further variants.
+    # Deliberately NOT in SUM_ACROSS_OCCURRENCES below: unlike
+    # total_interest_bearing_debt, a revaluation/other-components-of-
+    # equity balance has no current/non-current maturity split to sum —
+    # it is one number, printed once, on every real filing checked.
+    "revaluation_reserves": (
+        "other components of equity",  # AHPL — combined, ~99.2% revaluation-attributable (verified)
+        "revaluation reserve",  # Galadari — pure, but not yet live-extractable (2-column filing)
+    ),
 }
 
 #: The working-capital STOCK's two sides — see `derive_net_working_
