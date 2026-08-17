@@ -28,6 +28,21 @@ reconcile against here (`c`/`pc` are populated only in the intraday
 period, a different shape not used by this module) — `p`/`h`/`l` are the
 day's actual figures, not something that needs recovering.
 
+A CLOSE-OUTSIDE-RANGE WARNING IS COMMON, NOT RARE — characterised across
+the full 283-ticker backfill (17 Aug 2026), not just the one JKH row
+above. 2,058 such warnings landed across 115 of 283 tickers. They are not
+concentrated in one instrument type — ordinary, non-voting and fund-unit
+lines are all represented (e.g. NEH.N0000, NTB.X0000, CALC.U0000) — but
+they are heavily concentrated in thinly-traded small caps, consistent
+with the exchange's own day-bar computation occasionally carrying a stale
+reference low/high forward on a session with very few trades, rather than
+with anything wrong in this parser. The guard above already handles it
+safely: only the contradicted bound is dropped, the close (the figure
+every downstream calculation actually needs) is always kept, and nothing
+is silently fabricated. Re-check this characterisation if the warning
+rate changes materially on a future backfill — that would suggest the
+exchange's own data quality shifted, not that this comment is wrong.
+
 WHAT THIS DOES NOT SOLVE. It comes from cse.lk, the same institution as
 every other price figure in this system. It does not satisfy
 PARAMETERS.md #5's independent second-source requirement — that still
