@@ -46,6 +46,7 @@ from app.domain.macro_view import (
     series_history,
     spread_history,
 )
+from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.ingestion.cse_client import CseClient, ShapeChangedError
 from app.ingestion.schemas import AspiData, SectorIndexRow
 
@@ -248,6 +249,71 @@ def index_history(db: Session = Depends(get_db)) -> IndexHistoryOut:
             IndexPoint(obs_date=r.obs_date, value=r.value, source=r.source) for r in rows
         ],
         recovered=sum(1 for r in rows if r.source.endswith("(pc)")),
+    )
+
+
+class SensitivityEstimateOut(BaseModel):
+    shock_name: str
+    coefficient: Decimal
+    p_value: Decimal
+    r_squared: Decimal
+    observation_count: int
+    significant: bool
+    direction_label: str
+
+
+class SectorSensitivityRowOut(BaseModel):
+    sector: str
+    constituent_count: int
+    estimates: list[SensitivityEstimateOut]
+
+
+class SectorSensitivityOut(BaseModel):
+    """§33's sector sensitivity matrix — a real, estimated regression of
+    each sector's daily return on real macro shock series, never a
+    hard-coded relationship (§33's own explicit warning). See
+    `app.domain.sector_sensitivity`'s own module docstring for exactly
+    which shocks are real and why §33's own illustrative Oil/Tourism/
+    Fiscal columns aren't among them."""
+
+    as_of: dt.date
+    rows: list[SectorSensitivityRowOut]
+    thin_sectors: list[list[object]]
+    """`[sector, constituent_count]` pairs for a sector with a real
+    `cse_sector` assignment but too few real tickers to estimate from —
+    named, not silently dropped."""
+
+    shocks_used: list[str]
+    warnings: list[str]
+
+
+@router.get("/sector-sensitivity", response_model=SectorSensitivityOut)
+def sector_sensitivity(db: Session = Depends(get_db)) -> SectorSensitivityOut:
+    view = sector_sensitivity_matrix_for(db)
+    return SectorSensitivityOut(
+        as_of=view.as_of,
+        rows=[
+            SectorSensitivityRowOut(
+                sector=row.sector,
+                constituent_count=row.constituent_count,
+                estimates=[
+                    SensitivityEstimateOut(
+                        shock_name=e.shock_name,
+                        coefficient=e.coefficient,
+                        p_value=e.p_value,
+                        r_squared=e.r_squared,
+                        observation_count=e.observation_count,
+                        significant=e.significant,
+                        direction_label=e.direction_label,
+                    )
+                    for e in row.estimates
+                ],
+            )
+            for row in view.rows
+        ],
+        thin_sectors=[[sector, count] for sector, count in view.thin_sectors],
+        shocks_used=list(view.shocks_used),
+        warnings=list(view.warnings),
     )
 
 

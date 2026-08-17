@@ -566,12 +566,73 @@ part of it genuinely isn't untouched anymore.
         ardl.ARDL`/`UECM.bounds_test` are the right tool, not built);
         impulse response functions, FEVD, Toda-Yamamoto causality (need
         the cointegration model first); the event study (CARs around
-        CBSL/CCPI/IMF/budget/election dates); §33's sector sensitivity
-        matrix (needs sector-level return series this system doesn't
-        currently assemble); §34's national project register (a
-        structured, human-confirmed data table, not an econometric
-        method). None of these is faked by returning a plausible number
-        from a formula that isn't actually the named method.
+        CBSL/CCPI/IMF/budget/election dates); §34's national project
+        register (a structured, human-confirmed data table, not an
+        econometric method). **§33's sector sensitivity matrix is no
+        longer on this list — see the next entry.** None of the
+        remaining items is faked by returning a plausible number from a
+        formula that isn't actually the named method.
+
+### §33 sector sensitivity matrix — the second real piece of Phase 4's macro engine
+
+- [x] **§33's sector sensitivity matrix is live** — `app.domain.sector_
+      sensitivity` (pure) + `app.domain.sector_sensitivity_view` (wired
+      to real `securities`/`prices_daily`/`macro_series` data), exposed
+      on the new `GET /market/sector-sensitivity`. §33's own explicit
+      warning — "the platform must populate it from its own estimation
+      and never hard-code it" — is honoured literally: every cell is a
+      real `statsmodels.OLS` regression of one sector's real daily
+      return series on one real macro shock series, or absent entirely
+      when there isn't enough real overlapping history to estimate from.
+      - **Sector grouping uses `Security.cse_sector`** (the CSE's own
+        industry-group names — "Banks", "Diversified Financials" —
+        matching §33's own illustrative row labels), not the coarser
+        11-sector `gics_sector` `app.domain.gics` derives FROM it, which
+        would blend distinct sectors §33's own table keeps separate.
+      - **Sector returns are equal-weighted, on adjusted prices**
+        (`close × adj_factor` — the same total-return adjustment `app.
+        domain.corporate_actions` computes, never raw close, which would
+        be contaminated by unadjusted dividends/bonus issues/splits).
+        Equal-, not cap-weighted — a real, disclosed simplification: this
+        system stores no daily market-cap series to weight by, only
+        `FloatData`'s point-in-time share count.
+      - **Only 4 of §33's 5 illustrative shock columns are real** —
+        policy rate change, 364-day T-bill yield change, CCPI y/y
+        change, and LKR/USD % change, all from real `app.domain.
+        cbsl_parsing`-sourced series. Oil (Brent), tourist arrivals/
+        earnings and fiscal spending are NOT ingested anywhere in this
+        system, so "Oil spike"/"Tourism rebound"/"Fiscal expansion"
+        columns are never built — named absent, never proxied or
+        simulated.
+      - **No qualitative +/++/−/−− scale**, deliberately unlike §33's
+        own illustrative presentation — a real OLS coefficient, p-value
+        and R² are reported instead, with only a `"positive"`/
+        `"negative"`/`"not_significant"` label derived from sign and a
+        standard, disclosed p<0.05 threshold. A magnitude gradation
+        (`+` vs `++`) would need a threshold comparable across shocks
+        measured in wildly different units (a T-bill yield change in
+        fraction-points vs. an LKR/USD move in percent) this module has
+        no real basis for — exactly the "confident, precise, entirely
+        fictional" symbol §15 warns against.
+      - **A sector with fewer than 3 real constituent tickers is
+        excluded from the matrix entirely, named in a separate
+        `thin_sectors` list rather than silently dropped** — reusing
+        `app.domain.gics`'s own stated reasoning ("ranking a company
+        against two peers produces a percentile that is technically
+        computable and practically meaningless"), not inventing a new
+        threshold independently.
+      - 16 new tests across `test_sector_sensitivity.py` (hand-worked
+        OLS recovery of known positive/negative sensitivities, and
+        correct "not significant" detection on pure noise),
+        `test_sector_sensitivity_view.py` (equal-weighting correctness,
+        adjusted-vs-raw-price correctness, step-function vs pct-change
+        shock construction, full DB-to-matrix wiring) and
+        `test_market_sector_sensitivity_api.py` (the API-layer
+        serialization check the DCF/regime work already showed is worth
+        having separately from domain-layer tests — `thin_sectors:
+        list[list[object]]` in particular is an unusual enough Pydantic
+        shape to verify directly rather than assume). Full suite: 760
+        passed.
 
 ## Not done yet — next in Phase 1
 
@@ -1511,12 +1572,12 @@ Phase 4+ per §54. Fundamental ratios (§12), trend detection (§13), the
 model router (§15/§16), and valuation MATH (DCF, DDM, residual income,
 SOTP, relative valuation, asset-based, scenarios, triangulation, margin
 of safety, the price ladder — §17-26) are no longer in this list — see
-above. **Macro/ARDL (§29-33) is also no longer a single untouched
-block** — §31's regime classifier is live (see "§31 regime classifier"
-above); §30's other five method-chain steps, §33's sector sensitivity
-matrix and §34's national project register remain genuinely unbuilt,
-named precisely in that same section rather than left as one vague
-"macro/ARDL" line item. Building the still-deferred items against
+above. **Macro/ARDL (§29-34) is also no longer a single untouched
+block** — §31's regime classifier and §33's sector sensitivity matrix
+are both live (see those two entries above); §30's other five method-
+chain steps and §34's national project register remain genuinely
+unbuilt, named precisely in the same sections rather than left as one
+vague "macro/ARDL" line item. Building the still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the
 spec's failure-mode register (Part N) warns about.
