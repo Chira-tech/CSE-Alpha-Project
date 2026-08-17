@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.domain.cost_of_equity import CostOfEquityInputs, compute_cost_of_equity
+from app.domain.cost_of_equity import (
+    CostOfEquityInputs,
+    compute_cost_of_equity,
+    regime_erp_adjustment,
+)
 
 REAL_RF = Decimal("0.1001")  # 364-day T-bill, primary market, 12 Aug 2026 edition
 REAL_BETA = Decimal("1.131218")  # COMB.N0000 Blume-adjusted, test_beta.py's real fixture
@@ -114,3 +118,49 @@ class TestImpliedErpIsDisplayOnly:
         assert result.implied_erp_cross_check == Decimal("-0.0124")
         assert result.erp_effective == Decimal("0.07")  # untouched by the cross-check
         assert result.beta_times_erp == REAL_BETA * Decimal("0.07")  # not REAL_BETA * -0.0124
+
+
+class TestRegimeErpAdjustment:
+    """§17.2's "REGIME LINKAGE" — reuses `app.domain.margin_of_safety.
+    REGIME_MOS_PCT` exactly (§25's own fully-specified regime scale, the
+    only one this spec commits numbers to), not a second, independently
+    invented figure."""
+
+    def test_risk_on_adds_nothing(self):
+        assert regime_erp_adjustment("risk_on") == Decimal("0.00")
+
+    def test_transition_adds_five_points(self):
+        assert regime_erp_adjustment("transition") == Decimal("0.05")
+
+    def test_risk_off_adds_twelve_points(self):
+        assert regime_erp_adjustment("risk_off") == Decimal("0.12")
+
+    def test_none_regime_adds_nothing(self):
+        """No regime read exists yet — the safe, "no information changes
+        the baseline" default, never a guessed direction."""
+        assert regime_erp_adjustment(None) == Decimal("0")
+
+    def test_ke_actually_rises_end_to_end_when_regime_flips_to_risk_off(self):
+        """§17.2's own promise, checked directly: "When the regime flips
+        toward Risk-Off, Ke rises, and every fair value in the system
+        falls automatically." A higher Ke, all else equal, computed by
+        feeding a regime-adjusted erp_effective through the same real
+        Ke formula."""
+        base_erp = Decimal("0.07")
+        risk_on_ke = compute_cost_of_equity(
+            CostOfEquityInputs(
+                risk_free_rate=REAL_RF, beta=REAL_BETA,
+                erp_effective=base_erp + regime_erp_adjustment("risk_on"),
+                size_premium=Decimal(0), illiquidity_premium=Decimal(0),
+            )
+        ).ke
+        risk_off_ke = compute_cost_of_equity(
+            CostOfEquityInputs(
+                risk_free_rate=REAL_RF, beta=REAL_BETA,
+                erp_effective=base_erp + regime_erp_adjustment("risk_off"),
+                size_premium=Decimal(0), illiquidity_premium=Decimal(0),
+            )
+        ).ke
+        assert risk_off_ke > risk_on_ke
+        # Exact delta: beta * 0.12 (the risk_off regime add, risk_on adds nothing).
+        assert risk_off_ke - risk_on_ke == REAL_BETA * Decimal("0.12")

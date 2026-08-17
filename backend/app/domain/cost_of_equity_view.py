@@ -18,7 +18,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.beta import BetaResult, PriceSeriesPoint, compute_dimson_beta
-from app.domain.cost_of_equity import CostOfEquityInputs, CostOfEquityResult, compute_cost_of_equity
+from app.domain.cost_of_equity import (
+    CostOfEquityInputs,
+    CostOfEquityResult,
+    compute_cost_of_equity,
+    regime_erp_adjustment,
+)
 from app.domain.macro import SERIES_ASPI
 from app.domain.macro_view import current_spread, risk_free_observation
 from app.models.macro import MacroSeries
@@ -56,7 +61,22 @@ def beta_for(db: Session, ticker: str, as_of: dt.date | None = None) -> BetaResu
     )
 
 
-def cost_of_equity_for(db: Session, ticker: str, as_of: dt.date | None = None) -> CostOfEquityResult:
+def cost_of_equity_for(
+    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+) -> CostOfEquityResult:
+    """`regime` — one of `"risk_on"`/`"transition"`/`"risk_off"`, or
+    `None` — is the caller's job to supply, not this function's to fetch:
+    `app.domain.macro_engine_view.regime_for` involves a real statistical
+    fit, expensive enough that computing it independently inside every
+    one of this function's several callers per `valuation_summary_for`
+    run (justified P/B, residual income, WACC, DDM, DCF all call this)
+    would multiply that cost several-fold for no benefit, since the
+    regime read is market-wide, not company-specific, and identical
+    across all of them within one valuation run. See `app.domain.
+    valuation_view.valuation_summary_for`'s own docstring for where it's
+    computed once and threaded through instead. Defaults to `None`
+    (no regime adjustment) so every existing caller that doesn't pass
+    one keeps its exact prior behaviour."""
     stamp = as_of or dt.date.today()
 
     beta_result = beta_for(db, ticker, stamp)
@@ -67,7 +87,7 @@ def cost_of_equity_for(db: Session, ticker: str, as_of: dt.date | None = None) -
         CostOfEquityInputs(
             risk_free_rate=rf_observation.value if rf_observation is not None else None,
             beta=beta_result.blume_adjusted_beta,
-            erp_effective=settings.erp_effective_pct,
+            erp_effective=settings.erp_effective_pct + regime_erp_adjustment(regime),
             implied_erp_cross_check=spread.spread if spread is not None else None,
         )
     )

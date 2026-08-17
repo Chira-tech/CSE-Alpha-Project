@@ -31,11 +31,59 @@ quarterly review against Damodaran's country dataset §17.1 itself calls
 for — this system has no live access to that dataset, so pretending a
 precise, sourced figure exists here would be worse than a stated
 placeholder.
+
+§17.2's "REGIME LINKAGE" — CLOSING THE LOOP §31's REGIME CLASSIFIER
+OPENED (17 Aug). §17.2's own text: "The equity risk premium and the
+risk-free rate are both regime-conditional inputs supplied by the macro
+engine (§31). When the regime flips toward Risk-Off, Ke rises, and every
+fair value in the system falls automatically, overnight, without anyone
+forming an opinion." `regime_erp_adjustment` below is where that link
+lives — added to `erp_effective` by the caller (`app.domain.cost_of_
+equity_view.cost_of_equity_for`), never inside `compute_cost_of_equity`
+itself, which stays pure arithmetic over whatever `erp_effective` it's
+handed, the same separation `app.domain.dcf`'s `dcf_equity_value` draws
+from `app.domain.valuation_view.dcf_for`'s assumption-building.
+
+`Rf_LKR` IS DELIBERATELY NOT SEPARATELY REGIME-ADJUSTED, even though
+§17.2 lists it alongside ERP as "regime-conditional". `Rf_LKR` is already
+a live, real 364-day T-bill observation
+(`app.domain.macro_view.risk_free_observation`) — a Risk-Off regime's
+own defining signature (§31: "rising yields") is already reflected
+organically in that live number. Adding a SEPARATE regime premium on top
+of an already-regime-reflecting live rate would double-count the same
+information once as "the observed rate" and again as "a regime
+adjustment to the observed rate" — precisely the "double-count trap"
+§17.1 itself names for the ERP/country-risk relationship, recognised
+here in a different place in the same formula.
+
+THE MAGNITUDE IS A DISCLOSED REUSE, NOT AN INDEPENDENTLY INVENTED
+NUMBER. §17.2's own prose is qualitative only ("Ke rises") — it gives no
+separate numeric table for how much, unlike §25's margin-of-safety
+regime add, which IS fully specified (Risk-On +0% / Transition +5% /
+Risk-Off +12%). Rather than inventing a second, unrelated regime-
+sensitivity scale with no textual basis, `regime_erp_adjustment` reuses
+`app.domain.margin_of_safety.REGIME_MOS_PCT` exactly — the one regime-
+sensitivity scale this spec actually commits to a number for. This is a
+disclosed policy choice (PARAMETERS.md #16), not a spec-mandated figure.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+
+from app.domain.margin_of_safety import REGIME_MOS_PCT
+
+
+def regime_erp_adjustment(regime: str | None) -> Decimal:
+    """`regime` is one of `"risk_on"`/`"transition"`/`"risk_off"` (`app.
+    domain.regime_classification.RegimeLabel`) or `None` when no regime
+    read exists yet — see module docstring for the reasoning and the
+    exact numbers reused. `None` regime gives a zero adjustment, the
+    same "no information changes the baseline" default this project uses
+    throughout, never a guessed direction."""
+    if regime is None:
+        return Decimal(0)
+    return REGIME_MOS_PCT.get(regime, Decimal(0))
 
 
 @dataclass(frozen=True)

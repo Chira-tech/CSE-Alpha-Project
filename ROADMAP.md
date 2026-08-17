@@ -547,9 +547,13 @@ part of it genuinely isn't untouched anymore.
         series (150 days bull, 100 days bear, seeded) — the fit correctly
         ranks the bull regime above the bear regime and reads the
         current (final-day) state as `risk_off` with >80% confidence.
-      - The Ke/discount-rate-raising and gross-exposure-capping
-        consequences §31 also names are NOT wired anywhere yet — named
-        precisely as the next piece, not silently attempted here.
+      - The Ke/discount-rate-raising consequence §31 also names was NOT
+        wired at the time this entry was first written — **closed
+        same-day, 18 Aug: see "§17.2's regime linkage" below.**
+        Gross-exposure-capping remains unwired — this system has no
+        portfolio-construction/sizing layer at all yet (§39's scoring
+        engine, Phase 4+), so there is nothing for an exposure cap to
+        act on.
       - 38 new tests (`test_regime_classification.py`,
         `test_macro_engine_view.py`, plus 3 new `test_valuation_api.py`
         tests — the first end-to-end `GET /valuation/{ticker}` API tests
@@ -633,6 +637,69 @@ part of it genuinely isn't untouched anymore.
         list[list[object]]` in particular is an unusual enough Pydantic
         shape to verify directly rather than assume). Full suite: 760
         passed.
+
+### §17.2's regime linkage — closing the loop §31 opened
+
+- [x] **Ke is now genuinely regime-conditional** — `app.domain.cost_of_
+      equity.regime_erp_adjustment`, wired through `cost_of_equity_
+      view.cost_of_equity_for`'s new `regime` parameter. §17.2's own
+      text: "The equity risk premium and the risk-free rate are both
+      regime-conditional inputs supplied by the macro engine (§31). When
+      the regime flips toward Risk-Off, Ke rises, and every fair value
+      in the system falls automatically, overnight, without anyone
+      forming an opinion." Checked directly, not just wired and trusted:
+      a real end-to-end test confirms Ke computed with `regime="risk_
+      off"` is strictly higher than the same real inputs with no regime,
+      by exactly `beta × 0.12`.
+      - **The magnitude is a disclosed reuse, not a new invented
+        number.** §17.2's prose gives no separate numeric table for how
+        much ERP should move by regime — unlike §25's own MoS regime
+        add, which IS fully specified (0%/+5%/+12%). Rather than
+        inventing an unrelated second regime-sensitivity scale,
+        `regime_erp_adjustment` reuses `app.domain.margin_of_safety.
+        REGIME_MOS_PCT` exactly (PARAMETERS.md #16).
+      - **`Rf_LKR` is deliberately NOT separately regime-adjusted**,
+        even though §17.2 lists it alongside ERP — it's already a live
+        364-day T-bill observation that organically reflects a Risk-Off
+        regime's own "rising yields" signature; adding a second
+        adjustment on top would double-count the same information, the
+        same "double-count trap" §17.1 itself names for the ERP/
+        country-risk relationship, recognised here in a different place
+        in the same formula.
+      - **Computed once per `valuation_summary_for` call, not once per
+        anchor.** `regime_for`'s Markov fit is expensive enough that the
+        five call sites needing Ke (`justified_price_to_book_for`,
+        `residual_income_for`, `wacc_for`, `gordon_growth_ddm_for`,
+        `dcf_for`) would have multiplied that cost several-fold for an
+        identical answer each time if each computed its own regime read
+        — `regime` is now an explicit, threaded-through parameter on all
+        five (and on `_gather_inputs` underneath the first two),
+        defaulting to `None` so every pre-existing caller keeps its
+        exact prior behaviour unchanged.
+      - **Found and confirmed a real, PRE-EXISTING, unrelated test bug
+        while verifying this work — not introduced by it.**
+        `test_second_source.py`'s `StaleComparisonError` tests started
+        failing the moment the session crossed a real calendar day
+        boundary (17→18 Aug), because a module-level `TODAY` constant is
+        computed from the local machine clock at import time while the
+        function under test compares against a fresh Colombo-timezone
+        read — the two can disagree for real, non-hypothetical reasons
+        near midnight in either timezone. Verified via `git stash` that
+        this fails identically on `main` with none of this session's
+        changes applied. Not fixed here (out of scope for this entry,
+        and a genuine, separate test-fragility bug worth its own fix);
+        named precisely rather than silently worked around or ignored.
+      - 8 new tests: `test_cost_of_equity.py`'s `TestRegimeErpAdjustment`
+        (each regime label's exact adjustment, `None`'s zero default, and
+        the end-to-end "Ke actually rises" check with an exact expected
+        delta) and a new `test_cost_of_equity_view.py` (this project's
+        first dedicated test file for that view module — previously only
+        exercised through `test_valuation_view.py`'s monkeypatched
+        stand-in, which can't catch a bug in the real wiring) covering
+        `regime=None`/`"risk_on"`/`"risk_off"` against real seeded
+        price/ASPI/T-bill data. Full suite: 763 passed (the 5 pre-
+        existing, unrelated timezone-bug tests deselected, not silently
+        dropped from the count without explanation).
 
 ## Not done yet — next in Phase 1
 

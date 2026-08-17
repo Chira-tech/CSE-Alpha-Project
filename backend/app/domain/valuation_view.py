@@ -228,7 +228,9 @@ class LiveValuationInputs:
     warnings: tuple[str, ...]
 
 
-def _gather_inputs(db: Session, ticker: str, as_of: dt.date) -> LiveValuationInputs:
+def _gather_inputs(
+    db: Session, ticker: str, as_of: dt.date, *, regime: str | None = None
+) -> LiveValuationInputs:
     warnings: list[str] = []
 
     period_end, items, excluded = _confirmable_line_items(db, ticker, as_of)
@@ -252,7 +254,7 @@ def _gather_inputs(db: Session, ticker: str, as_of: dt.date) -> LiveValuationInp
                 + (f" ({roe_result.note})" if roe_result and roe_result.note else ".")
             )
 
-    ke_result = cost_of_equity_for(db, ticker, as_of)
+    ke_result = cost_of_equity_for(db, ticker, as_of, regime=regime)
     if ke_result.ke is None:
         warnings.append(f"Cost of equity not computable: {ke_result.note}")
 
@@ -288,10 +290,10 @@ class JustifiedPBView:
 
 
 def justified_price_to_book_for(
-    db: Session, ticker: str, as_of: dt.date | None = None
+    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
 ) -> JustifiedPBView:
     stamp = as_of or dt.date.today()
-    inputs = _gather_inputs(db, ticker, stamp)
+    inputs = _gather_inputs(db, ticker, stamp, regime=regime)
 
     if inputs.roe is None or inputs.cost_of_equity is None:
         return JustifiedPBView(inputs, None, None)
@@ -311,9 +313,11 @@ class ResidualIncomeView:
     result: ResidualIncomeResult | None
 
 
-def residual_income_for(db: Session, ticker: str, as_of: dt.date | None = None) -> ResidualIncomeView:
+def residual_income_for(
+    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+) -> ResidualIncomeView:
     stamp = as_of or dt.date.today()
-    inputs = _gather_inputs(db, ticker, stamp)
+    inputs = _gather_inputs(db, ticker, stamp, regime=regime)
 
     if inputs.roe is None or inputs.cost_of_equity is None or inputs.book_value_per_share is None:
         return ResidualIncomeView(inputs, None)
@@ -410,7 +414,8 @@ class WACCView:
 
 
 def wacc_for(
-    db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None
+    db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None,
+    *, regime: str | None = None,
 ) -> WACCView:
     """§18.1's discount rate for an FCFF projection — see
     `app.domain.wacc`'s own module docstring for why this must never be
@@ -451,7 +456,7 @@ def wacc_for(
         effective_tax_rate=tax_result.value if tax_result and tax_result.computable else None,
     )
 
-    ke_result = cost_of_equity_for(db, ticker, stamp)
+    ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
     shares = _latest_shares_issued(db, ticker, stamp)
 
     result = compute_wacc(
@@ -556,7 +561,9 @@ class DDMView:
     warnings: tuple[str, ...]
 
 
-def gordon_growth_ddm_for(db: Session, ticker: str, as_of: dt.date | None = None) -> DDMView:
+def gordon_growth_ddm_for(
+    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+) -> DDMView:
     """§19.1's Gordon-growth DDM (`V0 = D1 / (Ke - g)`) wired to real —
     if, for essentially every ticker today, currently EMPTY — confirmed
     dividend history. "Real but empty" is a specific, checkable claim,
@@ -631,7 +638,7 @@ def gordon_growth_ddm_for(db: Session, ticker: str, as_of: dt.date | None = None
             "single declaration."
         )
 
-    ke_result = cost_of_equity_for(db, ticker, stamp)
+    ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
     if ke_result.ke is None:
         warnings.append(f"Cost of equity not computable: {ke_result.note}")
         return DDMView(stamp, None, tuple(warnings))
@@ -654,7 +661,8 @@ class DCFView:
 
 
 def dcf_for(
-    db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None
+    db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None,
+    *, regime: str | None = None,
 ) -> DCFView:
     """§18's full three-stage FCFF DCF (`app.domain.dcf.dcf_equity_value`),
     finally wired to live data — the multi-year forecast wiring that
@@ -747,13 +755,13 @@ def dcf_for(
     if tax_result is None or not tax_result.computable:
         missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
 
-    wacc_view = wacc_for(db, ticker, current_price, stamp)
+    wacc_view = wacc_for(db, ticker, current_price, stamp, regime=regime)
     if wacc_view.result is None or wacc_view.result.wacc is None:
         missing.append(
             "WACC (" + (wacc_view.result.note if wacc_view.result else "not computable") + ")"
         )
 
-    ke_result = cost_of_equity_for(db, ticker, stamp)
+    ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
     if ke_result.risk_free_rate is None:
         missing.append("risk_free_rate (needed to cap terminal/stage-2 growth)")
 
@@ -1024,12 +1032,30 @@ def valuation_summary_for(
     """
     stamp = as_of or dt.date.today()
     routing = route_valuation(archetype)
-    jpb = justified_price_to_book_for(db, ticker, stamp)
-    ri = residual_income_for(db, ticker, stamp)
+
+    # Computed ONCE, here, and threaded through every call below that
+    # needs Ke — not recomputed per anchor. §29-33's regime read is
+    # market-wide, not company-specific, and a real statistical fit
+    # (`app.domain.regime_classification.fit_markov_regime_read`)
+    # expensive enough that recomputing it independently inside each of
+    # justified_price_to_book_for/residual_income_for/wacc_for/dcf_for/
+    # gordon_growth_ddm_for (five calls, several of which call `cost_of_
+    # equity_for` internally too) would multiply that cost several-fold
+    # for an identical answer each time. Computing it once per company-
+    # valuation call rather than once per market snapshot across a whole
+    # batch is still a real, known inefficiency — a shared-cache layer
+    # across companies is genuine separate work, not a correctness
+    # issue — but it is no longer N-times-per-call the way it would be
+    # without this.
+    regime_view = regime_for(db, stamp)
+    regime_label = regime_view.result.label if regime_view.result is not None else None
+
+    jpb = justified_price_to_book_for(db, ticker, stamp, regime=regime_label)
+    ri = residual_income_for(db, ticker, stamp, regime=regime_label)
     fcff_view = current_period_fcff_for(db, ticker, stamp)
-    wacc_view = wacc_for(db, ticker, current_price, stamp)
-    dcf_view = dcf_for(db, ticker, current_price, stamp)
-    ddm_view = gordon_growth_ddm_for(db, ticker, stamp)
+    wacc_view = wacc_for(db, ticker, current_price, stamp, regime=regime_label)
+    dcf_view = dcf_for(db, ticker, current_price, stamp, regime=regime_label)
+    ddm_view = gordon_growth_ddm_for(db, ticker, stamp, regime=regime_label)
     hard_book_view = hard_book_for(db, ticker, stamp)
 
     anchors: list[ValuationAnchor] = []
@@ -1041,16 +1067,6 @@ def valuation_summary_for(
         anchors.append(ValuationAnchor("FCFF DCF", "intrinsic", dcf_view.fair_value_per_share))
 
     triangulation = triangulate(routing, tuple(anchors))
-
-    # §29-33's regime read is market-wide, not company-specific — this
-    # still recomputes it per company-valuation call rather than caching
-    # it across a batch, a real, known inefficiency (one Markov fit per
-    # ticker instead of once per market snapshot), left as-is because
-    # this function's existing per-anchor calls have the same shape and a
-    # shared-cache layer is a genuine separate piece of work, not a
-    # correctness issue.
-    regime_view = regime_for(db, stamp)
-    regime_label = regime_view.result.label if regime_view.result is not None else None
 
     mos = compute_margin_of_safety(
         dispersion_pct=triangulation.dispersion_pct,
