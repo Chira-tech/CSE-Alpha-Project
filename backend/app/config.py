@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     insufficient_data_completeness_floor_pct: Decimal = Decimal("0.40")
     insufficient_min_quarters: int = 8
 
+    # --- Part O #10: cost of equity (§17.1/§17.2) ---------------------------------
+    erp_effective_pct: Decimal = Decimal("0.07")
+    """Mature-market ERP plus a reduced country risk premium (§17.1 Route
+    A) — a policy input, not something this system computes. See
+    PARAMETERS.md #10: this is a provisional placeholder, not a figure
+    sourced from Damodaran's live country dataset, which this system has
+    no access to. `app.domain.cost_of_equity` also surfaces the
+    ASPI-implied ERP (§17.1's "third reference point") alongside this
+    value for comparison — never as a silent substitute for it."""
+
     # --- Point-in-time / reporting lag defaults (§6) ------------------------------
     default_quarterly_reporting_lag_days: int = 90
     default_annual_reporting_lag_days: int = 180

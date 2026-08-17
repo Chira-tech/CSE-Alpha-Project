@@ -93,6 +93,24 @@ def enrich_security(db: Session, ticker: str, info: CompanyInfoSummary, as_of: d
             security.listing_date = listing
             wrote = True
 
+    # Refreshed every run rather than "only if empty" — unlike ISIN or
+    # listing date, this is CSE's own trailing beta and genuinely changes
+    # quarter to quarter (the period label is what lets a reader see when
+    # it last moved).
+    beta_info = info.reqSymbolBetaInfo
+    if beta_info is not None:
+        if beta_info.triASIBetaValue is not None:
+            security.published_beta_asi = Decimal(str(beta_info.triASIBetaValue))
+            wrote = True
+        if beta_info.betaValueSPSL is not None:
+            security.published_beta_sp_sl20 = Decimal(str(beta_info.betaValueSPSL))
+            wrote = True
+        if beta_info.triASIBetaPeriod:
+            period = beta_info.triASIBetaPeriod
+            if beta_info.quarter:
+                period = f"{period} Q{beta_info.quarter}"
+            security.published_beta_period = period
+
     # Shares issued is a point-in-time fact, so it gets a dated row rather
     # than being stamped onto the security record. public_float_pct stays
     # NULL — see the module docstring for why foreignPercentage is not a

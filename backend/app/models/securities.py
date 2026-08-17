@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
-from sqlalchemy import Date, Integer, String
+from sqlalchemy import Date, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -51,6 +52,17 @@ class Security(Base):
     """Where `archetype` came from: `app.domain.archetype`'s proposal
     engine, or a human. Mirrors `sector_source` — a re-run of the proposal
     loader must never silently overwrite a hand-set value."""
+
+    published_beta_asi: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    published_beta_sp_sl20: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    published_beta_period: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    """CSE's own published beta (`companyInfoSummery.reqSymbolBetaInfo`),
+    kept as an independent cross-check on `app.domain.beta`'s own
+    Dimson-Blume computation — the two are built on different
+    methodologies (this system's own daily 1-year window vs whatever
+    period/frequency the exchange uses) and verified on COMB.N0000 to
+    disagree meaningfully (0.79 published vs ~1.07 Dimson-Blume), so
+    neither is treated as ground truth over the other; both are shown."""
 
     instrument_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     """What the line actually is — see `app.domain.instrument_type`.

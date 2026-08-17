@@ -319,6 +319,82 @@ export function CompanyScreen({
         />
       </section>
 
+      <section aria-labelledby="ke-heading" className="stack-tight">
+        <h2 id="ke-heading">Cost of equity (§17)</h2>
+        {data.cost_of_equity.ke === null ? (
+          <div className="notice notice-neutral">
+            <h3>Ke cannot be computed yet</h3>
+            <p className="prose t-body">{data.cost_of_equity.note}</p>
+          </div>
+        ) : (
+          <div className="card">
+            <span className="t-label">Ke = Rf + β×ERP + size + illiquidity</span>
+            <div className="hero-value">{(Number(data.cost_of_equity.ke) * 100).toFixed(2)}%</div>
+            {data.cost_of_equity.is_lower_bound && (
+              <p className="prose t-caption" style={{ marginTop: "var(--s2)" }}>
+                {data.cost_of_equity.note}
+              </p>
+            )}
+            <table className="data-table" style={{ marginTop: "var(--s4)" }}>
+              <tbody>
+                <tr>
+                  <td style={{ color: "var(--ink-3)" }}>Risk-free rate (Rf, 364-day T-bill)</td>
+                  <td className="right num">
+                    {(Number(data.cost_of_equity.risk_free_rate) * 100).toFixed(2)}%
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "var(--ink-3)" }}>Beta (Dimson-corrected, Blume-adjusted)</td>
+                  <td className="right num">{Number(data.cost_of_equity.beta).toFixed(3)}</td>
+                </tr>
+                <tr>
+                  <td style={{ color: "var(--ink-3)" }}>ERP effective (configured — PARAMETERS.md #10)</td>
+                  <td className="right num">
+                    {(Number(data.cost_of_equity.erp_effective) * 100).toFixed(2)}%
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "var(--ink-3)" }}>β × ERP</td>
+                  <td className="right num">
+                    {(Number(data.cost_of_equity.beta_times_erp) * 100).toFixed(2)}%
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "var(--ink-3)" }}>Size premium</td>
+                  <td className="right num">
+                    {data.cost_of_equity.size_premium === null ? (
+                      <span className="unavailable">{UNAVAILABLE}</span>
+                    ) : (
+                      `${(Number(data.cost_of_equity.size_premium) * 100).toFixed(2)}%`
+                    )}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "var(--ink-3)" }}>Illiquidity premium</td>
+                  <td className="right num">
+                    {data.cost_of_equity.illiquidity_premium === null ? (
+                      <span className="unavailable">{UNAVAILABLE}</span>
+                    ) : (
+                      `${(Number(data.cost_of_equity.illiquidity_premium) * 100).toFixed(2)}%`
+                    )}
+                  </td>
+                </tr>
+                {data.cost_of_equity.implied_erp_cross_check !== null && (
+                  <tr>
+                    <td style={{ color: "var(--ink-3)" }}>
+                      Implied ERP cross-check (§17.1, from the ASPI earnings-yield spread)
+                    </td>
+                    <td className="right num">
+                      {(Number(data.cost_of_equity.implied_erp_cross_check) * 100).toFixed(2)}pp
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       <section aria-labelledby="routing-heading" className="stack-tight">
         <h2 id="routing-heading">Valuation routing</h2>
         <p className="prose t-body">

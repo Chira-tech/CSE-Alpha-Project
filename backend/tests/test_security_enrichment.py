@@ -98,6 +98,37 @@ def test_enriches_isin_listing_date_and_shares(db_session):
     assert len(floats) == 1
     assert floats[0].shares_issued == 1_000_000_000
 
+    # CSE's own published beta — the module docstring has claimed this
+    # was captured since the file was written; it wasn't actually stored
+    # until now. `app.domain.beta` uses this as an independent
+    # cross-check on its own Dimson-Blume computation.
+    assert float(security.published_beta_asi) == pytest.approx(1.42)
+    assert float(security.published_beta_sp_sl20) == pytest.approx(1.51)
+    assert security.published_beta_period == "2026 Q1"
+
+
+@respx.mock
+def test_published_beta_is_refreshed_every_run_unlike_isin(db_session):
+    """Unlike ISIN or listing date, this genuinely changes quarter to
+    quarter — re-running enrichment must pick up a new value, not treat
+    the first one as permanent."""
+    db_session.add(
+        Security(
+            ticker="AEL.N0000", name="ACCESS ENGINEERING PLC",
+            published_beta_asi="1.00", published_beta_period="2025 Q4",
+        )
+    )
+    db_session.commit()
+
+    respx.post(f"{BASE}/companyInfoSummery").mock(return_value=httpx.Response(200, json=REAL_INFO))
+    client = _client()
+    enrich_securities(client, db_session, ["AEL.N0000"], as_of=dt.date(2026, 8, 16))
+    client.close()
+
+    security = db_session.get(Security, "AEL.N0000")
+    assert float(security.published_beta_asi) == pytest.approx(1.42)
+    assert security.published_beta_period == "2026 Q1"
+
 
 @respx.mock
 def test_public_float_is_left_null_not_derived_from_foreign_percentage(db_session):

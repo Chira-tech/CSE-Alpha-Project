@@ -168,6 +168,20 @@ export interface UnansweredQuestion {
   missing_input: string;
 }
 
+export interface CostOfEquity {
+  ke: string | null;
+  risk_free_rate: string | null;
+  beta: string | null;
+  erp_effective: string;
+  beta_times_erp: string | null;
+  size_premium: string | null;
+  illiquidity_premium: string | null;
+  implied_erp_cross_check: string | null;
+  is_lower_bound: boolean;
+  missing_components: string[];
+  note: string;
+}
+
 export interface ValuationRouting {
   in_published_table: boolean;
   primary_models: string[];
@@ -204,6 +218,7 @@ export interface SecurityDetail {
   ratios_not_yet_computable: UncomputableRatio[];
   ratio_trends: RatioTrend[];
   valuation_routing: ValuationRouting;
+  cost_of_equity: CostOfEquity;
   not_yet_built: string[];
 }
 

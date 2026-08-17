@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.domain.fundamentals_view import ratio_trends_for, ratios_for
 from app.domain.ratios import NOT_YET_COMPUTABLE
+from app.domain.cost_of_equity_view import cost_of_equity_for
 from app.domain.valuation_router import route_valuation
 from app.jobs.reconciliation import is_quarantined
 from app.models.corporate_actions import CorporateAction
@@ -112,6 +113,22 @@ class UnansweredQuestionOut(BaseModel):
     missing_input: str
 
 
+class CostOfEquityOut(BaseModel):
+    """§17.2, with every component broken out — never just the final Ke."""
+
+    ke: Decimal | None
+    risk_free_rate: Decimal | None
+    beta: Decimal | None
+    erp_effective: Decimal
+    beta_times_erp: Decimal | None
+    size_premium: Decimal | None
+    illiquidity_premium: Decimal | None
+    implied_erp_cross_check: Decimal | None
+    is_lower_bound: bool
+    missing_components: list[str]
+    note: str
+
+
 class ValuationRoutingOut(BaseModel):
     """§15/§16. Never a valuation — only which methods apply to this
     company and which are actively wrong for it, and why."""
@@ -165,6 +182,7 @@ class SecurityDetail(BaseModel):
     ratios_not_yet_computable: list[UncomputableRatioOut]
     ratio_trends: list[RatioTrendOut]
     valuation_routing: ValuationRoutingOut
+    cost_of_equity: CostOfEquityOut
     not_yet_built: list[str]
 
 
@@ -172,7 +190,8 @@ class SecurityDetail(BaseModel):
 # user the same story about what this system can't do yet.
 _NOT_YET_BUILT = [
     "Fair value and buy-below price (Phase 3 — the model router (§16) now runs and names which "
-    "methods apply, but the DCF/DDM/residual-income/SOTP math itself, §18-24, is not built)",
+    "methods apply, and cost of equity (§17.2) is now computed, but the DCF/DDM/residual-income/"
+    "SOTP math itself, §18-24, is not built)",
     "Composite score (Phase 2 — §38; needs the full ratio set plus sector-relative percentiles)",
     "Coverage tier (Phase 2 — §11; the gate logic exists but needs liquidity history and free float)",
     "Sector-relative percentiles (Phase 2 — §12; trend DIRECTION now runs per company (§13), but "
@@ -284,6 +303,7 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
     ratio_period_end, ratio_results = ratios_for(db, ticker)
     ratio_trends = ratio_trends_for(db, ticker)
     routing = route_valuation(security.archetype)
+    ke_result = cost_of_equity_for(db, ticker)
 
     siblings = (
         db.scalars(
@@ -392,6 +412,19 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
                 UnansweredQuestionOut(question=q.question, missing_input=q.missing_input)
                 for q in routing.unanswered_questions
             ],
+        ),
+        cost_of_equity=CostOfEquityOut(
+            ke=ke_result.ke,
+            risk_free_rate=ke_result.risk_free_rate,
+            beta=ke_result.beta,
+            erp_effective=ke_result.erp_effective,
+            beta_times_erp=ke_result.beta_times_erp,
+            size_premium=ke_result.size_premium,
+            illiquidity_premium=ke_result.illiquidity_premium,
+            implied_erp_cross_check=ke_result.implied_erp_cross_check,
+            is_lower_bound=ke_result.is_lower_bound,
+            missing_components=list(ke_result.missing_components),
+            note=ke_result.note,
         ),
         not_yet_built=_NOT_YET_BUILT,
     )

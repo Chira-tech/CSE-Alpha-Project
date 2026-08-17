@@ -30,7 +30,7 @@ forbids outright.
 |---|---|---|
 | 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | 🔨 in progress |
 | 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine + trend detection (§13) + model router (§15/§16) built; integrity veto (§14) blocked on unextracted data; screener UI not started |
-| 3 | Valuation engine, price ladder, margin-of-safety engine | 🔨 model routing (§16) built — decides which methods apply; the DCF/DDM/residual-income/SOTP math itself (§18-24) not started |
+| 3 | Valuation engine, price ladder, margin-of-safety engine | 🔨 model routing (§16) and cost of equity (§17, incl. real Dimson-Blume beta) built; the DCF/DDM/residual-income/SOTP math itself (§18-24) not started |
 | 4 | Scheduler, always-on service, alerting, decision capture | not started |
 | 5 | Macro engine (ARDL, regime classifier, sector sensitivity) | not started |
 | 6 | Factor library, Carhart certification, timing engine, fusion | not started |

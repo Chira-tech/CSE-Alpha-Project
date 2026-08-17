@@ -225,6 +225,59 @@ consecutive days.
         stand-in for a Z-score, would be exactly the "confident, precise,
         entirely fictional number" §15 warns the whole router exists to
         prevent — just relocated from valuation into routing.
+- [x] **Cost of equity (§17.2)** — `app/domain/beta.py`,
+      `app/domain/cost_of_equity.py`, `app/domain/cost_of_equity_view.py`.
+      The first genuine Phase 3 valuation NUMBER (not just routing), and
+      the discount rate every DCF/DDM/residual-income anchor still to be
+      built will need.
+      - **Dimson-corrected, Blume-adjusted beta from real data** — the
+        Dimson multi-lag OLS regression is implemented by hand (no
+        scipy/numpy dependency in this project, same constraint as
+        `trend_detection.py`'s Mann-Kendall). Verified against real
+        matched COMB.N0000 + ASPI return series.
+      - **Checked against CSE's own published beta, and the two
+        genuinely disagree.** `companyInfoSummery.reqSymbolBetaInfo` was
+        already modelled in the schema and its own docstring predicted
+        exactly why: an uncorrected OLS beta is "severely downward
+        biased... the single most common technical error in
+        frontier-market factor work." For COMB.N0000 over the real
+        backfilled year: naive same-day OLS = 0.96, Dimson-corrected =
+        1.10 (moved UP, as the correction predicts), Blume-adjusted =
+        1.07. CSE's own published figure is 0.79 — further away, not
+        closer, because the two are not measuring the same thing (a
+        different window, frequency, or the "TRI" total-return basis the
+        field name implies). Neither is ground truth; both are now
+        stored and shown side by side (`published_beta_asi`,
+        migration 0010) rather than one silently overwriting the other.
+      - **Found and fixed a real bug while adding that storage**:
+        `security_enrichment.py`'s own module docstring had claimed
+        since it was written that per-company enrichment covers "CSE's
+        own published beta" — it never actually wrote it anywhere. No
+        new API call needed; the field was arriving in every enrichment
+        response the whole time and simply wasn't kept.
+      - **Ke omits two of its four components, and says so rather than
+        treating them as zero.** `size_premium` needs free-float market
+        cap deciles (free float still not ingested); `illiquidity_premium`
+        needs the Amihud percentile (confirmed blocked this session — see
+        Gate 1's investigation above). Both are non-negative by
+        definition (§17.2: "0 to ~2.5%", "0 to ~3.0%"), so a missing one
+        can only understate Ke, never overstate it — every Ke this
+        system produces is explicitly labelled a LOWER BOUND until both
+        exist.
+      - `ERP_effective` is a stated, provisional POLICY parameter
+        (PARAMETERS.md #10, config default 7.0%), not something computed
+        — this system has no live access to Damodaran's country dataset,
+        which §17.1 says the figure should be reviewed against. §17.1's
+        "third reference point" — the ASPI-implied ERP — IS live (it is
+        §29's hero spread, read as an ERP estimate) and is shown
+        alongside the configured value, never substituted for it.
+      - Verified end-to-end in the browser: COMB.N0000, a real bank,
+        shows Ke=16.86% built from a real Rf (10.01%, the CBSL-scraped
+        364-day T-bill), a real beta (0.978), the configured ERP, and an
+        implied-ERP cross-check (-1.24pp) that matches this session's
+        real hero spread reading exactly — and the routing section
+        directly above it correctly names Residual Income and DDM, the
+        exact models this Ke is for, as this bank's primary anchors.
 
 ## Phase 5 groundwork — the hero variable
 
