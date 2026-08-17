@@ -135,6 +135,25 @@ touched, and today's still-forming session is always skipped. Also runs
 automatically every Saturday. This is still a single-source (cse.lk)
 series; see PARAMETERS.md #5 for what it does and doesn't solve.
 
+### Backfilling financial-statement history
+
+```bash
+python -m app.cli backfill-financials --ticker COMB.N0000   # one company: 75+ requests, minutes
+python -m app.cli backfill-financials --limit 5              # a handful, for a first run
+python -m app.cli backfill-financials                        # every company — genuinely long; not scheduled
+```
+
+Per-company annual and quarterly filings back to 2012, catalogued —
+`getFinancialAnnouncement` (the daily scheduled scan) only ever sees the
+single most recent filing platform-wide. Only files from roughly 2019
+onward actually download (older ones 403 from the CDN despite being
+listed); the command reports `unavailable` separately from genuine
+failures. Everything lands in the confirm queue exactly like the daily
+scan — nothing here skips human confirmation (§8). Not scheduled: a
+single well-documented company is 75+ paced requests on its own, and a
+weekly sweep of the whole exchange would be a genuinely heavy load on an
+unofficial endpoint (§5).
+
 ### Macro data (the hero spread)
 
 ```bash

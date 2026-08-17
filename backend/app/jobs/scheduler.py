@@ -287,6 +287,10 @@ def _job_financial_statement_scan() -> None:
     platform-wide with no per-company filter available server-side — see
     README_ENDPOINTS.md — so this job fetches once and matches client-side
     against every known ticker, same shape as the corporate-actions scan.
+    Forward capture only; historical backfill is a separate, much heavier
+    per-company operation (`python -m app.cli backfill-financials`,
+    `app.ingestion.financial_reports_archive_loader`) run explicitly, not
+    scheduled.
     """
     db = SessionLocal()
     try:

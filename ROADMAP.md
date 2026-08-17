@@ -395,10 +395,56 @@ a dated, sourced manual observation is.
       decision (API key, model, cost) before it's worth building; the
       deterministic extractor covers a real but limited subset of line
       items until then.
-- [ ] **Financial-statement historical backfill** — `getFinancialAnnouncement`
-      is a recent-filings feed only; a different, not-yet-identified
-      source is needed to backfill history to the Part O #2 target
-      (2015-01-01).
+- [x] **Financial-statement historical backfill — the "not-yet-identified
+      source" above is `/api/financials`, found 17 Aug.**
+      `app/ingestion/financial_reports_archive_loader.py`,
+      `python -m app.cli backfill-financials`. Found the same way as
+      sectors, the registry and per-company prices this session: opening
+      the CSE's own new company-profile page (Financials tab) and reading
+      `performance.getEntriesByType('resource')` in the live page, not
+      guessing endpoint names.
+      - Verified against COMB.N0000: **16 annual + 59 quarterly filings,
+        catalogued back to 2012** — `getFinancialAnnouncement` only ever
+        offers the single most recent filing platform-wide.
+      - **The catalogue is more complete than the CDN, and the loader
+        says so rather than treating it as a bug.** Every 2018-and-
+        earlier annual report for COMB.N0000 is listed but 403s on
+        download; 2019 onward is clean. `unavailable` and `failed` are
+        counted separately in the summary for exactly this reason.
+      - **`uploadedDate` is trusted as `first_available_date` on real
+        evidence, not a default.** `authorizedDate` (the more obviously
+        correct field, already used by `getFinancialAnnouncement`)
+        exists only on 2024+ filings here. Every one of 60 real
+        (period_end, uploadedDate) pairs back to 2012 shows a distinct,
+        plausible disclosure lag (38-92 days) — a bulk migration backfill
+        would instead stamp every old row with one shared date, and it
+        doesn't.
+      - **Amendments are modelled as real restatements, not collisions.**
+        COMB.N0000 has both an original and an "Amended" annual report
+        for the same FY2022 and FY2021 periods. Processed oldest-first,
+        `version` increments per distinct source PDF already on file for
+        that (ticker, period_end, period_type) — the amendment becomes
+        `version=2` with its own later `first_available_date`, preserving
+        the fact that the market saw the original figures first.
+        Idempotency is checked per exact source PDF, deliberately
+        separate from that versioning logic, so a re-run never
+        re-downloads a file it already has but still correctly processes
+        a genuinely new amendment for an already-seen period.
+      - Reuses the existing single-filing extractor
+        (`financial_pdf_extractor.py`) unchanged — same deterministic
+        line-item extraction, same accounting-identity check, same
+        AI-assisted provenance requiring human confirmation before any
+        figure enters a ratio (§8). This is a new SOURCE of filings, not
+        a new extraction method, and PARAMETERS.md #9's coverage gap
+        (still no cash-flow-statement line) now compounds across many
+        more real periods per company rather than the one filing it was
+        verified against.
+      - Not scheduled as a recurring job, unlike the daily
+        `financial_statement_scan`: a full company's history is 75+
+        paced requests on its own, and running that weekly across ~283
+        companies would be a genuinely heavy, inappropriate load on an
+        unofficial endpoint (§5). Run explicitly, `--ticker`/`--limit`
+        at a time, the same way `backfill-prices` is.
 - [x] **Per-company price history — reverses the "confirmed unsolvable"
       finding above.** That conclusion tested `chartData` (param
       `chartId`) against every security id and got `[]` for all of them.

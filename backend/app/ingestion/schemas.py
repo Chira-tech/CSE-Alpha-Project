@@ -289,3 +289,41 @@ class AnnouncementDetailResponse(_Lenient):
     # an announcementId that belongs to the *other* endpoint's family —
     # see the module docstring. The loader treats that the same as a 204.
     reqBaseAnnouncement: AnnouncementDetail | None = None
+
+
+# --- /api/financials — per-company historical report archive ----------------
+
+
+class CompanyArchiveReportFile(_Lenient):
+    """One report file from `/api/financials` (POST form, `symbol=...`).
+
+    Distinct from `FinancialAnnouncementRow` above despite near-identical
+    field names: on THIS endpoint `uploadedDate`/`authorizedDate` are
+    epoch-millis integers, not the "14 Aug 2026 ..." strings the other
+    endpoint returns, so the two are not interchangeable and get their
+    own schema rather than being forced into one.
+
+    Verified live 17 Aug 2026 against COMB.N0000: 16 annual + 59 quarterly
+    reports back to 2012 (`getFinancialAnnouncement` only ever offers the
+    most recent filing platform-wide) — but only files from ~2019 onward
+    actually download; everything older 403s from the CDN despite being
+    listed. See app.ingestion.financial_reports_archive_loader.
+    """
+
+    id: int
+    path: str
+    path2: str | None = None
+    manualDate: int | None = None  # epoch millis — period-end ("as at") date
+    uploadedDate: int | None = None  # epoch millis
+    authorizedDate: int | None = None  # epoch millis — present only for recent filings
+
+
+class CompanyFinancialArchiveResponse(_Lenient):
+    infoAnnualData: list[CompanyArchiveReportFile] = []
+    infoQuarterlyData: list[CompanyArchiveReportFile] = []
+    # infoOtherData / infoWebLink / infoCompanyBannerAd / reqFinancial also
+    # exist on this response but aren't statement filings — reqFinancial in
+    # particular looked promising (159 rows) but turned out to be 159
+    # identical {"data": "Financial Statements Summary"} category labels,
+    # not structured figures; verified live, not assumed. Ignored via
+    # _Lenient rather than modelled.

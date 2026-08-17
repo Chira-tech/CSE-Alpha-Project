@@ -24,6 +24,7 @@ from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.archetype_loader import apply_archetype_proposals
 from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.company_price_history_loader import backfill_company_price_history
+from app.ingestion.financial_reports_archive_loader import ingest_report_archive_for_ticker
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
@@ -207,6 +208,55 @@ def cmd_second_source_check(args: argparse.Namespace) -> int:
             print(f"  {summary['mismatched']} ticker(s) newly quarantined — see data_alerts.")
         if summary["no_quote"]:
             print(f"  {summary['no_quote']} had no TradingView coverage (not a mismatch).")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_backfill_financials(args: argparse.Namespace) -> int:
+    """Backfill each company's full financial-statement history from
+    /api/financials — annual and quarterly filings, years deeper than
+    `financial-statement-scan`'s single most-recent filing per company.
+
+    One request to list the archive plus one download per PDF, all
+    through the paced CseClient (§5) — a single company with a long
+    history (e.g. COMB.N0000: 16 annual + 59 quarterly reports) is
+    75+ requests on its own, so this is a genuinely long-running job.
+    Every draft still lands in the confirm queue (§8) exactly like the
+    single-filing scan; nothing here is auto-promoted to Reported.
+    """
+    db = SessionLocal()
+    try:
+        tickers = [t for (t,) in db.execute(select(Security.ticker).order_by(Security.ticker)).all()]
+        if args.ticker:
+            tickers = [t for t in tickers if t in set(args.ticker)]
+        if args.limit:
+            tickers = tickers[: args.limit]
+        if not tickers:
+            print("No matching tickers. Run `bootstrap` first?", file=sys.stderr)
+            return 1
+
+        print(f"Backfilling financial statement history for {len(tickers)} ticker(s).")
+        totals = {"drafted": 0, "unavailable": 0, "failed": 0}
+        with CseClient() as client:
+            for ticker in tickers:
+                try:
+                    summary = ingest_report_archive_for_ticker(client, db, ticker)
+                except Exception as exc:  # noqa: BLE001 — one bad ticker must not abort the sweep
+                    print(f"  {ticker}: FAILED ({exc})", file=sys.stderr)
+                    continue
+                for k in totals:
+                    totals[k] += summary[k]
+                if summary["drafted"]:
+                    print(
+                        f"  {ticker}: {summary['drafted']} new draft(s), "
+                        f"{summary['unavailable']} unavailable, {summary['failed']} failed"
+                    )
+        print(
+            f"Done. {totals['drafted']} draft(s) awaiting review at /fundamentals. "
+            f"{totals['unavailable']} filing(s) listed but not retrievable from the CDN "
+            f"(expect this for most pre-2019 filings), {totals['failed']} genuine failures."
+        )
     finally:
         db.close()
     return 0
@@ -447,6 +497,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_ss.add_argument("--date", type=dt.date.fromisoformat, default=None)
     p_ss.set_defaults(func=cmd_second_source_check)
+
+    p_bf = sub.add_parser(
+        "backfill-financials",
+        help="backfill each company's full financial-statement history from /api/financials",
+    )
+    p_bf.add_argument("--limit", type=int, default=None, help="only the first N tickers")
+    p_bf.add_argument("--ticker", action="append", help="restrict to one or more tickers")
+    p_bf.set_defaults(func=cmd_backfill_financials)
 
     p_bp = sub.add_parser(
         "backfill-prices",

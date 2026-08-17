@@ -301,8 +301,8 @@ platform-wide, not a per-company query; there is no visible pagination
 parameter, so it's unclear how far back "recent" goes (empirically, it
 captured filings clustered around a single day — plausibly a rolling
 window rather than a fixed count). Fine for event-driven "a new filing
-just landed" ingestion; **not usable for historical backfill** (Part O #2)
-without finding a different, per-company endpoint.
+just landed" ingestion; **the different, per-company endpoint this note
+once said didn't exist is `financials` below — found the same day.**
 ```json
 {"reqFinancialAnnouncemnets": [{"id":52726,
   "path":"cmt/upload_report_file/3399_1786715988377.pdf",
@@ -332,6 +332,58 @@ downloading the linked PDF and cross-checking its own printed dates:
   simple substring matching ("Annual Report" / "Interim ... Quarter") —
   see `classify_period_type`; wording not matching either is skipped, not
   guessed.
+
+### `financials` — POST form, `symbol=<TICKER>` (the per-company archive `getFinancialAnnouncement` doesn't give)
+
+**Not in the endpoint list above** — found on 17 Aug 2026 by opening the
+CSE's own new company-profile page (`company-profile?symbol=...` ->
+Financials -> Annual Reports) and reading `performance.getEntriesByType
+('resource')` in the live page's JS console, because the extension's own
+network-capture buffer was getting evicted by a busy carousel of banner-
+image requests before the real call could be inspected. Same "watch what
+the site's own UI actually does" method that found `sector_list`,
+`cntSecurity` and `companyChartDataByStock` — reused here because
+`getFinancialAnnouncement`'s "no per-company backfill route exists" was a
+real, correctly-drawn conclusion **about that endpoint**, not about the
+platform.
+
+```json
+{"infoAnnualData":[{"id":50738,
+  "path":"cmt/upload_report_file/369_1773048532050.pdf",
+  "manualDate":1767119400000,
+  "uploadedDate":1773048532050,
+  "authorizedDate":1773051442930,
+  "fileText":"Annual Report as at 31st December 2025"}, ... 16 total],
+ "infoQuarterlyData":[ ... 59 total],
+ "infoOtherData":[ ... 26 total, prospectus/trust-deed/five-year-summary],
+ "infoWebLink":[], "reqFinancial":[ ... 159 identical category-label rows,
+ NOT structured figures — checked and ruled out, not assumed], "infoCompanyBannerAd": [...]}
+```
+
+Verified against COMB.N0000: **16 annual + 59 quarterly filings, back to
+2012** — `getFinancialAnnouncement` only ever offers the single most
+recent filing platform-wide. Two things worth knowing before building on
+it:
+
+- **`uploadedDate`/`authorizedDate` are epoch-millis integers here**,
+  not the `"14 Aug 2026 07:29:48 PM"` strings `getFinancialAnnouncement`
+  returns for the same-named fields — the two endpoints are not
+  interchangeable despite the similar shape. `authorizedDate` exists
+  only on recent filings (2024+); every older row relies on
+  `uploadedDate` alone. Trusted anyway, on real evidence, not by
+  default: every one of 60 (period_end, uploadedDate) pairs for
+  COMB.N0000 back to 2012 shows a distinct, plausible disclosure lag
+  (38-92 days) tracking its own period — a bulk 2019-migration backfill
+  would instead show every old row stamped with one shared date, and it
+  doesn't.
+- **The catalogue is more complete than the CDN.** Every COMB.N0000
+  annual report from 2018 and earlier is listed here but returns HTTP
+  403 from `cdn.cse.lk` on download — checked individually, all 8 of
+  them. 2019 onward downloads cleanly. Treat "listed" and "retrievable"
+  as two different facts; `financial_reports_archive_loader.py` counts
+  them separately rather than treating a 403 as a bug.
+
+Consumed by `app.ingestion.financial_reports_archive_loader`.
 
 ### Extracting line items from the PDF
 `app.domain.financial_statement_parsing` + `app.ingestion.financial_pdf_extractor`
