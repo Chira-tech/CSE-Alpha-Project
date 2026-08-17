@@ -14,7 +14,32 @@ consecutive days.
 - [x] Corporate-action math: TERP, cumulative total-return adjustment
       factor series (§7, §P1) — pure functions, unit tested
 - [x] Coverage gate logic: Gate 1 liquidity, Gate 2 structural, Gate 3
-      integrity veto (§11.1) — pure functions, unit tested
+      integrity veto (§11.1) — pure functions, unit tested. **Still not
+      wired to any real data anywhere in the app** (`grep` for the
+      `evaluate_gate*` functions outside `coverage_gates.py` itself
+      returns nothing) — checked deliberately on 17 Aug rather than
+      assumed, because all three sounded like they might finally be
+      unblockable now that real price and sector history exist. They
+      aren't, and the specific reason for each is worth recording:
+      - **Gate 1 (liquidity)**: needs median 60-day *turnover* (Rs
+        traded), not volume. The per-company price backfill
+        (`companyChartDataByStock`) has no turnover field at all — only
+        high/low/close/volume — so real turnover history is only as deep
+        as forward capture has run (currently 1-2 sessions). Computing it
+        as `close × volume` was considered and rejected: on a day with
+        one trade it matches exactly (verified: ABAN.N0000, price=1085,
+        quantity=9, turnover=9765.0 = 1085×9 precisely), but on a
+        multi-trade day at varying prices it silently diverges from the
+        true volume-weighted figure — exactly the "looks precise, isn't"
+        number this project has avoided everywhere else, just not built
+        this time either.
+      - **Gate 2 (structural)**: still needs free float, which needs
+        quarterly shareholding disclosures (§5) — not ingested.
+      - **Gate 3 (integrity)**: still needs Beneish M-Score, related-party
+        revenue/receivables %, audit opinion and auditor-change data — none
+        extracted; `app.domain.ratios.NOT_YET_COMPUTABLE` already lists
+        `beneish_m` and `sloan_accrual_ratio` for the same underlying
+        reason (no cash-flow-statement line in `CANONICAL_LABELS`).
 - [x] Point-in-time query helper (§6) — tested against a restatement
       scenario
 - [x] Provenance tier enum + "weakest wins" rule (§8)
