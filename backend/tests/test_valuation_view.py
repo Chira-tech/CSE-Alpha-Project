@@ -19,6 +19,7 @@ from app.domain.valuation_view import (
     _confirmable_line_items,
     _latest_shares_issued,
     _steady_state_growth,
+    current_period_fcff_for,
     justified_price_to_book_for,
     residual_income_for,
     valuation_summary_for,
@@ -75,6 +76,31 @@ def _seed_confirmed_fundamentals(db, ticker="COMB.N0000", total_equity=Decimal(1
 
 def _seed_shares(db, ticker="COMB.N0000", shares=100, as_of=dt.date(2022, 1, 1)):
     db.add(FloatData(ticker=ticker, as_of=as_of, shares_issued=shares))
+    db.commit()
+
+
+def _seed_fcff_fundamentals(db, ticker="SWAD.N0000"):
+    """A Swadeshi-shaped confirmed period — every line §18.1's FCFF
+    formula needs, all REPORTED tier. Round numbers chosen so the
+    expected FCFF (670) matches the same hand-worked case already
+    verified directly against `compute_fcff` in test_dcf.py, rather than
+    introducing a second, un-cross-checked expected value."""
+    lines = {
+        "operating_profit": Decimal(1000),
+        "profit_before_tax": Decimal(900),
+        "income_tax_expense": Decimal(-252),  # 252/900 = 0.28 effective rate
+        "depreciation_and_amortisation": Decimal(50),
+        "capital_expenditure": Decimal(-80),  # cash-flow-statement sign convention
+        "change_in_net_working_capital": Decimal(20),
+    }
+    db.add_all(
+        Fundamental(
+            ticker=ticker, period_end=PERIOD_END, period_type="annual",
+            first_available_date=FIRST_AVAILABLE, version=1, statement_line=line,
+            value=value, provenance_tier=ProvenanceTier.REPORTED,
+        )
+        for line, value in lines.items()
+    )
     db.commit()
 
 
@@ -160,6 +186,73 @@ class TestResidualIncomeFor:
         assert abs(view.result.value_per_share - Decimal("15.0")) < Decimal("0.0001")
 
 
+class TestCurrentPeriodFCFFFor:
+    def test_hand_worked(self, db_session):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_fcff_fundamentals(db_session)
+
+        view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
+        assert view.period_end == PERIOD_END
+        # Same case as test_dcf.py's TestComputeFCFF.test_hand_worked: 670
+        assert view.fcff == Decimal(670)
+        assert view.warnings == ()
+
+    def test_capex_sign_is_flipped_from_the_stored_cash_outflow_convention(self, db_session):
+        """A regression guard: capital_expenditure is stored NEGATIVE
+        (the cash-flow statement's own printed convention), and
+        compute_fcff wants the positive magnitude it subtracts. Passing
+        the raw negative value through unflipped would ADD capex to
+        FCFF instead of subtracting it — silently overstating FCFF by
+        2x the capex figure, an easy, dangerous, and specifically
+        checked-for mistake."""
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_fcff_fundamentals(db_session)
+        view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
+        # If the sign flip were missing: 1000*0.72 + 50 - (-80) - 20 = 730
+        assert view.fcff != Decimal(730)
+        assert view.fcff == Decimal(670)
+
+    def test_missing_capex_is_named_not_silently_zeroed(self, db_session):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line=line,
+                    value=value, provenance_tier=ProvenanceTier.REPORTED,
+                )
+                for line, value in {
+                    "operating_profit": Decimal(1000),
+                    "profit_before_tax": Decimal(900),
+                    "income_tax_expense": Decimal(-252),
+                    "depreciation_and_amortisation": Decimal(50),
+                    # capital_expenditure and change_in_net_working_capital deliberately omitted
+                }.items()
+            ]
+        )
+        db_session.commit()
+
+        view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
+        assert view.fcff is None
+        assert any("capital_expenditure" in w for w in view.warnings)
+        assert any("change_in_net_working_capital" in w for w in view.warnings)
+
+    def test_unconfirmed_line_excludes_from_the_figure(self, db_session):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        db_session.add(
+            Fundamental(
+                ticker="SWAD.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1, statement_line="operating_profit",
+                value=Decimal(1000), provenance_tier=ProvenanceTier.AI_ASSISTED,
+            )
+        )
+        db_session.commit()
+
+        view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
+        assert view.fcff is None
+        assert "operating_profit" in view.excluded_unconfirmed_lines
+
+
 class TestValuationSummaryFor:
     def test_end_to_end_bank_triangulation_and_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)
@@ -185,6 +278,9 @@ class TestValuationSummaryFor:
         assert summary.price_ladder is not None
         assert summary.price_ladder.current_zone == "strong_accumulate"
         assert summary.current_price == Decimal(12)
+        # No capex/D&A/WC seeded for COMB.N0000 in this fixture — informational
+        # only, and correctly absent rather than silently zero.
+        assert summary.current_period_fcff.fcff is None
 
     def test_no_confirmed_data_gives_no_anchors_and_no_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)

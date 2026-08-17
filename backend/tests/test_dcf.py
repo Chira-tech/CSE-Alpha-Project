@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from app.domain.dcf import (
     DCFAssumptions,
+    compute_fcff,
     dcf_equity_value,
     implied_flat_growth_rate,
     linear_fade,
@@ -16,6 +17,54 @@ from app.domain.dcf import (
 
 def test_linear_fade_basic():
     assert linear_fade(Decimal(10), Decimal(25), 3) == [Decimal(15), Decimal(20), Decimal(25)]
+
+
+class TestComputeFCFF:
+    def test_hand_worked(self):
+        # 1000*(1-0.28) + 50 - 80 - 20 = 720 + 50 - 80 - 20 = 670
+        result = compute_fcff(
+            ebit=Decimal(1000),
+            effective_tax_rate=Decimal("0.28"),
+            depreciation_amortisation=Decimal(50),
+            capital_expenditure=Decimal(80),
+            change_in_net_working_capital=Decimal(20),
+        )
+        assert result == Decimal(670)
+
+    def test_negative_change_in_working_capital_increases_fcff(self):
+        """A DECREASE in net working capital (cash released, not
+        absorbed) should ADD to FCFF, not subtract."""
+        base = compute_fcff(Decimal(1000), Decimal("0.28"), Decimal(50), Decimal(80), Decimal(0))
+        released_cash = compute_fcff(Decimal(1000), Decimal("0.28"), Decimal(50), Decimal(80), Decimal(-20))
+        assert released_cash == base + 20
+
+    def test_matches_project_cash_flows_internal_computation(self):
+        """The multi-year projection calls this same function per year —
+        confirm the two paths never silently diverge."""
+        a = DCFAssumptions(
+            base_revenue=Decimal(1000),
+            revenue_growth_y1=Decimal("0.05"),
+            revenue_growth_y2=Decimal("0.05"),
+            revenue_growth_stage2_target=Decimal("0.05"),
+            terminal_growth=Decimal("0.05"),
+            operating_margin_current=Decimal("0.20"),
+            operating_margin_target=Decimal("0.20"),
+            effective_tax_rate_current=Decimal("0.28"),
+            statutory_tax_rate=Decimal("0.28"),
+            depreciation_amortisation_pct_revenue=Decimal("0.04"),
+            capex_pct_revenue=Decimal("0.05"),
+            working_capital_pct_revenue=Decimal("0.10"),
+            risk_free_rate=Decimal("0.12"),
+            discount_rate=Decimal("0.15"),
+            diluted_shares_outstanding=Decimal(100),
+        )
+        years = project_cash_flows(a)
+        y1 = years[0]
+        recomputed = compute_fcff(
+            y1.ebit, y1.tax_rate, y1.depreciation_amortisation,
+            y1.capital_expenditure, y1.change_in_net_working_capital,
+        )
+        assert recomputed == y1.fcff
 
 
 def test_linear_fade_zero_steps():

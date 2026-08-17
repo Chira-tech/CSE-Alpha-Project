@@ -232,6 +232,34 @@ def _validate(a: DCFAssumptions) -> list[str]:
     return warnings
 
 
+def compute_fcff(
+    ebit: Decimal,
+    effective_tax_rate: Decimal,
+    depreciation_amortisation: Decimal,
+    capital_expenditure: Decimal,
+    change_in_net_working_capital: Decimal,
+) -> Decimal:
+    """§18.1: FCFF = EBIT × (1 - effective tax rate) + D&A - capex - ΔNWC.
+
+    `project_cash_flows` below calls this once per projected year — this
+    standalone version exists so a caller with just ONE real period's
+    figures (not a full multi-year forecast) can compute a real,
+    honestly-labelled trailing FCFF number without constructing a
+    `DCFAssumptions`, which requires growth/margin/tax FADE assumptions
+    this function has no opinion about and a single period gives no basis
+    to invent. See `app.domain.valuation_view.current_period_fcff_for`
+    for exactly that live-data use — the first of §18's numbers this
+    system computes from real extracted figures rather than only
+    hand-worked test inputs.
+    """
+    return (
+        ebit * (Decimal(1) - effective_tax_rate)
+        + depreciation_amortisation
+        - capital_expenditure
+        - change_in_net_working_capital
+    )
+
+
 def project_cash_flows(a: DCFAssumptions) -> list[YearProjection]:
     """Years 1-10, per §18.1/§18.2's stage structure. Returns the full
     per-year detail (not just FCFF) so a UI can show the assumption trail,
@@ -263,7 +291,7 @@ def project_cash_flows(a: DCFAssumptions) -> list[YearProjection]:
         capex = revenue * capex_pct
         nwc = revenue * a.working_capital_pct_revenue
         delta_nwc = nwc - prior_nwc
-        fcff = ebit * (Decimal(1) - tax_rate) + da - capex - delta_nwc
+        fcff = compute_fcff(ebit, tax_rate, da, capex, delta_nwc)
 
         years.append(
             YearProjection(

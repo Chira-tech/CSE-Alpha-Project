@@ -982,6 +982,57 @@ a dated, sourced manual observation is.
         working-capital sections (rather than trimmed vacuum text) and
         every existing assertion on them re-checked against the new
         lines. Full suite: 649 passed.
+- [x] **A real, live FCFF number — the first of §18's figures wired to
+      live data, and a small, honestly-scoped step short of a full DCF.**
+      `app.domain.dcf.compute_fcff` extracted as its own standalone pure
+      function from the formula that was previously only inline inside
+      `project_cash_flows`' multi-year loop (both paths now call the
+      same function — a regression test confirms they can never silently
+      diverge) — because a caller with just ONE real period's figures
+      needed a way to compute FCFF without constructing a full
+      `DCFAssumptions`, which requires multi-year growth/margin/tax fade
+      assumptions a single period gives no honest basis to invent.
+      - `app.domain.valuation_view.current_period_fcff_for` wires it to
+        live data: fetches the same §8-confirmed line items the rest of
+        this module already respects (`operating_profit` as an EBIT
+        proxy — stated explicitly as an approximation, since this
+        extractor has no separate canonical `ebit` line to compare it
+        against — `depreciation_and_amortisation`, `capital_
+        expenditure`, `change_in_net_working_capital`, plus the
+        already-built `effective_tax_rate` ratio), and computes a real
+        FCFF figure the moment all five are present and confirmed for
+        one company.
+      - **A real sign-convention bug caught before it shipped, not after
+        — the value this whole increment exists to demonstrate.**
+        `capital_expenditure` is extracted NEGATIVE (the cash-flow
+        statement's own printed convention, a cash outflow), but
+        `compute_fcff` expects the POSITIVE magnitude it subtracts.
+        Passing the raw stored value straight through would have added
+        capex to FCFF instead of subtracting it — silently overstating
+        FCFF by roughly twice the real capex figure, on every company
+        this ever ran against, and it would have looked completely
+        plausible on screen. Caught by writing the test FIRST against a
+        known hand-worked answer (670, the same case already verified
+        directly against `compute_fcff` in `test_dcf.py`) rather than
+        writing the wiring and trusting it; a dedicated regression test
+        now asserts the flipped-sign answer (730) is specifically wrong.
+      - Deliberately informational only, NOT fed into `valuation_
+        summary_for`'s triangulation anchors: an undiscounted single
+        period's cash flow is not a per-share fair value, and treating
+        it as one would be exactly the "confident, precise, entirely
+        fictional number" §15 warns the whole valuation engine exists to
+        prevent. `app.domain.dcf`'s own module docstring is explicit
+        that turning this into an actual DCF fair value still needs the
+        multi-year forecast wiring — real, separate, not-yet-built work,
+        genuinely no longer a data-availability gap but not "DCF is
+        live" either.
+      - Exposed on `GET /valuation/{ticker}` as `current_period_fcff`.
+      - 7 new tests: `compute_fcff`'s own hand-worked case, a working-
+        capital-sign sanity check, and a cross-check against `project_
+        cash_flows`' internal computation (`test_dcf.py`); the live-
+        wiring hand-worked case, the sign-flip regression at the view
+        layer, a missing-inputs case, and a §8 confirmation-filtering
+        case (`test_valuation_view.py`). Full suite: 656 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

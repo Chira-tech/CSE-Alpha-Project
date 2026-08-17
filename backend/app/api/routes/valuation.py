@@ -7,11 +7,15 @@ that fair values and buy-below prices are "deliberately absent... Phase
 2/3 (§12-26) and the engines that compute them do not exist yet." That's
 now only half true: the engines exist (`app/domain/dcf.py` through
 `price_ladder.py`) and two of them — justified P/B and residual income —
-are wired to live data (`app.domain.valuation_view`). This endpoint is
-that wiring's front door. It is still an honest partial answer, not the
-full §24 triangulation: see `CompanyValuationOut.note` and
-ROADMAP.md's Phase 3 section for exactly which anchors are missing and
-why (DCF/DDM/SOTP/asset-based all need data this system doesn't extract).
+are wired to live data as full triangulation anchors
+(`app.domain.valuation_view`). A third live number, `current_period_
+fcff`, is now real too (§18.1's FCFF formula on one confirmed period) but
+deliberately informational only, never an anchor — see `app.domain.
+valuation_view.current_period_fcff_for`'s own docstring for why. This
+endpoint is that wiring's front door. It is still an honest partial
+answer, not the full §24 triangulation: see `CompanyValuationOut.note`
+and ROADMAP.md's Phase 3 section for exactly which anchors are missing
+and why.
 
 Returns 404 for an unknown ticker, same convention as `securities.py`'s
 company-file route. Does NOT require `archetype` to be set on the
@@ -85,6 +89,17 @@ class RoutingOut(BaseModel):
     note: str
 
 
+class CurrentPeriodFCFFOut(BaseModel):
+    period_end: dt.date | None
+    fcff: Decimal | None
+    """§18.1's FCFF formula on ONE real confirmed period — informational
+    only, never a per-share fair value (see `app.domain.valuation_view.
+    current_period_fcff_for`'s own docstring for why this is never one
+    of `triangulation`'s anchors below)."""
+
+    warnings: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -94,6 +109,7 @@ class CompanyValuationOut(BaseModel):
     justified_price_to_book_warnings: list[str]
     residual_income_fair_value: Decimal | None
     residual_income_warnings: list[str]
+    current_period_fcff: CurrentPeriodFCFFOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
     price_ladder: PriceLadderOut | None
@@ -119,6 +135,11 @@ class CompanyValuationOut(BaseModel):
                 s.residual_income.result.value_per_share if s.residual_income.result else None
             ),
             residual_income_warnings=list(s.residual_income.inputs.warnings),
+            current_period_fcff=CurrentPeriodFCFFOut(
+                period_end=s.current_period_fcff.period_end,
+                fcff=s.current_period_fcff.fcff,
+                warnings=list(s.current_period_fcff.warnings),
+            ),
             triangulation=TriangulationOut(
                 triangulation_category=t.triangulation_category,
                 anchors=[],  # anchors themselves aren't retained on TriangulationResult — see category_averages

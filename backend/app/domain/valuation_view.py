@@ -20,19 +20,21 @@ price ladder. A period with only AI-assisted figures produces no
 valuation here at all — `excluded_unconfirmed_lines` says which lines
 were held back and why, rather than the output quietly using them anyway.
 
-WHICH OF §18-26'S NINE MODELS THIS ACTUALLY WIRES UP, AND WHY ONLY THESE
-TWO. Only justified P/B (§20.2) and residual income (§19.3) run against
-live data — see `app.domain.dividend_residual_income` and
-`app.domain.relative_valuation`'s own module docstrings for exactly why
-DCF, DDM, SOTP and asset-based stay unwired. Cash-flow-statement
-extraction is no longer a total gap (`cash_flow_from_operations` and
-`depreciation_and_amortisation` are extracted — `app.domain.dcf`'s own
-docstring has the detail), but capital expenditure and working-capital
-components still aren't, and dividend-history/segment/external-reference
-data still isn't extracted anywhere in this system either — DCF and DDM
-each still need at least one input this session's cash-flow work didn't
-close. Both wired models need only book value, ROE and Ke — all three
-already exist by Phase 2/3's earlier work.
+WHICH OF §18-26'S NINE MODELS THIS ACTUALLY WIRES UP, AND WHY. Justified
+P/B (§20.2) and residual income (§19.3) run as full triangulation anchors
+against live data — see `app.domain.dividend_residual_income` and
+`app.domain.relative_valuation`'s own module docstrings. Both need only
+book value, ROE and Ke, all three already extracted/computed by Phase
+2/3's earlier work. `current_period_fcff_for` adds a THIRD live number,
+§18.1's FCFF formula applied to one real confirmed period — genuinely
+computable now for a Swadeshi-shaped filing (`app.domain.dcf`'s own
+docstring has the full extraction picture) — but it is informational
+only, never a triangulation anchor: a single undiscounted period's cash
+flow is not a per-share fair value, and a full DCF still needs the
+multi-year forecast wiring (§18.2's growth/margin/tax fade assumptions)
+that genuinely doesn't exist yet, a design gap now, not a data gap. DDM
+and SOTP stay entirely unwired — dividend history and segment data still
+aren't extracted anywhere in this system.
 
 THE RESIDUAL INCOME FORECAST USED HERE IS DELIBERATELY THE FLAT-
 PERSISTENCE CASE, NOT A FORECAST OF IMPROVEMENT. `compute_residual_
@@ -67,6 +69,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.cost_of_equity_view import cost_of_equity_for
+from app.domain.dcf import compute_fcff
 from app.domain.dividend_residual_income import ResidualIncomeResult, compute_residual_income
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
@@ -247,6 +250,79 @@ def residual_income_for(db: Session, ticker: str, as_of: dt.date | None = None) 
 
 
 @dataclass(frozen=True)
+class CurrentPeriodFCFFView:
+    period_end: dt.date | None
+    fcff: Decimal | None
+    excluded_unconfirmed_lines: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def current_period_fcff_for(
+    db: Session, ticker: str, as_of: dt.date | None = None
+) -> CurrentPeriodFCFFView:
+    """§18.1's FCFF formula applied to ONE real, confirmed period — NOT a
+    DCF valuation. A DCF fair value needs a multi-year forecast this
+    function does not attempt (see `app.domain.dcf`'s own module
+    docstring for exactly why one period's figures aren't a forecast);
+    this is the honestly-scoped smaller thing that IS real today: the
+    trailing-period FCFF number itself, the first of §18's figures this
+    system computes from live extracted data rather than only
+    hand-worked test inputs. Deliberately NOT fed into `valuation_
+    summary_for`'s triangulation anchors — an undiscounted single-period
+    cash flow is not a per-share fair value, and treating it as one would
+    be exactly the "confident, precise, entirely fictional number" §15
+    warns about.
+
+    EBIT IS APPROXIMATED AS `operating_profit`. This extractor has no
+    canonical `ebit` line distinct from `operating_profit` to compare
+    against — for the CSE income-statement presentations verified so far
+    (revenue → cost of sales → gross profit → operating profit → then
+    financing items), the two normally coincide, but a company with
+    material non-operating income or expense recognised before its
+    financing line would make this a genuine approximation, not a
+    citation error — stated here rather than silently assumed exact.
+    """
+    stamp = as_of or dt.date.today()
+    period_end, items, excluded = _confirmable_line_items(db, ticker, stamp)
+    warnings: list[str] = []
+    if excluded:
+        warnings.append(
+            f"{excluded} present for this period but still AI-assisted/unconfirmed — "
+            "excluded from this figure per §8."
+        )
+    if period_end is None:
+        warnings.append("No fundamentals visible as of this date at all.")
+        return CurrentPeriodFCFFView(period_end, None, excluded, tuple(warnings))
+
+    tax_result = next((r for r in compute_all(items) if r.key == "effective_tax_rate"), None)
+    required = {
+        "operating_profit (EBIT proxy)": items.get("operating_profit"),
+        "depreciation_and_amortisation": items.get("depreciation_and_amortisation"),
+        "capital_expenditure": items.get("capital_expenditure"),
+        "change_in_net_working_capital": items.get("change_in_net_working_capital"),
+    }
+    missing = [name for name, item in required.items() if item is None]
+    if tax_result is None or not tax_result.computable:
+        missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
+
+    if missing:
+        warnings.append(f"FCFF not computable — missing: {', '.join(missing)}.")
+        return CurrentPeriodFCFFView(period_end, None, excluded, tuple(warnings))
+
+    fcff = compute_fcff(
+        ebit=required["operating_profit (EBIT proxy)"].value,
+        effective_tax_rate=tax_result.value,
+        depreciation_amortisation=required["depreciation_and_amortisation"].value,
+        # Extracted as a negative cash outflow (the cash-flow statement's
+        # own printed convention); compute_fcff wants the positive
+        # magnitude it subtracts.
+        capital_expenditure=abs(required["capital_expenditure"].value),
+        change_in_net_working_capital=required["change_in_net_working_capital"].value,
+    )
+    return CurrentPeriodFCFFView(period_end, fcff, excluded, tuple(warnings))
+
+
+@dataclass(frozen=True)
 class CompanyValuationSummary:
     ticker: str
     as_of: dt.date
@@ -263,6 +339,11 @@ class CompanyValuationSummary:
     routing: RoutingDecision
     justified_pb: JustifiedPBView
     residual_income: ResidualIncomeView
+    current_period_fcff: CurrentPeriodFCFFView
+    """Informational only — see `current_period_fcff_for`'s own
+    docstring for why this is never one of the triangulation anchors
+    below."""
+
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
     price_ladder: PriceLadderResult | None
@@ -284,6 +365,7 @@ def valuation_summary_for(
     routing = route_valuation(archetype)
     jpb = justified_price_to_book_for(db, ticker, stamp)
     ri = residual_income_for(db, ticker, stamp)
+    fcff_view = current_period_fcff_for(db, ticker, stamp)
 
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
@@ -317,6 +399,6 @@ def valuation_summary_for(
 
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
-        residual_income=ri, triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder,
-        note=note,
+        residual_income=ri, current_period_fcff=fcff_view, triangulation=triangulation,
+        margin_of_safety=mos, price_ladder=ladder, note=note,
     )
