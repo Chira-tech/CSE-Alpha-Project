@@ -501,6 +501,78 @@ a dated, sourced manual observation is.
       trade balance, tourist arrivals) are NOT in the daily PDF — they
       come from monthly/weekly publications that need their own parsers.
 
+### §31 regime classifier — the first real piece of Phase 4's macro engine
+
+Phase 4 (§29-39: macro/ARDL, factor library, scoring, AI research
+writer, decision capture UI) had nothing built at all until this
+entry — the ROADMAP's own "Explicitly deferred" section below has been
+updated to stop bundling "macro/ARDL" as one untouched block, because
+part of it genuinely isn't untouched anymore.
+
+- [x] **§31's regime classifier is live** — `app.domain.regime_
+      classification` (pure) + `app.domain.macro_engine_view.regime_for`
+      (wired to real `macro_series` data), consumed by `margin_of_
+      safety.regime_pct` on every `GET /valuation/{ticker}` call (§31:
+      "mechanically... widens every margin of safety"). New real
+      dependencies: `statsmodels`/`numpy`/`pandas`/`scipy` — never
+      hand-rolled; ADF/KPSS-class stationarity work and Markov
+      regime-switching are real, tested library implementations, not
+      reimplemented from scratch.
+      - TWO INDEPENDENT READS, matching §30 step 4's own wording
+        ("Markov switching... augmented with a macro composite z-score"):
+        a genuine `statsmodels.tsa.regime_switching.markov_regression.
+        MarkovRegression` fit on real ASPI daily log returns (`app.
+        domain.index_history_loader`'s ~1-year backfill is the only
+        series in this system's macro layer with plausible year-long
+        depth), refusing to trust a fit below 60 observations OR one the
+        EM optimiser didn't actually converge on (`mle_retvals
+        ['converged']` — a real, observed failure mode caught while
+        testing a 3-regime fit, not a hypothetical one guarded
+        speculatively); and a rule-based composite reading §31's own
+        signature table and §32's own worked-example logic directly off
+        whatever of §29's ~14 named signal types this system actually has
+        real coverage of today — five: the policy rate, the 364-day
+        T-bill yield, CCPI y/y, the LKR/USD rate (all via `app.domain.
+        cbsl_parsing`, whose own backfill-to-2013 job above hasn't been
+        run yet, so live coverage today is whatever the daily capture job
+        accumulates going forward) and §29's own hero spread. Both reads,
+        when both exist, blend 50/50 — an explicit, disclosed weight, not
+        a formally optimised one.
+      - Statistical regimes are unlabelled by statsmodels itself — ranked
+        here by `mean ÷ √variance` (a Sharpe-like measure, chosen because
+        §30 names BOTH returns and volatility, not mean alone) to assign
+        `risk_on`/`transition`/`risk_off`.
+      - Validated against §36's own bar ("regime classifier correctly
+        labels known historical periods") using a synthetic two-regime
+        series (150 days bull, 100 days bear, seeded) — the fit correctly
+        ranks the bull regime above the bear regime and reads the
+        current (final-day) state as `risk_off` with >80% confidence.
+      - The Ke/discount-rate-raising and gross-exposure-capping
+        consequences §31 also names are NOT wired anywhere yet — named
+        precisely as the next piece, not silently attempted here.
+      - 38 new tests (`test_regime_classification.py`,
+        `test_macro_engine_view.py`, plus 3 new `test_valuation_api.py`
+        tests — the first end-to-end `GET /valuation/{ticker}` API tests
+        this project has had; `test_valuation_view.py` only exercised the
+        domain layer directly, which can't catch a Pydantic
+        serialization bug at the domain-to-API boundary, and one very
+        nearly shipped here — a `Literal["risk_on", ...]`-keyed dict
+        round-tripping through JSON). Full suite: 742 passed.
+      - **Named precisely, not silently skipped — the rest of §30's
+        six-step method chain**: stationarity/break testing (ADF,
+        Phillips-Perron, KPSS, Zivot-Andrews) as a standalone reusable
+        module; Johansen cointegration / VECM / ARDL bounds testing (the
+        actual long-run macro-to-market relationship — `statsmodels.tsa.
+        ardl.ARDL`/`UECM.bounds_test` are the right tool, not built);
+        impulse response functions, FEVD, Toda-Yamamoto causality (need
+        the cointegration model first); the event study (CARs around
+        CBSL/CCPI/IMF/budget/election dates); §33's sector sensitivity
+        matrix (needs sector-level return series this system doesn't
+        currently assemble); §34's national project register (a
+        structured, human-confirmed data table, not an econometric
+        method). None of these is faked by returning a plausible number
+        from a formula that isn't actually the named method.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —
@@ -1434,12 +1506,17 @@ The earnings integrity veto (§14 — needs CFO, related-party revenue,
 auditor and director-dealings data this system does not extract), §27
 execution reality (needs a live order-book feed, 15-minute cadence — not
 part of Phase 3's own gate per Master Spec §54's build-sequence table),
-macro/ARDL, factor library, scoring, AI research writer, decision capture
-UI — all Phase 4+ per §54. Fundamental ratios (§12), trend detection
-(§13), the model router (§15/§16), and valuation MATH (DCF, DDM, residual
-income, SOTP, relative valuation, asset-based, scenarios, triangulation,
-margin of safety, the price ladder — §17-26) are no longer in this list —
-see above. Building the still-deferred items against unvalidated data, or
-against inputs this system doesn't actually have, would produce exactly
-the look-ahead-biased, false-precision numbers the spec's failure-mode
-register (Part N) warns about.
+factor library, scoring, AI research writer, decision capture UI — all
+Phase 4+ per §54. Fundamental ratios (§12), trend detection (§13), the
+model router (§15/§16), and valuation MATH (DCF, DDM, residual income,
+SOTP, relative valuation, asset-based, scenarios, triangulation, margin
+of safety, the price ladder — §17-26) are no longer in this list — see
+above. **Macro/ARDL (§29-33) is also no longer a single untouched
+block** — §31's regime classifier is live (see "§31 regime classifier"
+above); §30's other five method-chain steps, §33's sector sensitivity
+matrix and §34's national project register remain genuinely unbuilt,
+named precisely in that same section rather than left as one vague
+"macro/ARDL" line item. Building the still-deferred items against
+unvalidated data, or against inputs this system doesn't actually have,
+would produce exactly the look-ahead-biased, false-precision numbers the
+spec's failure-mode register (Part N) warns about.

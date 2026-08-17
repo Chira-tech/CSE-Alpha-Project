@@ -11,6 +11,19 @@ python-dotenv>=1.0
 apscheduler>=3.10
 pdfplumber>=0.11
 
+# Part G — macro & sector engine (§29-33). statsmodels supplies real
+# implementations of every named method: ADF/KPSS stationarity testing,
+# Johansen cointegration and VECM, ARDL bounds testing (Pesaran-Shin-
+# Smith), Markov regime-switching. Never hand-rolled — an
+# econometrician's implementation, tested against the literature, is
+# worth trusting; a from-scratch reimplementation of a bounds test is
+# exactly the kind of "confident, precise, entirely fictional number"
+# §15 warns the whole platform exists to avoid.
+statsmodels>=0.14
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+
 # dev / test
 pytest>=8.3
 pytest-asyncio>=0.24

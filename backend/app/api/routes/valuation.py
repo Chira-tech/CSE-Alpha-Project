@@ -185,6 +185,32 @@ class HardBookOut(BaseModel):
     warnings: list[str]
 
 
+class MacroSignalOut(BaseModel):
+    name: str
+    reading: str
+    lean: str
+
+
+class RegimeOut(BaseModel):
+    as_of: dt.date
+    label: str | None
+    """One of `"risk_on"`/`"transition"`/`"risk_off"`, or `None` when no
+    read was possible at all (see `warnings`). This directly drives
+    `margin_of_safety.regime_pct` above (§31: "mechanically... widens
+    every margin of safety") — the Ke/discount-rate and gross-exposure
+    consequences §31 also names are NOT wired anywhere yet."""
+
+    probabilities: dict[str, Decimal] | None
+    signals: list[MacroSignalOut]
+    statistical_observation_count: int | None
+    """How many real ASPI log-return observations the Markov-switching
+    fit used, when one succeeded — `None` when no statistical read exists
+    (see `warnings` for why: too little history, or non-convergence)."""
+
+    missing_signals: list[str]
+    warnings: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -199,6 +225,7 @@ class CompanyValuationOut(BaseModel):
     dcf: DCFOut
     gordon_growth_ddm: DDMOut
     hard_book: HardBookOut
+    regime: RegimeOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
     price_ladder: PriceLadderOut | None
@@ -285,6 +312,24 @@ class CompanyValuationOut(BaseModel):
                 hard_book_value=s.hard_book.result.hard_book_value if s.hard_book.result else None,
                 hard_book_per_share=s.hard_book.result.hard_book_per_share if s.hard_book.result else None,
                 warnings=list(s.hard_book.warnings),
+            ),
+            regime=RegimeOut(
+                as_of=s.regime.as_of,
+                label=s.regime.result.label if s.regime.result else None,
+                probabilities=(
+                    {k: v for k, v in s.regime.result.probabilities.items()}
+                    if s.regime.result
+                    else None
+                ),
+                signals=[
+                    MacroSignalOut(name=sig.name, reading=sig.reading, lean=sig.lean)
+                    for sig in s.regime.signals
+                ],
+                statistical_observation_count=(
+                    s.regime.statistical.observation_count if s.regime.statistical else None
+                ),
+                missing_signals=list(s.regime.missing_signals),
+                warnings=list(s.regime.warnings),
             ),
             triangulation=TriangulationOut(
                 triangulation_category=t.triangulation_category,

@@ -94,6 +94,7 @@ from app.domain.dividend_residual_income import (
     compute_residual_income,
     gordon_growth_value,
 )
+from app.domain.macro_engine_view import RegimeView, regime_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
@@ -994,6 +995,16 @@ class CompanyValuationSummary:
     would weight it heavily for a property/plantation/hotel archetype
     once it is."""
 
+    regime: RegimeView
+    """§29-33's regime read — market-wide, not company-specific, shown
+    here so a caller can see exactly what fed `margin_of_safety.regime_
+    pct` above (§31: "the regime output is not advisory... mechanically
+    widens every margin of safety"). The Ke/discount-rate-raising and
+    gross-exposure-capping consequences §31 also names are NOT wired
+    anywhere in this codebase yet — see `app.domain.regime_
+    classification`'s own module docstring for the honestly-named
+    remainder of §29-33's method chain."""
+
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
     price_ladder: PriceLadderResult | None
@@ -1031,10 +1042,20 @@ def valuation_summary_for(
 
     triangulation = triangulate(routing, tuple(anchors))
 
+    # §29-33's regime read is market-wide, not company-specific — this
+    # still recomputes it per company-valuation call rather than caching
+    # it across a batch, a real, known inefficiency (one Markov fit per
+    # ticker instead of once per market snapshot), left as-is because
+    # this function's existing per-anchor calls have the same shape and a
+    # shared-cache layer is a genuine separate piece of work, not a
+    # correctness issue.
+    regime_view = regime_for(db, stamp)
+    regime_label = regime_view.result.label if regime_view.result is not None else None
+
     mos = compute_margin_of_safety(
         dispersion_pct=triangulation.dispersion_pct,
         liquidity_percentile=None,  # Amihud percentile — needs turnover history, still blocked (ROADMAP Gate 1)
-        regime=None,  # §29-33 regime classifier — Phase 5, not built
+        regime=regime_label,  # §29-33's regime read, live — see regime_for's own docstring
         integrity_score=None,  # no continuous integrity score exists anywhere in this system, by design — see margin_of_safety.py
         data_completeness_pct=None,  # not computed at the per-company level anywhere yet
     )
@@ -1056,6 +1077,6 @@ def valuation_summary_for(
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
-        gordon_growth_ddm=ddm_view, hard_book=hard_book_view,
+        gordon_growth_ddm=ddm_view, hard_book=hard_book_view, regime=regime_view,
         triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder, note=note,
     )
