@@ -31,7 +31,10 @@ EXPECTED_JOBS = {
 # Deliberately NOT weekday-scheduled: it repairs gaps in a series that
 # stays reconstructable for a year, so it wants a quiet slot rather than
 # a trading-day one.
-WEEKLY_JOBS = {"index_history_backfill": ("sat", 6, 0)}
+WEEKLY_JOBS = {
+    "index_history_backfill": ("sat", 6, 0),
+    "issuer_registry_refresh": ("sat", 6, 20),
+}
 
 
 @pytest.fixture()

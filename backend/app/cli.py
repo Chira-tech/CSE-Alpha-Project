@@ -21,6 +21,7 @@ from app.ingestion.bootstrap import run_bootstrap
 from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.index_history_loader import ingest_index_history
+from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
@@ -147,6 +148,30 @@ def cmd_backfill_index(args: argparse.Namespace) -> int:
         print(f"Wrote {written} new ASPI close(s).")
         if not written:
             print("Nothing new — the series was already complete.")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_registry(args: argparse.Namespace) -> int:
+    """Refresh the issuer registry (§7 survivorship)."""
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            s = ingest_issuer_registry(client, db)
+        print(
+            f"Registry: {s['registry_issuers']} issuers known to the exchange "
+            f"({s['inserted']} new, {s['updated']} refreshed)."
+        )
+        print(f"  {s['trading']} currently have a tradeable line.")
+        print(f"  {s['delisted']} are flagged delisted by the exchange.")
+        unknown = s["registry_issuers"] - s["trading"] - s["delisted"]
+        print(
+            f"  {unknown} are neither trading nor flagged — status genuinely unknown, "
+            f"not assumed live."
+        )
+        if s["newly_delisted"]:
+            print(f"  {s['newly_delisted']} newly flagged delisted since the last run.")
     finally:
         db.close()
     return 0
@@ -288,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cm = sub.add_parser("capture-market", help="store today's market internals into macro_series")
     p_cm.set_defaults(func=cmd_capture_market)
+
+    p_reg = sub.add_parser(
+        "registry", help="refresh the issuer registry, including delisted names (§7)"
+    )
+    p_reg.set_defaults(func=cmd_registry)
 
     p_bi = sub.add_parser(
         "backfill-index", help="backfill ~1 year of ASPI closes from chartData (index only)"

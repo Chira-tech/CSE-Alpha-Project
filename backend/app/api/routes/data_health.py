@@ -22,6 +22,7 @@ from app.models.data_quality import DataAlert
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 from app.models.prices import PriceDaily
+from app.models.registry import IssuerRegistry
 from app.models.securities import Security
 
 
@@ -37,6 +38,19 @@ class QuarantinedTicker(BaseModel):
 
 class DataHealth(BaseModel):
     securities_count: int
+    issuer_count: int
+    """Distinct issuers behind those lines. Lower than `securities_count`
+    because banks in particular list voting and non-voting lines
+    separately."""
+
+    registry_issuers: int
+    registry_delisted: int
+    registry_unknown_status: int
+    """Known to the exchange, not trading, and not flagged delisted —
+    debt-only issuers, suspensions and merely-illiquid names, which this
+    source cannot tell apart. Reported rather than assumed either way."""
+
+    price_rows: int
     price_rows: int
     latest_price_date: dt.date | None
     price_feed_age_days: int | None
@@ -72,6 +86,25 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
             select(func.count())
             .select_from(Security)
             .where(Security.ticker.not_in(select(tickers_with_price.c.ticker)))
+        )
+        or 0
+    )
+
+    issuer_count = (
+        db.scalar(select(func.count(func.distinct(Security.issuer_code)))) or 0
+    )
+    registry_issuers = db.scalar(select(func.count()).select_from(IssuerRegistry)) or 0
+    registry_delisted = (
+        db.scalar(
+            select(func.count()).select_from(IssuerRegistry).where(IssuerRegistry.delisted.is_(True))
+        )
+        or 0
+    )
+    registry_trading = (
+        db.scalar(
+            select(func.count())
+            .select_from(IssuerRegistry)
+            .where(IssuerRegistry.currently_trading.is_(True))
         )
         or 0
     )
@@ -115,6 +148,10 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
 
     return DataHealth(
         securities_count=securities_count,
+        issuer_count=issuer_count,
+        registry_issuers=registry_issuers,
+        registry_delisted=registry_delisted,
+        registry_unknown_status=max(registry_issuers - registry_trading - registry_delisted, 0),
         price_rows=price_rows,
         latest_price_date=latest_price_date,
         price_feed_age_days=age_days,

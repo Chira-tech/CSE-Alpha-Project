@@ -128,6 +128,7 @@ exchange's clock regardless of where the host machine is.
 python -m app.cli capture-market          # CSE market internals (P/E, turnover, foreign flow)
 python -m app.cli cbsl --days 10          # CBSL T-bills, policy rate, CPI, FX
 python -m app.cli backfill-index          # ~1 year of ASPI closes (index only)
+python -m app.cli registry                # issuer registry, incl. delisted names (§7)
 python -m app.cli spread                  # §29's equity-yield-minus-T-bill spread
 ```
 

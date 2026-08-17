@@ -228,9 +228,12 @@ class CseClient:
         model: type[ModelT] | None = None,
         params: dict[str, Any] | None = None,
     ) -> ModelT | dict[str, Any] | list[Any] | None:
-        """GET request. Kept for completeness/tests — no live cse.lk
-        endpoint confirmed during Phase 1 verification actually accepts
-        GET; prefer post_json/post_form for real ingestion."""
+        """GET request.
+
+        Most of this API is POST — see README_ENDPOINTS.md — but a few
+        endpoints are genuine GETs and 405 on POST: `allSecurityCode` and
+        `cntSecurity` (the issuer registry) among them. Prefer
+        post_json/post_form unless the endpoint is one of those."""
         return self._execute(
             "GET", path, model=model, params=params, json_body=None, form_body=None, allow_empty=False
         )

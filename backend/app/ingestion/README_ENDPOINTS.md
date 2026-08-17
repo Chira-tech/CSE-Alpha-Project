@@ -118,6 +118,37 @@ delistings, because "absent from tradeSummary" conflates "delisted" with
 The symbol suffix encodes the instrument type and the issuer; see
 `app.domain.instrument_type`, which is what consumes this knowledge.
 
+### `cntSecurity` — GET (the issuer registry, and §7's survivorship source)
+```json
+{"status":"OK","statusCode":200,"content":[
+  {"securityId":642,"name":"ABANS ELECTRICALS PLC","symbol":"ABAN","boardId":0,"deleted":0},
+  {"securityId":1104,"name":"DFCC VARDHANA BANK PLC","symbol":"DVBD","boardId":0,"deleted":1}]}
+```
+**369 issuers** — ISSUER-level, so symbols carry no line suffix (`ABAN`,
+not `ABAN.N0000`). A strict superset of `tradeSummary`'s 264 trading
+issuers, with nothing in tradeSummary missing from it.
+
+This is the only source found that names companies which no longer trade,
+and `deleted` marks 11 of them — verifiable ones, e.g. DFCC Vardhana Bank
+(merged into DFCC Bank) and Commercial Leasing Company. Consumed by
+`app.ingestion.issuer_registry_loader`.
+
+What it does NOT give:
+
+- **No delisting date.** Only presence. `first_seen`/`last_seen` in our
+  registry bound it from observation, nothing more.
+- **11 delistings across the exchange's whole history is implausibly
+  few**, so the flag is a partial record, not a complete one.
+- **94 issuers are neither trading nor flagged**, and this endpoint
+  cannot tell them apart: debt-only issuers (Bank of Ceylon lists only
+  BOC.D0000), suspensions, and names that merely did not trade that
+  session all look identical.
+
+`boardId` takes six values (0-5) spread 181/38/94/26/25/5. That matches
+neither the CSE's three published boards nor any sector taxonomy, and no
+endpoint explains it, so it is stored raw and left uninterpreted rather
+than labelled on a guess.
+
 ### `chartData` — POST form, `chartId=<N>&period=<1-5>`
 **Index history only — not per company.** `chartId=1` is the ASPI;
 `chartId` values 2-4 and every security id tried returned `[]`. Verified

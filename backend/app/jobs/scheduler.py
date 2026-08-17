@@ -27,6 +27,7 @@ from app.ingestion.cbsl_loader import ingest_range as ingest_cbsl_range
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.index_history_loader import ingest_index_history
+from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
@@ -81,6 +82,29 @@ def _job_capture_market_internals() -> None:
         logger.info("market internals: wrote %d new observation(s)", written)
     except Exception:
         logger.exception("market internals capture failed")
+    finally:
+        db.close()
+
+
+def _job_refresh_issuer_registry() -> None:
+    """§7 survivorship: keep the exchange's own issuer list, including the
+    names it has flagged as gone.
+
+    Weekly rather than daily because delistings are rare and the endpoint
+    is a full dump. The value compounds with time — `first_seen` and
+    `last_seen` are the only bounds this exchange gives on when a company
+    stopped existing, and they only tighten by being observed.
+    """
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            summary = ingest_issuer_registry(client, db)
+        if summary["newly_delisted"]:
+            logger.warning(
+                "issuer registry: %d issuer(s) newly flagged delisted", summary["newly_delisted"]
+            )
+    except Exception:
+        logger.exception("issuer registry refresh failed")
     finally:
         db.close()
 
@@ -251,6 +275,12 @@ def build_scheduler() -> BackgroundScheduler:
         _job_backfill_index_history,
         CronTrigger(day_of_week="sat", hour=6, minute=0, timezone=MARKET_TZ),
         id="index_history_backfill",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_refresh_issuer_registry,
+        CronTrigger(day_of_week="sat", hour=6, minute=20, timezone=MARKET_TZ),
+        id="issuer_registry_refresh",
         replace_existing=True,
     )
     scheduler.add_job(

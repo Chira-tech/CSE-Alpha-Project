@@ -181,6 +181,10 @@ export interface QuarantinedTicker {
 
 export interface DataHealth {
   securities_count: number;
+  issuer_count: number;
+  registry_issuers: number;
+  registry_delisted: number;
+  registry_unknown_status: number;
   price_rows: number;
   latest_price_date: string | null;
   price_feed_age_days: number | null;

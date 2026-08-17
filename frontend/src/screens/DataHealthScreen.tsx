@@ -64,7 +64,8 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
       <section aria-labelledby="coverage-heading" className="stack-tight">
         <h2 id="coverage-heading">Coverage</h2>
         <div className="stat-grid">
-          <Stat label="Securities" value={formatInteger(data.securities_count)} />
+          <Stat label="Listed lines" value={formatInteger(data.securities_count)} />
+          <Stat label="Issuers behind them" value={formatInteger(data.issuer_count)} />
           <Stat label="Price rows stored" value={formatInteger(data.price_rows)} />
           <Stat label="Latest price date" value={data.latest_price_date ?? UNAVAILABLE} caution={stale} />
           <Stat
@@ -88,6 +89,38 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             </p>
           </div>
         )}
+      </section>
+
+      <section aria-labelledby="survivorship-heading" className="stack-tight">
+        <h2 id="survivorship-heading">Survivorship</h2>
+        <div className="stat-grid">
+          <Stat label="Issuers known to the exchange" value={formatInteger(data.registry_issuers)} />
+          <Stat label="Flagged delisted" value={formatInteger(data.registry_delisted)} />
+          <Stat
+            label="Status unknown"
+            value={formatInteger(data.registry_unknown_status)}
+            caution={data.registry_unknown_status > 0}
+          />
+        </div>
+        <div className="notice notice-caution">
+          <h3>Survivorship is improved, not solved</h3>
+          <p className="prose t-body">
+            The traded universe contains only companies that still trade, which is the bias §7 and
+            failure mode N&nbsp;#1 warn about — a backtest run on it would never see a company that
+            failed. The exchange&rsquo;s own registry adds{" "}
+            {formatInteger(data.registry_issuers - data.issuer_count)} more issuers and explicitly
+            flags {formatInteger(data.registry_delisted)} as delisted, so those names are at least
+            present.
+          </p>
+          <p className="prose t-body">
+            Two limits worth stating plainly. {formatInteger(data.registry_delisted)} delistings
+            across the exchange&rsquo;s entire history is implausibly few, so the flag is a partial
+            record. And the {formatInteger(data.registry_unknown_status)} issuers that are neither
+            trading nor flagged cannot be told apart here — debt-only issuers, suspensions and
+            merely illiquid names look identical. No delisting <em>date</em> is published at all;
+            the registry only bounds it between when we first and last saw the issuer.
+          </p>
+        </div>
       </section>
 
       <section aria-labelledby="queues-heading" className="stack-tight">

@@ -312,14 +312,36 @@ a dated, sourced manual observation is.
         issuers" and tags non-ordinary lines; a company file with siblings
         says so and cross-links them.
 
-- [ ] **§7 survivorship is still unmet, and `allSecurityCode` does not
-      solve it** — corrected 17 Aug. An earlier note here recorded its
-      `active` flag as "the only endpoint found that distinguishes
-      inactive listings". Probed live: `active` is `1` for all 327 rows
-      and never carries a 0. Differencing it against `tradeSummary` does
-      not work either, because "absent from tradeSummary" conflates
-      delisted with merely illiquid that session. Needs a different
-      source; `securities.delisting_date` stays NULL until there is one.
+- [x] **§7 survivorship — materially improved via a newly found endpoint.**
+      `allSecurityCode`'s `active` flag is useless (it is `1` for all 327
+      rows and never carries a 0 — an earlier note here wrongly called it
+      "the only endpoint that distinguishes inactive listings"). But
+      **`cntSecurity`**, previously in the inventory and never probed,
+      turns out to be the exchange's own issuer registry: 369 issuers
+      against the 264 that trade, with a `deleted` flag on 11 of them.
+      - Verifiable delistings, not noise: DFCC Vardhana Bank (merged into
+        DFCC Bank), Commercial Leasing Company, Associated Motorways,
+        Ceylon Oxygen.
+      - Kept in its own `issuer_registry` table, not folded into
+        `securities`: the registry is issuer-level (`COMB`, not
+        `COMB.N0000`), so writing it into a line-level table would mean
+        inventing suffixes the exchange never published. Joins via
+        `securities.issuer_code` from migration 0006.
+      - `delisted` and `currently_trading` are separate columns because
+        they are separate facts — Bank of Ceylon is neither delisted nor
+        trading as equity, since it lists only debentures.
+      - Surfaced on Data health with the limits stated in the UI itself.
+
+- [ ] **Survivorship is improved, not closed.** 11 delistings across the
+      exchange's entire history is implausibly few, so the flag is a
+      partial record. 94 issuers are neither trading nor flagged and this
+      source cannot separate debt-only issuers from suspensions from
+      merely-illiquid names. No delisting DATE is published anywhere;
+      `securities.delisting_date` stays NULL, and `first_seen`/`last_seen`
+      only bound it by observation. Crucially, a truly unbiased backtest
+      also needs the delisted companies' PRICE HISTORY, which remains
+      unavailable — so this records that they existed without yet
+      removing the bias.
 - [ ] **Plain bonus issue / consolidation**: still unverified after ~40
       tickers probed across two sessions — no live example of either was
       found. Share splits (which looked similar) ARE now verified.

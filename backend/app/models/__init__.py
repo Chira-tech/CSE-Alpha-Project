@@ -11,3 +11,4 @@ from app.models.fundamentals import Fundamental  # noqa: F401
 from app.models.float_data import FloatData  # noqa: F401
 from app.models.macro import MacroSeries  # noqa: F401
 from app.models.data_quality import DataAlert  # noqa: F401
+from app.models.registry import IssuerRegistry  # noqa: F401
