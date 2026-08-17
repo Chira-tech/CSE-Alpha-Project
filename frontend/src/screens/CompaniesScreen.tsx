@@ -1,16 +1,74 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiRequestError, listSecurities } from "../api";
+import { ProvenanceChip } from "../components/ProvenanceChip";
 import { EmptyState, ErrorState, SkeletonTable } from "../components/states";
 import { formatMagnitude, formatPrice, UNAVAILABLE } from "../format";
 import type { SecurityListItem } from "../types";
 
 const PAGE_SIZE = 60;
 
+/** §54's Phase 2 "ranked screener UI" starting point: real, sortable
+ * columns over what's actually computed today. Not the full §40
+ * opportunity ranking (needs a composite score this system does not
+ * have — Phase 6/7) — a screener over real ratios and prices instead of
+ * a screener over a score that doesn't exist yet. */
+type SortKey = "last_close" | "turnover" | "volume" | "return_on_equity";
+type SortDirection = "asc" | "desc";
+
+function SortableHeader({
+  label,
+  active,
+  direction,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection | null;
+  onClick: () => void;
+}) {
+  return (
+    <th scope="col" className="right">
+      <button
+        onClick={onClick}
+        aria-pressed={active}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          minHeight: 0,
+          font: "inherit",
+          color: "inherit",
+          letterSpacing: "inherit",
+          textTransform: "inherit",
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+        }}
+      >
+        {label}
+        <span aria-hidden="true" style={{ opacity: active ? 1 : 0.35 }}>
+          {active && direction === "asc" ? "▲" : "▼"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
   const [all, setAll] = useState<SecurityListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(PAGE_SIZE);
+  const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection } | null>(null);
+
+  function toggleSort(key: SortKey) {
+    setSort((prev) => {
+      if (!prev || prev.key !== key) return { key, direction: "desc" };
+      if (prev.direction === "desc") return { key, direction: "asc" };
+      return null; // third click clears sort, back to the default ticker order
+    });
+  }
 
   useEffect(() => {
     listSecurities()
@@ -29,6 +87,26 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
         (r.cse_sector ?? "").toLowerCase().includes(q)
     );
   }, [all, query]);
+
+  // Nulls always sort last regardless of direction — a company with no
+  // data is not "the lowest ROE", it's a gap, and ranking it as if it
+  // were the worst performer would be exactly the kind of confident-
+  // looking-but-wrong number this project avoids everywhere else.
+  const sorted = useMemo(() => {
+    if (!filtered || !sort) return filtered;
+    const { key, direction } = sort;
+    const withValue = filtered.map((r) => ({
+      r,
+      v: r[key] === null ? null : Number(r[key]),
+    }));
+    withValue.sort((a, b) => {
+      if (a.v === null && b.v === null) return 0;
+      if (a.v === null) return 1;
+      if (b.v === null) return -1;
+      return direction === "asc" ? a.v - b.v : b.v - a.v;
+    });
+    return withValue.map((x) => x.r);
+  }, [filtered, sort]);
 
   useEffect(() => setShown(PAGE_SIZE), [query]);
 
@@ -99,7 +177,7 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
       </div>
 
       {!filtered ? (
-        <SkeletonTable rows={10} columns={7} />
+        <SkeletonTable rows={10} columns={8} />
       ) : filtered.length === 0 ? (
         <EmptyState title={`No company matches "${query}".`}>
           <p style={{ margin: 0 }}>
@@ -117,14 +195,35 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                   <th scope="col">Ticker</th>
                   <th scope="col">Company</th>
                   <th scope="col">Sector</th>
-                  <th scope="col" className="right">Last close (LKR)</th>
-                  <th scope="col" className="right">Turnover (LKR)</th>
-                  <th scope="col" className="right">Volume</th>
+                  <SortableHeader
+                    label="Last close (LKR)"
+                    active={sort?.key === "last_close"}
+                    direction={sort?.key === "last_close" ? sort.direction : null}
+                    onClick={() => toggleSort("last_close")}
+                  />
+                  <SortableHeader
+                    label="Turnover (LKR)"
+                    active={sort?.key === "turnover"}
+                    direction={sort?.key === "turnover" ? sort.direction : null}
+                    onClick={() => toggleSort("turnover")}
+                  />
+                  <SortableHeader
+                    label="Volume"
+                    active={sort?.key === "volume"}
+                    direction={sort?.key === "volume" ? sort.direction : null}
+                    onClick={() => toggleSort("volume")}
+                  />
+                  <SortableHeader
+                    label="ROE (§12)"
+                    active={sort?.key === "return_on_equity"}
+                    direction={sort?.key === "return_on_equity" ? sort.direction : null}
+                    onClick={() => toggleSort("return_on_equity")}
+                  />
                   <th scope="col">As at</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.slice(0, shown).map((r) => (
+                {(sorted ?? filtered).slice(0, shown).map((r) => (
                   <tr
                     key={r.ticker}
                     className="selectable"
@@ -167,6 +266,21 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                         <span className="unavailable">{UNAVAILABLE}</span>
                       ) : (
                         r.volume.toLocaleString("en-LK")
+                      )}
+                    </td>
+                    <td className="right num">
+                      {r.return_on_equity === null ? (
+                        <span className="unavailable">{UNAVAILABLE}</span>
+                      ) : (
+                        <>
+                          {(Number(r.return_on_equity) * 100).toFixed(1)}%
+                          {r.return_on_equity_provenance && (
+                            <>
+                              {" "}
+                              <ProvenanceChip tier={r.return_on_equity_provenance} />
+                            </>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="num">

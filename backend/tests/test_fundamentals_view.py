@@ -13,6 +13,7 @@ import datetime as dt
 from decimal import Decimal
 
 from app.domain.fundamentals_view import (
+    bulk_latest_line_items,
     historical_ratios_for,
     latest_period_line_items,
     ratio_trends_for,
@@ -261,3 +262,89 @@ def test_point_in_time_applies_to_trend_history_too(db_session):
     by_period = historical_ratios_for(db_session, TICKER, as_of=dt.date(2025, 9, 1))
     roe_2024 = next(r for r in by_period[dt.date(2024, 3, 31)] if r.key == "return_on_equity")
     assert roe_2024.value == Decimal("0.1")  # the original 100000/1000000, not the restated 20000
+
+
+TICKER_2 = "COMB.N0000"
+
+
+def _add_ticker(db, ticker, line, value, *, period_end, first_available, version=1, provenance=ProvenanceTier.REPORTED):
+    db.add(
+        Fundamental(
+            ticker=ticker, period_end=period_end, period_type="annual",
+            first_available_date=first_available, version=version,
+            statement_line=line, value=Decimal(value), provenance_tier=provenance,
+        )
+    )
+
+
+class TestBulkLatestLineItems:
+    """The screener's data source — every ticker's latest visible line
+    items in one query, same point-in-time and restatement discipline as
+    the single-ticker path (`fundamentals_as_of`), verified independently
+    rather than assumed to follow because the logic looks similar."""
+
+    def test_multiple_tickers_each_get_their_own_latest_period(self, db_session):
+        db_session.add_all([Security(ticker=TICKER, name="JF Packaging PLC"), Security(ticker=TICKER_2, name="Commercial Bank")])
+        db_session.commit()
+        _add_ticker(db_session, TICKER, "net_income", "200", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 1))
+        _add_ticker(db_session, TICKER, "total_equity", "1000", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 1))
+        _add_ticker(db_session, TICKER_2, "net_income", "5000", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 7))
+        _add_ticker(db_session, TICKER_2, "total_equity", "25000", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 7))
+        db_session.commit()
+
+        result = bulk_latest_line_items(db_session, dt.date(2026, 6, 1), ("net_income", "total_equity"))
+
+        assert set(result) == {TICKER, TICKER_2}
+        period_1, items_1 = result[TICKER]
+        assert period_1 == dt.date(2025, 12, 31)
+        assert items_1["net_income"].value == Decimal("200")
+        period_2, items_2 = result[TICKER_2]
+        assert items_2["total_equity"].value == Decimal("25000")
+
+    def test_ticker_with_no_visible_data_is_absent_not_empty(self, db_session):
+        db_session.add(Security(ticker=TICKER, name="JF Packaging PLC"))
+        db_session.commit()
+        result = bulk_latest_line_items(db_session, dt.date(2026, 6, 1), ("net_income", "total_equity"))
+        assert TICKER not in result
+
+    def test_point_in_time_excludes_future_filings(self, db_session):
+        db_session.add(Security(ticker=TICKER, name="JF Packaging PLC"))
+        db_session.commit()
+        _add_ticker(db_session, TICKER, "net_income", "200", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 1))
+        _add_ticker(db_session, TICKER, "total_equity", "1000", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 1))
+        db_session.commit()
+
+        # as_of before the filing was public — must not see it.
+        result = bulk_latest_line_items(db_session, dt.date(2026, 1, 1), ("net_income", "total_equity"))
+        assert TICKER not in result
+
+    def test_restatement_uses_highest_version_visible_by_as_of(self, db_session):
+        db_session.add(Security(ticker=TICKER, name="JF Packaging PLC"))
+        db_session.commit()
+        _add_ticker(db_session, TICKER, "net_income", "100", period_end=dt.date(2024, 12, 31), first_available=dt.date(2025, 3, 1))
+        _add_ticker(db_session, TICKER, "total_equity", "1000", period_end=dt.date(2024, 12, 31), first_available=dt.date(2025, 3, 1))
+        # Restatement, published later.
+        _add_ticker(db_session, TICKER, "net_income", "80", period_end=dt.date(2024, 12, 31), first_available=dt.date(2026, 1, 1), version=2)
+        db_session.commit()
+
+        before_restatement = bulk_latest_line_items(db_session, dt.date(2025, 6, 1), ("net_income", "total_equity"))
+        assert before_restatement[TICKER][1]["net_income"].value == Decimal("100")
+
+        after_restatement = bulk_latest_line_items(db_session, dt.date(2026, 6, 1), ("net_income", "total_equity"))
+        assert after_restatement[TICKER][1]["net_income"].value == Decimal("80")
+
+    def test_picks_latest_period_end_not_all_periods_merged(self, db_session):
+        db_session.add(Security(ticker=TICKER, name="JF Packaging PLC"))
+        db_session.commit()
+        _add_ticker(db_session, TICKER, "net_income", "100", period_end=dt.date(2024, 12, 31), first_available=dt.date(2025, 3, 1))
+        _add_ticker(db_session, TICKER, "total_equity", "1000", period_end=dt.date(2024, 12, 31), first_available=dt.date(2025, 3, 1))
+        _add_ticker(db_session, TICKER, "net_income", "150", period_end=dt.date(2025, 12, 31), first_available=dt.date(2026, 3, 1))
+        # total_equity NOT re-filed for 2025 in this fixture — the latest
+        # period's item set should reflect only what that period actually has.
+        db_session.commit()
+
+        result = bulk_latest_line_items(db_session, dt.date(2026, 6, 1), ("net_income", "total_equity"))
+        period, items = result[TICKER]
+        assert period == dt.date(2025, 12, 31)
+        assert items["net_income"].value == Decimal("150")
+        assert "total_equity" not in items

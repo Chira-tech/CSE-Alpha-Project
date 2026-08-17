@@ -278,6 +278,29 @@ consecutive days.
         real hero spread reading exactly — and the routing section
         directly above it correctly names Residual Income and DDM, the
         exact models this Ke is for, as this bank's primary anchors.
+- [x] **First screener column — ROE, sortable, on Companies.** §54's
+      Phase 2 "ranked screener UI" starting point, scoped honestly: not
+      §40's full opportunity ranking (needs a composite score this
+      system doesn't have — Phase 6/7), a real sortable column over what
+      §12's ratio engine already computes.
+      - `app.domain.fundamentals_view.bulk_latest_line_items` computes
+        every ticker's latest point-in-time-visible fundamentals in ONE
+        query rather than 284 per-ticker lookups — the same discipline
+        `list_securities` already applies to prices ("done as a subquery
+        rather than N+1"), now extended to fundamentals.
+      - Nulls sort last regardless of direction — a company with no
+        fundamentals is a gap, not "the worst ROE," and ranking it as if
+        it were would be exactly the confident-looking-but-wrong number
+        this project avoids everywhere else. Verified live: with three
+        real tickers seeded, descending sort correctly orders
+        16.7% → 15.7% → 6.0% with the other 281 tickers (no ingested
+        fundamentals) honestly last, each showing "Data unavailable".
+      - Deliberately reuses `app.domain.fundamentals_view.ratios_for`'s
+        display convention (shows AI-assisted with a provenance chip),
+        NOT `app.domain.valuation_view`'s stricter confirmed-only filter
+        — a screener ratio is a displayed fact with its trust level
+        shown, same as the company file's own ratio table; only an
+        actual fair value needs §8's confirmed-only gate.
 
 ## Phase 3 — valuation engine, price ladder, margin-of-safety engine
 
@@ -749,19 +772,35 @@ a dated, sourced manual observation is.
 - [ ] 30-day consecutive reconciliation pass — can't be "done," only
       observed once the system is running continuously against live data
 - [ ] Sustained-load testing of the cse.lk client's rate limiting
-- [ ] The rights-issue/split announcement-pairing heuristic
-      (`_pair_rows` in corporate_actions_loader.py) is untested against a
-      company with two concurrent events of the same type
+- [ ] **Tested, and the concurrent-event case genuinely mispairs — a real,
+      now-tracked limitation, not fixed.** `_pair_rows` sorts each side
+      chronologically and pairs index-wise; no real example of two
+      concurrent same-type events has ever been captured live, so
+      `TestPairRowsWithConcurrentEvents` in `test_corporate_actions_loader.py`
+      builds synthetic rows (clearly marked as such — this file's only
+      non-real-capture fixtures) for two scenarios. Sequential,
+      non-overlapping events pair correctly, confirming the heuristic's
+      core assumption holds for every case actually observed so far. But
+      interleaved events — company files rights issue A, then rights
+      issue B, and B's "(DATES)" follow-up is processed before A's —
+      genuinely cross-pair A's initial with B's dates and vice versa.
+      Not fixed here: a real correlating field between an initial
+      disclosure and its own dates follow-up (e.g. a shared parent-
+      announcement id) would be needed, and guessing at one without a
+      live example to verify against would just trade an untested
+      assumption for an unverified fix — exactly what this project
+      avoids everywhere else.
 - [ ] The financial-statement extractor's canonical label list
       (`CANONICAL_LABELS`) is verified against exactly one real filing —
       wording varies across companies and will need expanding as more
       real filings are processed
-- [ ] `npm audit` flags a moderate-severity vulnerability in Vite's dev
-      dependency chain (esbuild) affecting the dev server only, not
-      production builds — low priority for an internal tool only ever run
-      against localhost, but a `npm audit fix --force` (major Vite
-      upgrade) should happen before this ships anywhere less trusted than
-      a developer's own machine
+- [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
+      `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
+      a `vite@^8` peer dependency, so the upgrade doesn't leave an
+      ERESOLVE warning behind). Verified beyond "it installed": clean
+      `tsc --noEmit`, a successful production build, and the dev server
+      loaded in a real browser with zero console errors post-upgrade.
+      `npm audit`: 0 vulnerabilities (was 2).
 
 ## Explicitly deferred to later phases
 

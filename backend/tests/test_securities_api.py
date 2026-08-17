@@ -75,6 +75,37 @@ def test_list_uses_the_most_recent_price_not_an_arbitrary_one(db_session, client
     assert jkh["last_price_date"] == "2026-08-14"
 
 
+def test_list_includes_return_on_equity_for_the_screener(db_session, client):
+    """The first ratio made screenable across the universe (ROADMAP.md's
+    Phase 3 section) — computed in bulk, so most tickers (no ingested
+    fundamentals at all) get null, honestly, not a guessed figure."""
+    _seed(db_session)
+    db_session.add_all(
+        [
+            Fundamental(
+                ticker="JKH.N0000", period_end=dt.date(2025, 12, 31), period_type="annual",
+                first_available_date=dt.date(2026, 3, 1), version=1, statement_line="net_income",
+                value=Decimal(200), provenance_tier=ProvenanceTier.REPORTED,
+            ),
+            Fundamental(
+                ticker="JKH.N0000", period_end=dt.date(2025, 12, 31), period_type="annual",
+                first_available_date=dt.date(2026, 3, 1), version=1, statement_line="total_equity",
+                value=Decimal(1000), provenance_tier=ProvenanceTier.REPORTED,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    rows = client.get("/securities").json()
+    jkh = next(r for r in rows if r["ticker"] == "JKH.N0000")
+    assert Decimal(jkh["return_on_equity"]) == Decimal("0.2")
+    assert jkh["return_on_equity_provenance"] == "R"
+
+    no_fundamentals = next(r for r in rows if r["ticker"] == "AAF.N0000")
+    assert no_fundamentals["return_on_equity"] is None
+    assert no_fundamentals["return_on_equity_provenance"] is None
+
+
 def test_list_search_matches_ticker_or_name_case_insensitively(db_session, client):
     _seed(db_session)
     by_ticker = client.get("/securities", params={"search": "jkh"}).json()

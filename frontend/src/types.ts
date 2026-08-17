@@ -98,6 +98,8 @@ export interface SecurityListItem {
   turnover: string | null;
   volume: number | null;
   quarantined: boolean;
+  return_on_equity: string | null;
+  return_on_equity_provenance: ProvenanceTier | null;
 }
 
 export interface PricePoint {

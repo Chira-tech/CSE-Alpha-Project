@@ -37,6 +37,8 @@ from app.domain.valuation_router import route_valuation
 from app.jobs.reconciliation import is_quarantined
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import ProvenanceTier
+from app.domain.fundamentals_view import bulk_latest_line_items
+from app.domain.ratios import DEFINITIONS_BY_KEY, compute_ratio
 from app.models.float_data import FloatData
 from app.models.fundamentals import Fundamental
 from app.models.prices import PriceDaily
@@ -62,6 +64,19 @@ class SecurityListItem(BaseModel):
     turnover: Decimal | None
     volume: int | None
     quarantined: bool
+    return_on_equity: Decimal | None
+    """§12's ROE (`app.domain.ratios`), from the latest fundamentals
+    period visible as of today, computed in bulk for the whole list
+    (`bulk_latest_line_items`) rather than a per-company lookup —
+    §54's Phase 2 "ranked screener UI" starting point: the first ratio
+    made sortable across the universe rather than only shown one company
+    at a time on its own file. Almost every ticker will be null today —
+    most have no ingested fundamentals at all yet — and that is the
+    correct, honest state, not a bug in this column."""
+    return_on_equity_provenance: ProvenanceTier | None
+    """Same tier this ratio would show as a chip on the company file
+    (§8) — an AI-assisted ROE is real, screenable data, just not yet
+    confirmed; the chip says which."""
 
 
 class PricePoint(BaseModel):
@@ -245,8 +260,18 @@ def list_securities(
         )
 
     quarantined_tickers = _quarantined_set(db)
+    # One bulk query for the whole list, not 500 per-ticker lookups —
+    # the same discipline the price join above already applies.
+    roe_line_items = bulk_latest_line_items(
+        db, dt.date.today(), ("net_income", "total_equity")
+    )
+    roe_definition = DEFINITIONS_BY_KEY["return_on_equity"]
+
     items: list[SecurityListItem] = []
     for security, price in db.execute(stmt).all():
+        _, line_items = roe_line_items.get(security.ticker, (None, {}))
+        roe_result = compute_ratio(roe_definition, line_items) if line_items else None
+
         items.append(
             SecurityListItem(
                 ticker=security.ticker,
@@ -260,6 +285,8 @@ def list_securities(
                 turnover=price.turnover if price else None,
                 volume=price.volume if price else None,
                 quarantined=security.ticker in quarantined_tickers,
+                return_on_equity=roe_result.value if roe_result else None,
+                return_on_equity_provenance=roe_result.provenance if roe_result else None,
             )
         )
     return items

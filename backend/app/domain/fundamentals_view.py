@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.point_in_time import fundamentals_as_of
@@ -50,6 +51,51 @@ def latest_period_line_items(
             items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
 
     return latest_period, items
+
+
+def bulk_latest_line_items(
+    db: Session, as_of: dt.date, statement_lines: tuple[str, ...]
+) -> dict[str, tuple[dt.date, dict[str, LineItem]]]:
+    """The same point-in-time-and-restatement-version rule
+    `fundamentals_as_of` applies per ticker, but for EVERY ticker in one
+    query rather than one call per ticker — the single-query discipline
+    `app.api.routes.securities.list_securities` already applies to
+    prices ("done as a subquery rather than N+1 per-ticker lookups"),
+    now extended to fundamentals so a screener column can exist without
+    284 round trips. Only fetches the named `statement_lines`, not every
+    line on file, since a screener typically wants one or two ratios'
+    worth of inputs, not a full statement.
+
+    Returns `{ticker: (latest_period_end, {statement_line: LineItem})}` —
+    tickers with nothing point-in-time-visible are simply absent, not
+    present with an empty dict, so a caller's `.get(ticker)` naturally
+    distinguishes "no data" from "data with a gap."
+    """
+    rows = db.scalars(
+        select(Fundamental).where(
+            Fundamental.statement_line.in_(statement_lines),
+            Fundamental.first_available_date <= as_of,
+        )
+    ).all()
+
+    # ticker -> period_end -> statement_line -> highest-version row visible by as_of
+    by_ticker: dict[str, dict[dt.date, dict[str, Fundamental]]] = {}
+    for row in rows:
+        by_period = by_ticker.setdefault(row.ticker, {})
+        by_line = by_period.setdefault(row.period_end, {})
+        existing = by_line.get(row.statement_line)
+        if existing is None or row.version > existing.version:
+            by_line[row.statement_line] = row
+
+    result: dict[str, tuple[dt.date, dict[str, LineItem]]] = {}
+    for ticker, by_period in by_ticker.items():
+        latest_period = max(by_period)
+        items = {
+            line: LineItem(value=f.value, provenance=f.provenance_tier)
+            for line, f in by_period[latest_period].items()
+        }
+        result[ticker] = (latest_period, items)
+    return result
 
 
 def ratios_for(

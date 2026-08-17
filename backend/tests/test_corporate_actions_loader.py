@@ -14,8 +14,9 @@ from decimal import Decimal
 import httpx
 import respx
 
-from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
+from app.ingestion.corporate_actions_loader import _pair_rows, ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
+from app.ingestion.schemas import CompanyAnnouncementRow
 from app.models.corporate_actions import CorporateAction
 from app.models.corporate_actions import CorporateActionType as DbActionType
 from app.models.securities import Security
@@ -313,3 +314,92 @@ def test_confirmed_row_is_never_touched_by_a_rerun(db_session):
     )
     assert dividend.confirmed_by == "analyst"  # untouched
     assert dividend.cash_amount == Decimal("0.70")  # untouched
+
+
+class TestPairRowsWithConcurrentEvents:
+    """§ROADMAP: "the rights-issue/split announcement-pairing heuristic
+    (`_pair_rows`) is untested against a company with two concurrent
+    events of the same type." No real example of that has ever been
+    captured live (every real payload in this file is a single event per
+    type), so — unlike every other fixture above — the rows here are
+    SYNTHETIC, built directly as `CompanyAnnouncementRow` objects rather
+    than real captured JSON. That is a deliberate departure from this
+    file's own "real captures, not invented fixtures" discipline, stated
+    here rather than left for a reader to notice, because there is
+    nothing real to capture yet for this specific scenario.
+
+    `_pair_rows`' own docstring already names its assumption exactly:
+    "the Nth initial disclosure corresponds to the Nth dates follow-up in
+    chronological order." These tests check that assumption two ways —
+    where it holds, and where it doesn't — rather than only exercising
+    the case that was already implicitly trusted.
+    """
+
+    @staticmethod
+    def _row(announcement_id: int, date: str, category: str, created: int) -> CompanyAnnouncementRow:
+        return CompanyAnnouncementRow(
+            id=announcement_id,
+            createdDate=created,
+            dateOfAnnouncement=date,
+            announcementId=announcement_id,
+            announcementCategory=category,
+            company="SYNTHETIC TEST PLC",
+        )
+
+    def test_two_sequential_non_overlapping_events_pair_correctly(self):
+        """Event A fully resolves (initial + dates) before event B's
+        initial is even filed — the ordinary case, and the one every real
+        capture to date happens to be. The heuristic's core assumption
+        holds here by construction."""
+        rows = [
+            self._row(1, "01 Jan 2026", "RIGHTS ISSUE", 1),
+            self._row(2, "10 Jan 2026", "RIGHTS ISSUE (DATES)", 2),
+            self._row(3, "01 Feb 2026", "RIGHTS ISSUE", 3),
+            self._row(4, "10 Feb 2026", "RIGHTS ISSUE (DATES)", 4),
+        ]
+        pairs = _pair_rows(rows)
+        assert len(pairs) == 2
+        assert pairs[0] == (rows[0], rows[1])  # event A: initial 1 Jan + dates 10 Jan
+        assert pairs[1] == (rows[2], rows[3])  # event B: initial 1 Feb + dates 10 Feb
+
+    def test_two_interleaved_events_are_mispaired_a_known_limitation(self):
+        """Event A's initial files first (1 Jan), then event B's initial
+        files (15 Jan) BEFORE event A's own dates follow-up appears —
+        e.g. B is processed faster than A. Chronologically:
+        initials = [A@1Jan, B@15Jan], dates = [B@20Jan, A@1Feb].
+
+        Index-wise pairing gives (A-initial, B-dates) and
+        (B-initial, A-dates) — WRONG, a real cross-event mispairing.
+        This is not a hypothetical: it is exactly the ordering that
+        breaks the stated assumption, and this test exists to make that
+        failure visible and tracked rather than silently possible.
+        Fixing it needs a real correlating field between an initial
+        announcement and its own "(DATES)" follow-up (e.g. a shared
+        parent-announcement id) — not guessed at here without a live
+        example to verify against, per this project's own discipline.
+        """
+        event_a_initial = self._row(10, "01 Jan 2026", "RIGHTS ISSUE", 10)
+        event_b_initial = self._row(11, "15 Jan 2026", "RIGHTS ISSUE", 11)
+        event_b_dates = self._row(12, "20 Jan 2026", "RIGHTS ISSUE (DATES)", 12)
+        event_a_dates = self._row(13, "01 Feb 2026", "RIGHTS ISSUE (DATES)", 13)
+
+        pairs = _pair_rows([event_a_initial, event_b_initial, event_b_dates, event_a_dates])
+
+        assert len(pairs) == 2
+        # Documents the mispairing — NOT the correct outcome. A future fix
+        # that resolves this should update this assertion to the correct
+        # pairing (event_a_initial, event_a_dates) and
+        # (event_b_initial, event_b_dates), verified against a real
+        # captured example first.
+        assert pairs[0] == (event_a_initial, event_b_dates)
+        assert pairs[1] == (event_b_initial, event_a_dates)
+
+    def test_unmatched_dates_row_pairs_with_none(self):
+        """An initial disclosure with no dates follow-up yet (still
+        pending) must not be dropped or falsely paired — `build_*_draft`
+        already handles a `None` half of the pair by naming the missing
+        field (see the "MISSING" note assertions elsewhere in this
+        file); this just confirms `_pair_rows` produces that shape."""
+        initial_only = self._row(20, "01 Mar 2026", "RIGHTS ISSUE", 20)
+        pairs = _pair_rows([initial_only])
+        assert pairs == [(initial_only, None)]

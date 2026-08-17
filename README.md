@@ -37,7 +37,7 @@ outright.
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | 🔨 in progress |
-| 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine + trend detection (§13) + model router (§15/§16) built; integrity veto (§14) blocked on unextracted data; screener UI not started |
+| 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine + trend detection (§13) + model router (§15/§16) built; a first sortable screener column (ROE, on Companies) built and wired to real data; integrity veto (§14) blocked on unextracted data (no CFO/audit-opinion/related-party source exists — not closeable by more code) |
 | 3 | Valuation engine, price ladder, margin-of-safety engine | ✅ math built and tested (§17-26: cost of equity, DCF, DDM, residual income, relative valuation, SOTP, asset-based, scenarios, triangulation, margin of safety, price ladder); not yet wired to live per-company data end-to-end or exposed in the UI |
 | 4 | Scheduler, always-on service, alerting, decision capture | not started |
 | 5 | Macro engine (ARDL, regime classifier, sector sensitivity) | not started |
