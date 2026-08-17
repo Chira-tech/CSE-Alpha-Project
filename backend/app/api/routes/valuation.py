@@ -14,10 +14,14 @@ informational-only numbers (§18.1's FCFF formula on one undiscounted
 confirmed period, and the DCF's own discount rate) — see `app.domain.
 valuation_view`'s own module docstring and `dcf_for`'s docstring for the
 full picture of what's real versus a named policy default within the
-DCF specifically. This endpoint is that wiring's front door. It is still
-an honest partial answer, not the full §24 triangulation: see
-`CompanyValuationOut.note` and ROADMAP.md's Phase 3 section for exactly
-which anchors are missing and why.
+DCF specifically. A fourth informational number, `gordon_growth_ddm`
+(§19.1), is wired the same way for a distinct reason: it runs against
+genuinely real `CorporateAction` dividend rows that are, for essentially
+every ticker today, real but unconfirmed — see `app.domain.valuation_
+view.gordon_growth_ddm_for`'s own docstring. This endpoint is that
+wiring's front door. It is still an honest partial answer, not the full
+§24 triangulation: see `CompanyValuationOut.note` and ROADMAP.md's Phase
+3 section for exactly which anchors are missing and why.
 
 Returns 404 for an unknown ticker, same convention as `securities.py`'s
 company-file route. Does NOT require `archetype` to be set on the
@@ -152,6 +156,20 @@ class DCFOut(BaseModel):
     warnings: list[str]
 
 
+class DDMOut(BaseModel):
+    as_of: dt.date
+    value_per_share: Decimal | None
+    """§19.1's Gordon-growth DDM — informational only, never one of
+    `triangulation`'s anchors below. See `app.domain.valuation_view.
+    gordon_growth_ddm_for`'s own docstring for why: the code path is
+    real, wired to genuine (scraped, not fabricated) `CorporateAction`
+    dividend rows, but §8/§9 means essentially every ticker has zero
+    CONFIRMED dividend rows today, so `warnings` below will usually name
+    that as the reason this is `None`."""
+
+    warnings: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -164,6 +182,7 @@ class CompanyValuationOut(BaseModel):
     current_period_fcff: CurrentPeriodFCFFOut
     wacc: WACCOut
     dcf: DCFOut
+    gordon_growth_ddm: DDMOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
     price_ladder: PriceLadderOut | None
@@ -235,6 +254,13 @@ class CompanyValuationOut(BaseModel):
                 ),
                 model_warnings=list(s.dcf.result.warnings) if s.dcf.result else [],
                 warnings=list(s.dcf.warnings),
+            ),
+            gordon_growth_ddm=DDMOut(
+                as_of=s.gordon_growth_ddm.as_of,
+                value_per_share=(
+                    s.gordon_growth_ddm.result.value_per_share if s.gordon_growth_ddm.result else None
+                ),
+                warnings=list(s.gordon_growth_ddm.warnings),
             ),
             triangulation=TriangulationOut(
                 triangulation_category=t.triangulation_category,

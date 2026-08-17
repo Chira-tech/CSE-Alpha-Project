@@ -28,15 +28,29 @@ multi-year FCFF DCF (§18.1/§18.2, `dcf_for`) all run as real "intrinsic"/
 and `app.domain.dcf`'s own module docstrings, and `dcf_for`'s own
 docstring below for exactly which of the DCF's many assumptions are real
 extracted figures versus named, disclosed "no view" defaults (never a
-silent guess). `current_period_fcff_for` stays a FOURTH, separate,
+silent guess). `current_period_fcff_for` stays a separate,
 informational-only number — §18.1's FCFF formula applied to one real
 confirmed period without any discounting — genuinely useful for
 inspecting one period's raw cash generation, but never a triangulation
 anchor itself: a single undiscounted period's cash flow is not a
 per-share fair value, which is exactly what `dcf_for` now IS, once
 `dcf_for`'s own multi-year forecast wiring is available for a company.
-DDM and SOTP stay entirely unwired — dividend history and segment data
-still aren't extracted anywhere in this system.
+`gordon_growth_ddm_for` adds one more informational-only number: §19.1's
+Gordon-growth DDM, wired to `app.models.corporate_actions.CorporateAction`
+rows of type `DIVIDEND_CASH` — a real, working ingestion pipeline
+(`app.ingestion.corporate_actions_loader`) already scrapes these from
+real CSE dividend announcements, but §8/§9 never lets ingestion
+auto-confirm one (`confirmed_by`/`confirmed_at` start `None`; only a
+human confirm-queue workflow, not yet built, sets them). That means the
+live dev database has, as of this writing, ZERO confirmed dividend rows
+for any ticker — this is expected, not a bug, and is exactly why the
+result is informational only rather than a triangulation anchor: the
+code path is real, correct, and tested against seeded data, ready the
+day a human confirms the first real row, but a Gordon-growth DDM with no
+confirmed dividend history behind it in production is not ready to move
+a price ladder. See `gordon_growth_ddm_for`'s own docstring for the
+trailing-twelve-months/D1 mechanics. SOTP stays entirely unwired —
+segment data still isn't extracted anywhere in this system.
 
 THE RESIDUAL INCOME FORECAST USED HERE IS DELIBERATELY THE FLAT-
 PERSISTENCE CASE, NOT A FORECAST OF IMPROVEMENT. `compute_residual_
@@ -73,7 +87,12 @@ from app.config import settings
 from app.domain.cost_of_equity_view import cost_of_equity_for
 from app.domain.dcf import DCFAssumptions, DCFResult, compute_fcff, dcf_equity_value
 from app.domain.wacc import WACCResult, compute_cost_of_debt, compute_wacc
-from app.domain.dividend_residual_income import ResidualIncomeResult, compute_residual_income
+from app.domain.dividend_residual_income import (
+    GordonGrowthResult,
+    ResidualIncomeResult,
+    compute_residual_income,
+    gordon_growth_value,
+)
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
@@ -82,6 +101,8 @@ from app.domain.ratios import LineItem, compute_all
 from app.domain.relative_valuation import JustifiedMultipleResult, justified_price_to_book
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
 from app.domain.valuation_router import RoutingDecision, route_valuation
+from app.models.corporate_actions import CorporateAction
+from app.models.enums import CorporateActionType
 from app.models.float_data import FloatData
 
 
@@ -443,6 +464,184 @@ def wacc_for(
     return WACCView(period_end, result, tuple(warnings))
 
 
+def _confirmed_dividends_as_of(
+    db: Session, ticker: str, as_of: dt.date
+) -> tuple[CorporateAction, ...]:
+    """§8/§9's provenance gate, applied to `CorporateAction` rather than
+    `Fundamental` — `_confirmable_line_items` restricts a `Fundamental`
+    row by provenance TIER (AI-assisted vs Reported); `CorporateAction`
+    has no tier at all, only a binary "drafted by the scraper, still
+    unconfirmed" vs "a human set `confirmed_by`/`confirmed_at`" state
+    (see `CorporateAction.is_confirmed`), because §5 calls this "the
+    highest-consequence data in the system" and the ingestion loader
+    (`app.ingestion.corporate_actions_loader`) is explicit that it never
+    auto-promotes a draft. The gate here is therefore just
+    `confirmed_by is not None` rather than a `can_enter_valuation` tier
+    check — same discipline, different shape because the underlying
+    table is shaped differently.
+
+    Point-in-time visible as of `as_of` via `ex_date <= as_of`, mirroring
+    §6 even though `CorporateAction` has no `first_available_date` column
+    of its own to run through `app.domain.point_in_time.fundamentals_
+    as_of`. This is, if anything, conservative rather than a gap: CSE
+    publishes a dividend declaration before the security actually goes
+    ex-dividend, so gating on `ex_date` rather than the (unstored)
+    announcement date means a row only becomes visible here at least as
+    late as the market itself would have priced it in, never earlier.
+
+    Restricted to `DIVIDEND_CASH` — the only `CorporateActionType` a
+    Gordon-growth DDM cares about; bonus issues, splits, rights issues
+    etc. affect share count or price, not the dividend stream. Returned
+    oldest-to-newest so callers summing a trailing window don't need to
+    sort again.
+    """
+    rows = db.scalars(
+        select(CorporateAction)
+        .where(
+            CorporateAction.ticker == ticker,
+            CorporateAction.type == CorporateActionType.DIVIDEND_CASH,
+            CorporateAction.ex_date <= as_of,
+            CorporateAction.confirmed_by.is_not(None),
+        )
+        .order_by(CorporateAction.ex_date.asc())
+    ).all()
+    return tuple(rows)
+
+
+def _trailing_dividend_per_share(
+    dividends: tuple[CorporateAction, ...], as_of: dt.date
+) -> tuple[Decimal | None, int]:
+    """Sums `cash_amount` across every confirmed `DIVIDEND_CASH` row whose
+    `ex_date` falls in the trailing twelve months ending on `as_of`
+    (inclusive) — deliberately a TTM sum, not just the single most recent
+    payment. A CSE-listed company routinely declares an interim AND a
+    final dividend within the same year; treating whichever single
+    payment happens to be most recent as "the" annual rate would
+    understate a company that pays twice a year and overstate one that
+    just paid its only annual dividend, depending purely on where `as_of`
+    happens to fall in the cycle. Summing the trailing-twelve-month
+    window is the only one of these that doesn't depend on that
+    coincidence.
+
+    Returns `(None, 0)` — not zero — when no confirmed dividend falls in
+    that window at all, even if older confirmed rows exist further back.
+    A dividend from more than a year ago is stale as an estimate of what
+    this company currently pays; reporting a number derived from it
+    without any qualification would misrepresent stale history as a
+    current rate, the same "confident, precise, entirely fictional
+    number" §15 warns the whole valuation engine exists never to produce.
+    """
+    window_start = as_of - dt.timedelta(days=365)
+    in_window = [
+        d for d in dividends if window_start < d.ex_date <= as_of and d.cash_amount is not None
+    ]
+    if not in_window:
+        return None, 0
+    total = sum((d.cash_amount for d in in_window), Decimal(0))
+    return total, len(in_window)
+
+
+@dataclass(frozen=True)
+class DDMView:
+    as_of: dt.date
+    """Not a `Fundamental` period_end — there is no fundamentals period
+    behind this figure at all, only a trailing dividend window ending on
+    this date. Named `as_of` rather than `period_end`, unlike `WACCView`/
+    `CurrentPeriodFCFFView`, for that reason, while keeping the same
+    three-field (marker, result, warnings) shape those views established."""
+
+    result: GordonGrowthResult | None
+    warnings: tuple[str, ...]
+
+
+def gordon_growth_ddm_for(db: Session, ticker: str, as_of: dt.date | None = None) -> DDMView:
+    """§19.1's Gordon-growth DDM (`V0 = D1 / (Ke - g)`) wired to real —
+    if, for essentially every ticker today, currently EMPTY — confirmed
+    dividend history. "Real but empty" is a specific, checkable claim,
+    not a euphemism for fabricated: `_confirmed_dividends_as_of` runs a
+    genuine query against `CorporateAction` rows a real scraper
+    (`app.ingestion.corporate_actions_loader`) populated from real CSE
+    announcements; what's missing is only the human confirmation step
+    §8/§9 requires before any of those rows may feed a valuation, which
+    is a deliberate, not-yet-built workflow gap, not a data gap. The day
+    a human confirms the first real dividend row for a ticker, this
+    function starts returning a real number for it with no code change.
+
+    D1, THE MODEL'S OWN REQUIRED INPUT, IS DERIVED FROM D0 RATHER THAN A
+    SEPARATE INVENTED NUMBER. This system has no dividend-growth forecast
+    (no analyst estimates, no trend model — the same absence
+    `_steady_state_growth`'s own docstring already explains for `g`
+    itself), so there is no honest way to produce a D1 distinct from
+    "the trailing actual, carried forward at the same flat steady-state
+    rate everything else in this module uses." `_trailing_dividend_per_
+    share` supplies D0 (the real trailing-twelve-month sum); D1 = D0 x
+    (1 + g), using the SAME `_steady_state_growth(risk_free_rate)` this
+    module already computes for justified P/B and residual income — not
+    a new policy constant, just Gordon growth's own D1 = D0(1+g)
+    identity applied with the one growth rate this system can honestly
+    produce.
+
+    `check_gordon_growth_eligibility` (§19.1's "stable payout for five
+    years, growth below Ke, mature business" gate) is deliberately NOT
+    run here: it needs five years of payout-ratio history and a
+    mature-business flag neither of which this system tracks yet. Not
+    gating on it is consistent with, not a workaround for, this result
+    being informational only — `valuation_summary_for` never treats it
+    as a triangulation anchor regardless, so there's no eligibility gate
+    left to skip.
+    """
+    stamp = as_of or dt.date.today()
+
+    dividends = _confirmed_dividends_as_of(db, ticker, stamp)
+    if not dividends:
+        return DDMView(
+            stamp,
+            None,
+            (
+                "No confirmed DIVIDEND_CASH corporate actions exist for this ticker as of "
+                "this date. Per §8/§9, a scraped dividend draft is real (see "
+                "app.ingestion.corporate_actions_loader) but is never auto-confirmed — a "
+                "human confirm-queue workflow, not yet built, must set confirmed_by before a "
+                "dividend can feed a valuation. This is the expected state for every ticker "
+                "today, not an error.",
+            ),
+        )
+
+    trailing_dps, count = _trailing_dividend_per_share(dividends, stamp)
+    if trailing_dps is None:
+        oldest, newest = dividends[0].ex_date, dividends[-1].ex_date
+        return DDMView(
+            stamp,
+            None,
+            (
+                f"{len(dividends)} confirmed dividend(s) exist for this ticker (ex_date "
+                f"{oldest} to {newest}) but none fall within the trailing twelve months of "
+                f"{stamp} — no current per-share rate can be estimated from dividend history "
+                "this stale without misrepresenting it as current.",
+            ),
+        )
+
+    warnings: list[str] = []
+    if count > 1:
+        warnings.append(
+            f"Trailing dividend per share is the sum of {count} confirmed payments within "
+            "the trailing twelve months (e.g. an interim plus a final dividend), not a "
+            "single declaration."
+        )
+
+    ke_result = cost_of_equity_for(db, ticker, stamp)
+    if ke_result.ke is None:
+        warnings.append(f"Cost of equity not computable: {ke_result.note}")
+        return DDMView(stamp, None, tuple(warnings))
+
+    g = _steady_state_growth(ke_result.risk_free_rate)
+    next_year_dividend = trailing_dps * (Decimal(1) + g)
+    result = gordon_growth_value(next_year_dividend, ke_result.ke, g)
+    if result.value_per_share is None:
+        warnings.append(result.note)
+    return DDMView(stamp, result, tuple(warnings))
+
+
 @dataclass(frozen=True)
 class DCFView:
     period_end: dt.date | None
@@ -667,6 +866,16 @@ class CompanyValuationSummary:
     defaults. A genuine "intrinsic" triangulation anchor below, the same
     category as residual income, when computable."""
 
+    gordon_growth_ddm: DDMView
+    """Informational only, same status as `current_period_fcff` and
+    `wacc` above, for a distinct reason from either: the code path and
+    math are real (§19.1's actual formula run against real, if currently
+    unconfirmed, `CorporateAction` rows — see `gordon_growth_ddm_for`'s
+    own docstring for exactly what "real but empty" means here), but a
+    Gordon-growth DDM built on zero confirmed dividend history in
+    production is not ready to move a price ladder. Never one of
+    `triangulation`'s anchors below."""
+
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
     price_ladder: PriceLadderResult | None
@@ -691,6 +900,7 @@ def valuation_summary_for(
     fcff_view = current_period_fcff_for(db, ticker, stamp)
     wacc_view = wacc_for(db, ticker, current_price, stamp)
     dcf_view = dcf_for(db, ticker, current_price, stamp)
+    ddm_view = gordon_growth_ddm_for(db, ticker, stamp)
 
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
@@ -727,5 +937,6 @@ def valuation_summary_for(
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
+        gordon_growth_ddm=ddm_view,
         triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder, note=note,
     )
