@@ -215,7 +215,8 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
         select(PriceDaily)
         .where(PriceDaily.ticker == ticker)
         .order_by(PriceDaily.date.desc())
-        .limit(250)
+        .limit(400)  # a backfilled year is ~241 trading days; leaves headroom
+        # for forward capture before this needs raising again
     ).all()
 
     actions = db.scalars(

@@ -27,6 +27,7 @@ from app.ingestion.cbsl_loader import ingest_range as ingest_cbsl_range
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.index_history_loader import ingest_index_history
+from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
@@ -83,6 +84,33 @@ def _job_capture_market_internals() -> None:
         logger.info("market internals: wrote %d new observation(s)", written)
     except Exception:
         logger.exception("market internals capture failed")
+    finally:
+        db.close()
+
+
+def _job_repair_price_gaps() -> None:
+    """Sweep every security through `companyChartDataByStock` to fill any
+    hole in the last ~year of daily prices (§7's "single point of
+    failure" concern, applied to price history rather than the live
+    feed).
+
+    Weekly and slow — up to 283 calls at >=2s pacing, ~10 minutes — so it
+    runs overnight on a quiet day rather than alongside the trading-day
+    jobs. `upsert_company_price_history` only ever fills a gap; a date
+    already captured live at the close is never touched, so this cannot
+    make today's data worse, only yesterday's gaps smaller. A missed EOD
+    snapshot (a worker outage, a host restart) is exactly the case this
+    exists to repair — without it, that day would otherwise be gone for
+    good the way pre-existing gaps in this series already are.
+    """
+    db = SessionLocal()
+    try:
+        tickers = _all_tickers(db)
+        with CseClient() as client:
+            summary = backfill_company_price_history(client, db, tickers)
+        logger.info("weekly price-gap repair: %s", summary)
+    except Exception:
+        logger.exception("price-gap repair failed")
     finally:
         db.close()
 
@@ -314,6 +342,14 @@ def build_scheduler() -> BackgroundScheduler:
         _job_refresh_sectors,
         CronTrigger(day_of_week="sat", hour=6, minute=40, timezone=MARKET_TZ),
         id="sector_refresh",
+        replace_existing=True,
+    )
+    # After sectors, and given the most idle window: up to 283 paced
+    # calls, ~10 minutes.
+    scheduler.add_job(
+        _job_repair_price_gaps,
+        CronTrigger(day_of_week="sat", hour=7, minute=0, timezone=MARKET_TZ),
+        id="price_gap_repair",
         replace_existing=True,
     )
     scheduler.add_job(

@@ -99,8 +99,10 @@ export function CompanyScreen({
         <p style={{ margin: 0 }}>
           Cross-sectional and own-history comparison arrives with the fundamental engine (Phase 2).
           This system currently stores {data.price_history.length} session
-          {data.price_history.length === 1 ? "" : "s"} for this ticker, which is not yet enough
-          history to compare against meaningfully.
+          {data.price_history.length === 1 ? "" : "s"} for this ticker
+          {data.price_history.length < 60
+            ? ", which is not yet enough history to compare against meaningfully."
+            : " — enough depth for the comparison, once the engine that does it exists."}
         </p>
       ),
       source: { label: `cse.lk end-of-day trade summary, ${latest.date}` },

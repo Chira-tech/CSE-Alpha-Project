@@ -21,6 +21,7 @@ from app.ingestion.bootstrap import run_bootstrap
 from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.index_history_loader import ingest_index_history
+from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
@@ -149,6 +150,39 @@ def cmd_backfill_index(args: argparse.Namespace) -> int:
         print(f"Wrote {written} new ASPI close(s).")
         if not written:
             print("Nothing new — the series was already complete.")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_backfill_prices(args: argparse.Namespace) -> int:
+    """Backfill ~1 year of daily price history per company from
+    companyChartDataByStock — fills gaps only, never touches a date
+    already captured live, and never touches today (§6: the EOD job owns
+    it). One request per line at >=2s pacing, so a full sweep is ~10 min.
+    """
+    db = SessionLocal()
+    try:
+        tickers = [t for (t,) in db.execute(select(Security.ticker).order_by(Security.ticker)).all()]
+        if args.ticker:
+            tickers = [t for t in tickers if t in set(args.ticker)]
+        if args.limit:
+            tickers = tickers[: args.limit]
+        if not tickers:
+            print("No matching tickers. Run `bootstrap` first?", file=sys.stderr)
+            return 1
+
+        est = len(tickers) * settings.cse_min_seconds_between_calls / 60
+        print(f"Backfilling {len(tickers)} ticker(s) — roughly {est:.0f} min at the configured pacing.")
+        with CseClient() as client:
+            summary = backfill_company_price_history(client, db, tickers)
+        print(
+            f"Wrote {summary['rows_written']} price row(s) across {summary['tickers']} ticker(s)."
+        )
+        if summary["failed"]:
+            print(f"  {summary['failed']} ticker(s) failed and can be retried by re-running.")
+        if summary["no_stock_id"]:
+            print(f"  {summary['no_stock_id']} ticker(s) had no stockId in allSecurityCode.")
     finally:
         db.close()
     return 0
@@ -341,6 +375,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cm = sub.add_parser("capture-market", help="store today's market internals into macro_series")
     p_cm.set_defaults(func=cmd_capture_market)
+
+    p_bp = sub.add_parser(
+        "backfill-prices",
+        help="backfill ~1 year of daily price history per company (fills gaps only)",
+    )
+    p_bp.add_argument("--limit", type=int, default=None, help="only the first N tickers")
+    p_bp.add_argument("--ticker", action="append", help="restrict to one or more tickers")
+    p_bp.set_defaults(func=cmd_backfill_prices)
 
     p_sec = sub.add_parser(
         "sectors", help="classify securities into the exchange's GICS industry groups"
