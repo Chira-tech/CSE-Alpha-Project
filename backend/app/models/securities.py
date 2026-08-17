@@ -47,6 +47,11 @@ class Security(Base):
     and must be manually corrected where GICS misclassifies a CSE
     conglomerate (Appendix P2)."""
 
+    archetype_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    """Where `archetype` came from: `app.domain.archetype`'s proposal
+    engine, or a human. Mirrors `sector_source` — a re-run of the proposal
+    loader must never silently overwrite a hand-set value."""
+
     instrument_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     """What the line actually is — see `app.domain.instrument_type`.
     `tradeSummary` returns non-voting lines, fund units and rights

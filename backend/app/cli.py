@@ -21,6 +21,7 @@ from app.ingestion.bootstrap import run_bootstrap
 from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.index_history_loader import ingest_index_history
+from app.ingestion.archetype_loader import apply_archetype_proposals
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
@@ -150,6 +151,33 @@ def cmd_backfill_index(args: argparse.Namespace) -> int:
         print(f"Wrote {written} new ASPI close(s).")
         if not written:
             print("Nothing new — the series was already complete.")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_archetypes(args: argparse.Namespace) -> int:
+    """Propose §16 valuation archetypes from the GICS classification
+    (`app.domain.archetype`). NOT a substitute for the Appendix P2 review
+    exercise — every proposal should be checked, and anything flagged
+    "needs review" (mostly diversified conglomerates GICS misclassifies)
+    was deliberately left for a human rather than guessed."""
+    db = SessionLocal()
+    try:
+        summary = apply_archetype_proposals(db, overwrite_manual=args.overwrite_manual)
+        print(
+            f"Proposed {summary['proposed']} archetype(s); "
+            f"{summary['classified']} of {summary['securities']} securities now classified."
+        )
+        if summary["skipped_manual"]:
+            print(f"  {summary['skipped_manual']} left alone (hand-set already).")
+        review = summary["needs_review"]
+        if review:
+            print(f"  {len(review)} need a human — this is the Appendix P2 exercise, not a bug:")
+            for ticker, reason in review[: args.show_review]:
+                print(f"    {ticker:14} {reason}")
+            if len(review) > args.show_review:
+                print(f"    ... and {len(review) - args.show_review} more (--show-review to see more)")
     finally:
         db.close()
     return 0
@@ -375,6 +403,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cm = sub.add_parser("capture-market", help="store today's market internals into macro_series")
     p_cm.set_defaults(func=cmd_capture_market)
+
+    p_at = sub.add_parser(
+        "archetypes",
+        help="propose §16 valuation archetypes from GICS (Appendix P2 — review every proposal)",
+    )
+    p_at.add_argument("--overwrite-manual", action="store_true")
+    p_at.add_argument("--show-review", type=int, default=20)
+    p_at.set_defaults(func=cmd_archetypes)
 
     p_bp = sub.add_parser(
         "backfill-prices",

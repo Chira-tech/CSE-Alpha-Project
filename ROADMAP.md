@@ -283,16 +283,36 @@ a dated, sourced manual observation is.
       - Hand-set classifications are preserved on refresh (`sector_source`
         distinguishes them), per Appendix P2.
 
-- [ ] **`archetype` is still unset, and still needs a human.** GICS is not
-      the archetype the valuation router (§16) needs, and the clearest
-      proof is in the data now: **John Keells Holdings classifies as
+- [x] **`archetype` now has a proposal engine — 232 of 283 securities
+      (82%)** (`app.domain.archetype`, `python -m app.cli archetypes`).
+      GICS is not the archetype the valuation router (§16) needs, and the
+      clearest proof is in the data: **John Keells Holdings classifies as
       "Capital Goods"** — Sri Lanka's largest diversified conglomerate,
       with hotels, transport, consumer foods, financial services and
       property, filed under whichever industry group its largest segment
-      falls into. No single DDM or FCFE anchor fits that. This is exactly
-      the misclassification Appendix P2 warns about, so the archetype
-      mapping remains a deliberate hand-maintained exercise; the sector
-      loader never writes to it.
+      falls into. So this does not assign archetypes from GICS blindly.
+      - A lookup table maps each of the 20 GICS industry groups to its
+        CSE-typical archetype, EXCEPT "Consumer Services" — verified by
+        reading its real 32 members (ASIAN HOTELS AND PROPERTIES, BERUWALA
+        RESORTS, CEYLON HOTELS CORPORATION, ...), it is hotel-dominated on
+        this exchange specifically, so it only proposes "hotel" when the
+        company's own name confirms it.
+      - Any name containing HOLDINGS or GROUP is refused outright and
+        left for a human — this is the check that keeps John Keells
+        Holdings NULL rather than "manufacturing". A clear single-business
+        keyword (PLANTATIONS, TEA, CEMENT) still overrides it, because a
+        plantation holding company is functionally a plantation company.
+      - No GICS group maps to "plantation" or "construction_materials" at
+        all — the name overrides are the ONLY route to those two
+        archetypes, and real ones (AGALAWATTE PLANTATIONS, BOGAWANTALAWA
+        TEA ESTATES, TOKYO CEMENT) verify correctly.
+      - `archetype_source` (migration 0009) mirrors `sector_source`: a
+        hand-corrected value is never silently overwritten by a re-run.
+      - **The 51 left NULL are named with a reason**, not hidden — the
+        CLI prints them. This is the Appendix P2 review exercise made
+        tractable, not a replacement for it: every one of the 232
+        proposals still needs a human to confirm, and the 51 genuinely
+        need one to decide.
 - [x] **ASPI daily history captured — 239 closes, Aug 2025 to Aug 2026**
       (`python -m app.cli backfill-index`). The only genuine historical
       series on the public CSE API. 1 year is still well short of what
