@@ -23,6 +23,14 @@ from app.domain.financial_statement_parsing import (
     split_label_and_values,
 )
 
+# Full real text from page 103 of J.F. Packaging PLC's FY2025/26 annual
+# report — expanded from an earlier trimmed version once
+# `net_working_capital` needed the individual current-asset/current-
+# liability component lines (inventories, receivables, related-party
+# amounts, payables) rather than just the totals, and WACC needed to see
+# that "Interest Bearing Borrowings" ALSO prints twice on this statement
+# (a different real wording from Swadeshi's "Interest Bearing Loans and
+# Borrowings", both mapping to `total_interest_bearing_debt`).
 BALANCE_SHEET_TEXT = """\
 102 J.F. PACKAGING PLC Annual Report 2025/26
 STATEMENT OF FINANCIAL POSITION
@@ -32,17 +40,42 @@ Notes Rs.000 Rs.000 Rs.000 Rs.000
 Assets
 Non-Current Assets
 Property, Plant & Equipment 11 1,025,218 891,500 694,892 691,557
+Right of Use the Asset 12 26,748 45,080 17,917 28,667
 Intangible Assets - CWIP 13.2 6,512 3,191 - -
+Intangible Assets - Goodwill 13.3 210,662 210,662 - -
+Investments in Subsidiaries 14.1 - - 1,424,939 1,424,939
+Equity Investments at FVOCI 14.2 318,542 555,636 - -
+Deferred Tax Assets 21 37,603 - 24,799 46,619
 Total Non-Current Assets 1,625,285 1,706,069 2,162,547 2,191,782
 Current Assets
+Inventories 15 868,087 814,803 546,299 536,974
+Trade and Other Receivables 16 1,126,517 930,751 548,012 428,763
+Amounts Due from Related Parties - Trade 24.1.1 97,932 94,265 63,506 70,363
+Amounts Due from Related Parties - Non Trade 24.1.2 1,113 47,268 196,764 193,334
+Income Tax Receivable 2,109 2,497 2,109 2,497
+Investments at Amortised Cost 17 3,232 3,232 - -
 Cash and Cash Equivalents 18 82,835 123,842 40,597 29,305
 Total Current Assets 2,181,825 2,016,658 1,397,287 1,261,236
 Total Assets 3,807,110 3,722,727 3,559,834 3,453,018
 EQUITY
 Stated Capital 19 1,049,047 449,047 1,049,047 449,047
+Revaluation Reserve 205,755 205,755 188,700 188,700
 FVOCI Reserve (4,784) 160,738 - -
+Retained Earnings 393,013 300,990 1,156,473 1,138,915
 Total Equity 1,643,031 1,116,530 2,394,220 1,776,662
+Non-Current Liabilities
+Interest Bearing Borrowings 20 352,950 641,967 12,451 317,819
+Deferred Tax Liabilities 21 - 3,597 - -
+Retirement Benefit Obligations 22 82,548 56,795 39,638 27,875
 Total Non-Current Liabilities 435,498 702,359 52,089 345,694
+LIABILITIES
+Current Liabilities
+Interest Bearing Borrowings 20 995,069 1,207,155 727,256 970,612
+Trade and Other Payables 23 434,334 401,458 190,813 160,264
+Amounts Due to Related Parties - Trade 24.2.1 8,740 8,757 2,196 9,077
+Amounts Due to Related Parties - Non Trade 24.2.2 3,372 6,193 - 746
+Income Tax Payable 34,110 44,480 - -
+Bank Overdraft 18 252,956 235,795 193,260 189,963
 Total Current Liabilities 1,728,581 1,903,838 1,113,525 1,330,662
 Total Liabilities 2,164,079 2,606,197 1,165,614 1,676,356
 Total Equity and Liabilities 3,807,110 3,722,727 3,559,834 3,453,018
@@ -299,6 +332,25 @@ def test_extract_candidate_lines_finds_every_canonical_balance_sheet_item():
     assert by_statement_line["total_equity_and_liabilities"] == Decimal("3807110")
     # sanity check the accounting identity actually holds on the extracted numbers
     assert by_statement_line["total_assets"] == by_statement_line["total_equity_and_liabilities"]
+    # working-capital STOCK components (net_working_capital's inputs)
+    assert by_statement_line["inventories"] == Decimal("868087")
+    assert by_statement_line["trade_receivables"] == Decimal("1126517")
+    assert by_statement_line["amounts_due_from_related_parties_trade"] == Decimal("97932")
+    assert by_statement_line["amounts_due_from_related_parties_non_trade"] == Decimal("1113")
+    assert by_statement_line["trade_payables"] == Decimal("434334")
+    assert by_statement_line["amounts_due_to_related_parties_trade"] == Decimal("8740")
+    assert by_statement_line["amounts_due_to_related_parties_non_trade"] == Decimal("3372")
+
+
+def test_extract_candidate_lines_finds_both_occurrences_of_jfps_split_debt_line():
+    """"Interest Bearing Borrowings" — a real, different wording from
+    Swadeshi's "Interest Bearing Loans and Borrowings" — ALSO prints
+    twice on J.F. Packaging's real balance sheet, confirming the
+    current/non-current maturity split isn't a Swadeshi-specific quirk."""
+    lines = extract_candidate_lines(BALANCE_SHEET_TEXT)
+    debt_lines = [l for l in lines if l.statement_line == "total_interest_bearing_debt"]
+    assert len(debt_lines) == 2
+    assert {l.primary_value for l in debt_lines} == {Decimal("352950"), Decimal("995069")}
 
 
 def test_extract_candidate_lines_finds_every_canonical_income_statement_item():
@@ -328,6 +380,7 @@ def test_extract_candidate_lines_finds_every_canonical_cash_flow_item():
     assert by_statement_line["net_increase_in_cash"] == Decimal("-58168")
     assert by_statement_line["operating_profit_before_working_capital_changes"] == Decimal("681378")
     assert by_statement_line["cash_generated_from_operations"] == Decimal("493497")
+    assert by_statement_line["interest_expense"] == Decimal("199024")
     # CFO + investing + financing = net change in cash, on the extracted numbers
     assert (
         by_statement_line["cash_flow_from_operations"]
@@ -371,6 +424,12 @@ def test_extract_candidate_lines_finds_both_occurrences_of_a_split_maturity_debt
     debt_lines = [l for l in lines if l.statement_line == "total_interest_bearing_debt"]
     assert len(debt_lines) == 2
     assert {l.primary_value for l in debt_lines} == {Decimal("11672993"), Decimal("634163111")}
+
+    by_statement_line = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+    assert by_statement_line["inventories"] == Decimal("608398860")
+    assert by_statement_line["trade_receivables"] == Decimal("645602031")
+    assert by_statement_line["advances_and_prepayments"] == Decimal("243913244")
+    assert by_statement_line["trade_payables"] == Decimal("377836430")
 
 
 class TestDeriveAdditionalLineItems:
@@ -451,6 +510,55 @@ class TestDeriveAdditionalLineItems:
             "depreciation_and_amortisation": Decimal("35902704"),
             "change_in_net_working_capital": Decimal("252324738"),
         }
+
+    def test_derives_net_working_capital_from_jfp_shaped_components(self):
+        """J.F. Packaging's real component set: inventories, trade
+        receivables, related-party amounts (trade + non-trade) on the
+        asset side; trade payables and related-party amounts on the
+        liability side. 2,093,649 - 446,446 = 1,647,203."""
+        derived = derive_additional_line_items(
+            {
+                "inventories": Decimal("868087"),
+                "trade_receivables": Decimal("1126517"),
+                "amounts_due_from_related_parties_trade": Decimal("97932"),
+                "amounts_due_from_related_parties_non_trade": Decimal("1113"),
+                "trade_payables": Decimal("434334"),
+                "amounts_due_to_related_parties_trade": Decimal("8740"),
+                "amounts_due_to_related_parties_non_trade": Decimal("3372"),
+            }
+        )
+        assert derived == {"net_working_capital": Decimal("1647203")}
+
+    def test_derives_net_working_capital_from_swad_shaped_components(self):
+        """Swadeshi's real, genuinely different component set: no
+        related-party amounts at all, "Advances and Prepayments" instead
+        — confirms this isn't hardcoded to J.F. Packaging's specific
+        five-component shape. 1,497,914,135 - 377,836,430 = 1,120,077,705."""
+        derived = derive_additional_line_items(
+            {
+                "inventories": Decimal("608398860"),
+                "trade_receivables": Decimal("645602031"),
+                "advances_and_prepayments": Decimal("243913244"),
+                "trade_payables": Decimal("377836430"),
+            }
+        )
+        assert derived == {"net_working_capital": Decimal("1120077705")}
+
+    def test_net_working_capital_needs_at_least_one_of_each_side(self):
+        """All-assets-no-liabilities would look like a real net figure
+        while actually being gross assets alone — must not derive."""
+        derived = derive_additional_line_items({"inventories": Decimal("1000")})
+        assert "net_working_capital" not in derived
+
+    def test_net_working_capital_never_overwrites_a_directly_extracted_value(self):
+        derived = derive_additional_line_items(
+            {
+                "net_working_capital": Decimal("999"),
+                "inventories": Decimal("1000"),
+                "trade_payables": Decimal("400"),
+            }
+        )
+        assert "net_working_capital" not in derived
 
 
 def test_identities_pass_on_the_second_independent_cash_flow_filing():

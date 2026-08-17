@@ -175,6 +175,37 @@ def test_extract_financial_statement_candidates_only_reads_statement_pages():
     assert page_numbers_used == {1, 3, 4}
 
 
+def test_a_notes_page_whose_own_subheading_names_a_primary_statement_is_still_excluded():
+    """A REAL bug, caught against the real downloaded PDF, not a
+    fixture: J.F. Packaging PLC's real Note 25 ("Financial Instruments")
+    is subtitled "25.1. Financial Instruments - Statement of Financial
+    Position" — the note's OWN heading contains a `_STATEMENT_PAGE_
+    MARKERS` phrase, so before this test existed the note page passed
+    the marker filter, and its exact reprint of the real balance-sheet
+    debt figures got counted as a SECOND genuine occurrence of
+    `total_interest_bearing_debt`, silently doubling it (1,348,019
+    became 2,696,038). This is the real note text, trimmed to the part
+    that reproduces the trap."""
+    real_note_25_excerpt = (
+        "142 J.F. PACKAGING PLC Annual Report 2025/26\n"
+        "NOTES TO THE CONSOLIDATED FINANCIAL STATEMENTS\n"
+        "25. FINANCIAL INSTRUMENTS\n"
+        "25.1. Financial Instruments - Statement of Financial Position\n"
+        "The Financial instruments recognised in the statement of financial position are as follows:\n"
+        "Interest Bearing Borrowings 20 352,950 641,967 12,451 317,819\n"
+        "Interest Bearing Borrowings 20 995,069 1,207,155 727,256 970,612\n"
+    )
+    fake_pages = [_FakePage(BALANCE_SHEET_TEXT), _FakePage(real_note_25_excerpt)]
+
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    debt_candidates = [line for _page, line in candidates if line.statement_line == "total_interest_bearing_debt"]
+    assert len(debt_candidates) == 2  # only the balance sheet's own two, not the note's reprint too
+    page_numbers_used = {page for page, _ in candidates}
+    assert 1 not in page_numbers_used  # the notes page (index 1) must be fully excluded
+
+
 def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():
     with patch(
         "app.ingestion.financial_pdf_extractor.pdfplumber.open",
@@ -309,6 +340,43 @@ def test_build_derived_fundamental_drafts_never_overwrites_an_already_printed_li
     # 681,378 - 493,497 = 187,881 — matches the 5 real component lines'
     # own hand-summed total exactly (see test_financial_statement_parsing.py)
     assert draft.value == Decimal("187881")
+
+
+def test_full_extraction_and_derivation_pass_on_jfps_real_balance_sheet_and_cash_flow():
+    """Both real pages together: total_interest_bearing_debt SUMS across
+    its two real occurrences (build_fundamental_drafts's job) while
+    net_working_capital and change_in_net_working_capital are DERIVED
+    (build_derived_fundamental_drafts's job) — the full real pipeline for
+    every §18 DCF input this session ever unlocked, on one real filing."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(BALANCE_SHEET_TEXT), _FakePage(CASH_FLOW_STATEMENT_TEXT)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    direct = build_fundamental_drafts(
+        ticker="JFP.N0000", period_end=dt.date(2026, 3, 31), period_type="annual",
+        first_available_date=dt.date(2026, 8, 14),
+        source_url="https://cdn.cse.lk/cmt/upload_report_file/3399_1786715988377.pdf",
+        candidates=candidates,
+    )
+    derived = build_derived_fundamental_drafts(
+        ticker="JFP.N0000", period_end=dt.date(2026, 3, 31), period_type="annual",
+        first_available_date=dt.date(2026, 8, 14),
+        source_url="https://cdn.cse.lk/cmt/upload_report_file/3399_1786715988377.pdf",
+        candidates=candidates,
+    )
+
+    by_line = {d.statement_line: d for d in direct}
+    assert by_line["total_interest_bearing_debt"].value == Decimal("1348019")  # 352,950 + 995,069
+    # capex is deliberately NOT here — J.F. Packaging's real capex label
+    # wraps across two physical lines on its cash-flow statement, still
+    # unsolved (see this project's own documented limitation).
+    assert "capital_expenditure" not in by_line
+
+    derived_by_line = {d.statement_line: d for d in derived}
+    assert derived_by_line["net_working_capital"].value == Decimal("1647203")
+    assert derived_by_line["change_in_net_working_capital"].value == Decimal("187881")
 
 
 @respx.mock

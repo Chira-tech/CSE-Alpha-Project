@@ -207,14 +207,64 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # deliberately summed across every match on the statement rather
     # than keeping only the first (which would silently keep the smaller
     # non-current portion and drop the much larger current one).
-    "total_interest_bearing_debt": ("interest bearing loans and borrowings",),  # SWAD
+    "total_interest_bearing_debt": (
+        "interest bearing loans and borrowings",  # SWAD
+        "interest bearing borrowings",  # JFP — ALSO prints twice, same reason
+    ),
     # The cash-flow statement's own interest-expense figure — the
     # non-cash add-back line, not "... Paid" (a real, differently-worded
     # line on the same statement, the cash actually disbursed, which is
     # NOT what a WACC cost-of-debt calculation wants — that wants the
     # period's expense, whether or not it was paid in cash this period).
-    "interest_expense": ("finance costs",),  # SWAD
+    "interest_expense": (
+        "finance costs",  # SWAD
+        "interest expense",  # JFP — same cash-flow-statement accrual add-back concept
+    ),
+    # Working-capital STOCK components (§18's `working_capital_pct_
+    # revenue`) — verified on BOTH real balance sheets, where "Inventories",
+    # "Trade and Other Receivables" and "Trade and Other Payables" are
+    # byte-identical wording across both companies. Neither company's
+    # component SET is complete on its own — J.F. Packaging breaks out
+    # related-party amounts Swadeshi doesn't have; Swadeshi has "Advances
+    # and Prepayments" J.F. Packaging doesn't — which is exactly why
+    # `derive_net_working_capital` below sums WHICHEVER of these are
+    # present for a given company rather than requiring all of them.
+    # Cross-checked against each statement's own totals: (Total Current
+    # Assets - Cash - tax/other non-operating items) and (Total Current
+    # Liabilities - debt - tax) both equal the sum of exactly these
+    # components on both real filings, confirming this is the right set
+    # rather than an arbitrary one.
+    "inventories": ("inventories",),  # JFP + SWAD, identical
+    "trade_receivables": ("trade and other receivables",),  # JFP + SWAD, identical
+    "trade_payables": ("trade and other payables",),  # JFP + SWAD, identical
+    "advances_and_prepayments": ("advances and prepayments",),  # SWAD
+    "amounts_due_from_related_parties_trade": ("amounts due from related parties - trade",),  # JFP
+    "amounts_due_from_related_parties_non_trade": ("amounts due from related parties - non trade",),  # JFP
+    "amounts_due_to_related_parties_trade": ("amounts due to related parties - trade",),  # JFP
+    "amounts_due_to_related_parties_non_trade": ("amounts due to related parties - non trade",),  # JFP
 }
+
+#: The working-capital STOCK's two sides — see `derive_net_working_
+#: capital`. A company's own filing determines which of these are
+#: actually present; summing "whichever apply" rather than requiring a
+#: fixed set is what makes this generalise across two real filings with
+#: genuinely different component breakdowns.
+NET_WORKING_CAPITAL_ASSET_COMPONENTS: frozenset[str] = frozenset(
+    {
+        "inventories",
+        "trade_receivables",
+        "advances_and_prepayments",
+        "amounts_due_from_related_parties_trade",
+        "amounts_due_from_related_parties_non_trade",
+    }
+)
+NET_WORKING_CAPITAL_LIABILITY_COMPONENTS: frozenset[str] = frozenset(
+    {
+        "trade_payables",
+        "amounts_due_to_related_parties_trade",
+        "amounts_due_to_related_parties_non_trade",
+    }
+)
 
 #: Canonical keys where multiple occurrences on the same statement are
 #: expected — the standard current/non-current maturity split for one
@@ -470,15 +520,28 @@ def derive_additional_line_items(values: dict[str, Decimal]) -> dict[str, Decima
         summing its unpredictable, company-varying set of component
         lines — see `DERIVED_DIFFERENCES`'s own comment for the identity
         this rests on.
+      - `net_working_capital` (the STOCK §18's `working_capital_pct_
+        revenue` needs, a different figure from the CHANGE above), summed
+        from `NET_WORKING_CAPITAL_ASSET_COMPONENTS` minus
+        `NET_WORKING_CAPITAL_LIABILITY_COMPONENTS` — WHICHEVER of each
+        group's keys are actually present for a given company, since the
+        two real filings this was verified against have genuinely
+        different component breakdowns (see those constants' own
+        comment).
 
-    Both follow the same two rules: a key is only derived when ALL of its
-    inputs are present, and NEVER when the key itself was already
-    directly extracted (a company that prints a figure directly is
-    trusted on that figure, never silently overwritten by a derived one
-    computed from elsewhere on the same page). A partial derivation is
-    never produced either — a missing input skips that key entirely
+    All three follow the same core rules: a key is only derived when its
+    required inputs are present, and NEVER when the key itself was
+    already directly extracted (a company that prints a figure directly
+    is trusted on that figure, never silently overwritten by a derived
+    one computed from elsewhere on the same page). A partial derivation
+    is never produced either — a missing input skips that key entirely
     rather than guessing, which would look exactly as precise as a real
-    figure while being wrong.
+    figure while being wrong. `net_working_capital` applies this same
+    "no partial derivation" rule at the GROUP level: at least one asset
+    component AND at least one liability component must be present, or
+    nothing is derived — a one-sided figure (all assets, no liabilities
+    counted) would look like a real net position while actually being
+    gross assets alone.
     """
     derived: dict[str, Decimal] = {}
     for target_key, component_keys in DERIVED_SUMS.items():
@@ -492,6 +555,14 @@ def derive_additional_line_items(values: dict[str, Decimal]) -> dict[str, Decima
             continue
         if minuend_key in values and subtrahend_key in values:
             derived[target_key] = values[minuend_key] - values[subtrahend_key]
+
+    if "net_working_capital" not in values:
+        asset_keys_present = [k for k in NET_WORKING_CAPITAL_ASSET_COMPONENTS if k in values]
+        liability_keys_present = [k for k in NET_WORKING_CAPITAL_LIABILITY_COMPONENTS if k in values]
+        if asset_keys_present and liability_keys_present:
+            assets_total = sum((values[k] for k in asset_keys_present), Decimal(0))
+            liabilities_total = sum((values[k] for k in liability_keys_present), Decimal(0))
+            derived["net_working_capital"] = assets_total - liabilities_total
 
     return derived
 

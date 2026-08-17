@@ -53,6 +53,8 @@ from app.config import settings
 from app.domain.financial_statement_parsing import (
     DERIVED_DIFFERENCES,
     DERIVED_SUMS,
+    NET_WORKING_CAPITAL_ASSET_COMPONENTS,
+    NET_WORKING_CAPITAL_LIABILITY_COMPONENTS,
     SUM_ACROSS_OCCURRENCES,
     ExtractedLine,
     check_accounting_identities,
@@ -79,6 +81,29 @@ _STATEMENT_PAGE_MARKERS = (
     "income statement",
     "statement of cash flow",  # verified: J.F. Packaging PLC's FY2025/26 header, singular "flow"
 )
+
+# A real, verified false-positive: J.F. Packaging PLC's Note 25
+# ("Financial Instruments") is subtitled "25.1. Financial Instruments -
+# Statement of Financial Position" — the note's OWN heading literally
+# contains a `_STATEMENT_PAGE_MARKERS` phrase, so it passed the marker
+# filter and its figures (a genuine, exact reprint of the real balance-
+# sheet debt lines, not a coincidental wording collision) got counted as
+# a SECOND real occurrence of `total_interest_bearing_debt`, doubling it.
+# Caught by a real end-to-end run against the live PDF, not a fixture —
+# `SUM_ACROSS_OCCURRENCES` genuinely can't tell "the same figure legally
+# reprinted in a note" from "two real, distinct maturity-split amounts"
+# without this. CSE annual reports consistently header every notes page
+# this way (this project's own earliest test fixture for the ORIGINAL
+# "notes reuse words like Total" risk already used exactly this phrase),
+# so it is checked FIRST and unconditionally excludes the page,
+# regardless of which positive marker also happens to match.
+_NOTES_PAGE_MARKER = "notes to the"
+
+
+def _is_primary_statement_page(page_text_lower: str) -> bool:
+    if _NOTES_PAGE_MARKER in page_text_lower:
+        return False
+    return any(marker in page_text_lower for marker in _STATEMENT_PAGE_MARKERS)
 
 
 def fetch_recent_financial_announcements(client: CseClient) -> list[FinancialAnnouncementRow]:
@@ -159,7 +184,7 @@ def extract_financial_statement_candidates(
         for page_number, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
             lower = text.lower()
-            if not any(marker in lower for marker in _STATEMENT_PAGE_MARKERS):
+            if not _is_primary_statement_page(lower):
                 continue
             for line in extract_candidate_lines(text):
                 if line.statement_line is not None and line.primary_value is not None:
@@ -283,7 +308,14 @@ def build_derived_fundamental_drafts(
 
     drafts: list[Fundamental] = []
     for statement_line, value in derived.items():
-        if statement_line in DERIVED_SUMS:
+        if statement_line == "net_working_capital":
+            asset_keys = sorted(k for k in NET_WORKING_CAPITAL_ASSET_COMPONENTS if k in values)
+            liability_keys = sorted(k for k in NET_WORKING_CAPITAL_LIABILITY_COMPONENTS if k in values)
+            note = (
+                "assets (" + "; ".join(f"{k} = {values[k]:,}" for k in asset_keys) + ") minus "
+                "liabilities (" + "; ".join(f"{k} = {values[k]:,}" for k in liability_keys) + ")"
+            )
+        elif statement_line in DERIVED_SUMS:
             component_keys = DERIVED_SUMS[statement_line]
             note = "sum of " + "; ".join(f"{k} = {values[k]:,}" for k in component_keys)
         else:
@@ -305,7 +337,7 @@ def build_derived_fundamental_drafts(
                 source_page=None,
                 source_snippet=(
                     f"DERIVED, not read from a single printed line — {note} = {value:,}. "
-                    "Check both inputs against the source PDF before confirming, not just the total."
+                    "Check every input against the source PDF before confirming, not just the total."
                 ),
                 confirmed_by=None,
                 confirmed_at=None,

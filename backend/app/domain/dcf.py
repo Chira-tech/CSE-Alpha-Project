@@ -59,23 +59,34 @@ tax fade paths) built from ONE period's cash-flow figures; turning
 "Swadeshi's FY2025/26 capex was X" into "Swadeshi's Y1-10 capex
 assumption is X% of revenue, fading how" is a forecasting decision this
 module already refuses to make silently (see `DCFAssumptions`' own
-field-by-field sourcing notes). Third, and discovered only once WACC's
-live wiring made it worth checking precisely: `DCFAssumptions.working_
-capital_pct_revenue` needs the working-capital STOCK (non-cash working
-capital ÷ revenue, a balance-sheet LEVEL, so the projection can grow it
+field-by-field sourcing notes). Third — no longer a blocker as of this
+session, but worth recording precisely, because it took a real
+live-data investigation to close: `DCFAssumptions.working_capital_pct_
+revenue` needs the working-capital STOCK (non-cash working capital ÷
+revenue, a balance-sheet LEVEL, so the projection can grow it
 proportionally as revenue grows) — a genuinely different figure from
 `change_in_net_working_capital`, the working-capital FLOW this system
-already extracts for one historical period. No canonical label maps the
-individual current-asset/current-liability components (trade
-receivables, inventories, trade payables, excluding cash and
-interest-bearing debt) that a working-capital STOCK would need to be
-built from. Building this module anyway, fully tested against
-hand-worked numbers, means the arithmetic is verified and ready the day
-that wiring — and the working-capital-stock extraction it still waits
-on — gets built, rather than being designed and debugged for the first
-time under pressure once the rest of the data existed, which for capex,
-D&A, working-capital CHANGE and the discount rate, it now genuinely
-does, at least for one real company. §18.2's "never a free parameter" table
+already extracted for one historical period. There is no single printed
+line for the STOCK either, but `derive_additional_line_items` now sums
+whichever of a company-varying set of individual current-asset/current-
+liability component canonical keys (trade receivables, inventories,
+trade payables, plus company-specific extras such as advances and
+prepayments or related-party amounts, excluding cash and
+interest-bearing debt) are actually present into `net_working_capital`,
+verified against two real filings with genuinely different component
+sets (J.F. Packaging's related-party lines; Swadeshi's advances and
+prepayments), each cross-checked against that company's own
+Total Current Assets/Liabilities minus its known non-operating items.
+So as of this session `working_capital_pct_revenue` COULD be computed
+live for both companies as `net_working_capital ÷ revenue` — that
+division is simply not wired into the view layer yet, the same reason
+capex/D&A/WACC aren't: reasons one and two above still stand. Building
+this module anyway, fully tested against hand-worked numbers, means the
+arithmetic is verified and ready the day that wiring gets built, rather
+than being designed and debugged for the first time under pressure once
+the rest of the data existed, which for capex, D&A, both working-capital
+figures and the discount rate, it now genuinely does, at least for two
+real companies. §18.2's "never a free parameter" table
 is honoured in the shape of `DCFAssumptions` — every field is named for
 where §18.2 says it comes from — even though wiring each one to a live
 source (sector median growth, macro regime multiplier) is itself blocked

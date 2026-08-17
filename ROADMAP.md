@@ -1092,6 +1092,70 @@ a dated, sourced manual observation is.
         levered company — never silently equal to Ke), and
         `test_valuation_view.py` (the live-wiring hand-worked case).
         Full suite: 669 passed.
+- [x] **Working-capital STOCK now extractable too — the third DCF
+      blocker named above is closed, and a real double-counting bug was
+      found and fixed along the way.** `derive_additional_line_items`
+      gained a third derivation shape: rather than a fixed 2-key sum or
+      difference, `net_working_capital` sums whichever of a frozenset of
+      current-asset canonical keys (trade receivables, inventories,
+      advances and prepayments, related-party trade/non-trade amounts —
+      company-varying, unlike the byte-identical subtotal labels the
+      working-capital CHANGE derivation reuses) are actually present,
+      minus whichever current-liability keys are present, and only fires
+      when at least one of each side exists. Verified on both real
+      filings with genuinely different component sets — J.F. Packaging's
+      (inventories, trade receivables, 4 related-party lines, trade
+      payables, 2 related-party liability lines) and Swadeshi's
+      (inventories, trade receivables, advances and prepayments, trade
+      payables) — each cross-checked against that company's own Total
+      Current Assets/Liabilities minus its known non-operating items
+      (cash, tax, debt, overdraft), not just internally self-consistent.
+      `net_working_capital` = 1,120,077,705 for Swadeshi from this
+      session's live extraction run.
+      - **A real bug, not a hypothetical, found by re-running the full
+        extraction against J.F. Packaging's actual 160-page PDF rather
+        than trusting the unit-test fixtures alone**: `total_
+        interest_bearing_debt` came back as 2,696,038 — exactly DOUBLE
+        the correct 1,348,019. Root cause: J.F. Packaging's Note 25 page
+        is subtitled "25.1. Financial Instruments - Statement of
+        Financial Position", which contains the literal phrase "statement
+        of financial position" — one of the primary-statement-page
+        markers — so the page-marker filter let the notes page through,
+        and the note's verbatim reprint of the same two debt figures got
+        summed a second time by `SUM_ACROSS_OCCURRENCES`, exactly the
+        kind of double-count that filter exists to prevent in the other
+        direction. This is precisely why unit-test fixtures are not
+        enough: no hand-written fixture had ever included a notes page
+        that reprints a statement figure under a subheading matching the
+        page-marker text, because it wasn't an obvious case to think of
+        in advance — only running the real, complete document surfaced
+        it.
+      - **Fix**: a new unconditional exclusion — any page whose text
+        contains "notes to the" is never treated as a primary statement
+        page, checked before any positive marker, regardless of which
+        marker also matches (`_NOTES_PAGE_MARKER`, `_is_primary_
+        statement_page`). Verified against both companies' real PDFs
+        after the fix: J.F. Packaging's debt now correctly returns
+        1,348,019 from page 103 alone; Swadeshi's returns 645,836,104
+        (11,672,993 non-current + 634,163,111 current, both genuinely on
+        the balance sheet page, not a notes-page artifact), while
+        Swadeshi's own three notes pages that separately mention
+        "Interest Bearing Loans and Borrowings" (its Note 15) are
+        correctly excluded.
+      - `interest_expense` also now recognizes J.F. Packaging's own
+        cash-flow-statement wording, "Interest Expense" — a real,
+        different label from Swadeshi's "Finance Costs", verified against
+        J.F. Packaging's real PDF.
+      - `app/domain/dcf.py`'s module docstring updated: the working-
+        capital-stock gap it named is closed; `working_capital_pct_
+        revenue` could now be computed live for both companies as
+        `net_working_capital ÷ revenue`, though that division is not yet
+        wired into the view layer (same two structural reasons as capex/
+        D&A/WACC — see the docstring).
+      - New regression test using the real J.F. Packaging note text as
+        its fixture, so this exact failure mode can never silently
+        regress: `test_a_notes_page_whose_own_subheading_names_a_
+        primary_statement_is_still_excluded`. Full suite: 676 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an
