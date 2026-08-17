@@ -112,34 +112,61 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "income_tax_expense": ("income tax expense",),
     "net_income": ("profit for the year", "profit for the period"),
     "total_comprehensive_income": ("total comprehensive income for the year", "total comprehensive income for the period"),
-    # Cash-flow-statement lines — verified against J.F. Packaging PLC's
-    # real FY2025/26 statement of cash flow, the first real filing this
-    # extractor has ever read a cash-flow-statement page from (see
+    # Cash-flow-statement lines — verified against TWO real, independent
+    # filings: J.F. Packaging PLC's FY2025/26 statement of cash flow
+    # (first) and Swadeshi Industrial Works PLC's FY2025/26 statement of
+    # cash flows (second, 17 Aug — deliberately sought out to check
+    # whether one company's wording generalised, per this file's own
+    # "expand as more real filings are processed rather than guessing"
+    # rule). It did NOT: every one of these four line concepts is worded
+    # completely differently between the two companies — proof this
+    # discipline is load-bearing, not decorative. See
     # _STATEMENT_PAGE_MARKERS in app.ingestion.financial_pdf_extractor,
-    # and PARAMETERS.md #9's history of this specific gap). "Cash
-    # generated from/ (Used in) Operations" is the pre-tax, pre-interest
-    # subtotal — a real, differently-named line on the same statement —
-    # and is deliberately NOT mapped to `net_cash_from_operating_
-    # activities`, which is the figure after tax and interest paid, the
-    # one `app.domain.ratios`' cash-flow ratios and §18's FCFF both mean
-    # by "CFO." Only wording actually seen is included; more filings will
-    # widen this list rather than guessing at variance up front, the same
-    # discipline the balance-sheet/income-statement labels above follow.
+    # and PARAMETERS.md #9's history of this gap. "Cash generated from/
+    # (Used in) Operations" (JFP) is the pre-tax, pre-interest subtotal —
+    # a real, differently-named line on the same statement — and is
+    # deliberately NOT mapped to `cash_flow_from_operations`, which is
+    # the figure after tax and interest paid, the one `app.domain.
+    # ratios`' cash-flow ratios and §18's FCFF both mean by "CFO."
     # Named `cash_flow_from_operations` to match the key
     # `app.domain.ratios.NOT_YET_COMPUTABLE` has used since Phase 2 for
     # this exact concept, rather than inventing a second name for the
     # same figure across the two modules.
-    "cash_flow_from_operations": ("net cash flow from/ (used in) operating activities",),
+    "cash_flow_from_operations": (
+        "net cash flow from/ (used in) operating activities",  # JFP
+        "net cash from / used in operating activities",  # SWAD
+    ),
     "net_cash_from_investing_activities": (
-        "net cash flow generated from / (used in) investing activities",
+        "net cash flow generated from / (used in) investing activities",  # JFP
+        "net cash flows (used in) / from investing activities",  # SWAD
     ),
     "net_cash_from_financing_activities": (
-        "net cash flow generated from / (used in) financing activities",
+        "net cash flow generated from / (used in) financing activities",  # JFP
+        "net cash flows from /(used in) financing activities",  # SWAD
     ),
     "net_increase_in_cash": (
-        "net increase/(decrease) in cash & cash equivalents during the year",
+        "net increase/(decrease) in cash & cash equivalents during the year",  # JFP
+        "net (decrease) / increase in cash and cash equivalents",  # SWAD
     ),
-    "depreciation_and_amortisation": ("depreciation / amortization",),
+    # Combined D&A on one line — verified on J.F. Packaging PLC only.
+    # Swadeshi Industrial Works PLC reports "Depreciation" and
+    # "Amortization" as two SEPARATE lines instead, which this extractor
+    # cannot sum into one canonical figure (matching one label to one
+    # value; no logic exists yet to combine two matched lines into a
+    # third canonical concept) — a real, named limitation, not silently
+    # dropped, tracked in ROADMAP.md next to the capex-wrapping one.
+    "depreciation_and_amortisation": ("depreciation / amortization",),  # JFP
+    # Capital expenditure — genuinely NEW as of this filing. J.F.
+    # Packaging PLC's equivalent label ("Purchase & Construction of
+    # Property, Plant & Equipment & Intangible Assets") wraps across two
+    # physical lines on that statement and was left unmapped for exactly
+    # that reason (see this module's earlier commit); Swadeshi's shorter
+    # label doesn't wrap, so this key is extractable for at least this
+    # wording. PP&E only — Swadeshi reports "Acquisition of Intangible
+    # Assets" as a separate, smaller line this key deliberately excludes,
+    # so a company with material intangible capex will read slightly
+    # low here, a real, stated incompleteness rather than a silent one.
+    "capital_expenditure": ("acquisition of property, plant and equipment",),  # SWAD
 }
 
 _LABEL_TO_STATEMENT_LINE: dict[str, str] = {

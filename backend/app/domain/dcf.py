@@ -22,17 +22,22 @@ Pure functions over caller-supplied assumptions, exactly like
 WHY THIS IS NOT WIRED TO LIVE DATA YET, AND WHY THAT'S HONEST RATHER THAN
 AN OVERSIGHT. FCFF needs depreciation & amortisation, capital expenditure,
 and the change in non-cash working capital. `app.domain.financial_
-statement_parsing.CANONICAL_LABELS` now extracts the first of these two —
-`cash_flow_from_operations` and `depreciation_and_amortisation`, verified
-against J.F. Packaging PLC's real FY2025/26 statement of cash flow (17
-Aug) — but not capital expenditure: its real label on that same statement
-("Purchase & Construction of Property, Plant & Equipment & Intangible
-Assets") wraps across two physical lines, and this extractor works line
-by line with no label-continuation logic, a real, separate, still-open
-limitation (ROADMAP.md). The change in non-cash working capital isn't
-extracted either — no canonical label yet maps its components. Building
-this module anyway, fully tested against hand-worked numbers, means the
-arithmetic is verified and ready the day the remaining extraction gaps
+statement_parsing.CANONICAL_LABELS` extracts `cash_flow_from_operations`
+(verified on two independent real filings) and, as of the SAME two real
+filings, both `depreciation_and_amortisation` (J.F. Packaging PLC — its
+combined-D&A wording) AND `capital_expenditure` (Swadeshi Industrial
+Works PLC — its capex label doesn't wrap the way J.F. Packaging's does).
+NEITHER SINGLE COMPANY HAS BOTH YET: J.F. Packaging's capex label wraps
+across two physical lines (this extractor has no label-continuation
+logic, a real, separate, still-open limitation — ROADMAP.md); Swadeshi
+reports Depreciation and Amortization as two separate lines this
+extractor has no logic to sum into one canonical figure (also tracked).
+So this is genuine, real, verified progress on two of three required
+inputs — just not yet co-occurring on one company's filing. The change
+in non-cash working capital remains entirely unextracted regardless — no
+canonical label maps its components on either filing checked so far.
+Building this module anyway, fully tested against hand-worked numbers,
+means the arithmetic is verified and ready the day the remaining gaps
 close, rather than being designed and debugged for the first time under
 pressure once real cash-flow data exists. §18.2's "never a free parameter" table
 is honoured in the shape of `DCFAssumptions` — every field is named for

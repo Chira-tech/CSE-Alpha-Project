@@ -791,9 +791,14 @@ a dated, sourced manual observation is.
       assumption for an unverified fix — exactly what this project
       avoids everywhere else.
 - [ ] The financial-statement extractor's canonical label list
-      (`CANONICAL_LABELS`) is verified against exactly one real filing —
-      wording varies across companies and will need expanding as more
-      real filings are processed
+      (`CANONICAL_LABELS`) is now verified against TWO real filings, not
+      one (17 Aug, see the cash-flow entries below) — every cash-flow
+      line's wording differed completely between the two, confirming
+      wording genuinely does vary company to company as this item always
+      warned. Balance-sheet/income-statement labels are still verified
+      against only the original J.F. Packaging filing. Still an open
+      item at 2 of ~286 companies checked, not closed — real progress,
+      not a solved problem
 - [x] **Cash-flow-statement extraction — the long-tracked PARAMETERS.md
       #9 gap is partially closed, verified against a real filing, not
       guessed.** Freshly downloaded J.F. Packaging PLC's real FY2025/26
@@ -850,6 +855,34 @@ a dated, sourced manual observation is.
         `test_financial_pdf_extractor.py` and `test_ratios.py`, all
         against the real captured text and real hand-computed values.
         Full suite: 637 passed.
+      - **Immediately checked against a SECOND, independent real filing
+        rather than trusting one company's wording to generalise —
+        Swadeshi Industrial Works PLC's FY2025/26 statement of cash
+        flows, a different company, different sector, same day.** It
+        didn't generalise: every one of `cash_flow_from_operations`,
+        `net_cash_from_investing_activities`, `net_cash_from_financing_
+        activities` and `net_increase_in_cash` is worded completely
+        differently on this filing, now stored as a second real variant
+        per key rather than assumed. This also closes part of a second,
+        much older tracked item: "the canonical label list is verified
+        against exactly one real filing" — it's now two, independently.
+        **Genuinely new capability, not just a second data point**:
+        Swadeshi's capex line ("Acquisition of Property, Plant and
+        Equipment") does NOT wrap the way J.F. Packaging's does, so
+        `capital_expenditure` is now a real canonical key — the first
+        time this extractor has ever pulled a capex figure. It is
+        PP&E-only (Swadeshi reports intangible-asset capex as a separate
+        line this key deliberately excludes, a stated incompleteness).
+        The CFO + investing + financing identity was re-verified on this
+        fully independent filing too: -189,662,124 + -146,776,935 +
+        194,330,142 = -142,108,917, exactly matching the filed line.
+        **Still, honestly, no single company has every input DCF needs**:
+        Swadeshi's capex is extractable but its D&A is reported as two
+        separate lines (Depreciation, Amortization) this extractor has
+        no logic to sum into one canonical figure — a second, precisely-
+        named limitation next to J.F. Packaging's capex-wrapping one.
+        2 new tests against this second real filing's real text and real
+        figures. Full suite: 639 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

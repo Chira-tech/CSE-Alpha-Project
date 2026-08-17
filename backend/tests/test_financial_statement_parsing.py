@@ -88,6 +88,30 @@ Net Cash Flow generated from / (Used in) Financing Activities 12,302 (8,713) (33
 Net Increase/(Decrease) in Cash & Cash Equivalents during the year (58,168) (23,173) 7,997 (10,930)
 """
 
+# Real text from page 30 of Swadeshi Industrial Works PLC's FY2025/26
+# annual report, downloaded 17 Aug 2026 specifically to check whether
+# J.F. Packaging's cash-flow wording generalised — deliberately a
+# different company, a different sector (manufacturing, not packaging),
+# with different auditors and formatting. It didn't generalise: every
+# line below is worded differently from the JFP equivalent, and this
+# statement's capex line — unlike JFP's — does NOT wrap across two
+# lines, which is what makes `capital_expenditure` extractable at all.
+CASH_FLOW_STATEMENT_TEXT_SWAD = """\
+STATEMENT OF CASH FLOWS
+Year Ended 31st March 2026
+Group Company
+2026 2025 2026 2025
+Cash Flows From Operating Activities Notes Rs. Rs. Rs. Rs.
+Profit Before Income Tax 24,132,651 3,282,308 21,906,309 (3,713,377)
+Net Cash from / Used in Operating Activities (189,662,124) 54,186,300 (192,924,424) 54,550,510
+Cash Flows from / (Used in) Investing Activities
+Acquisition of Property, Plant and Equipment 12 (141,619,562) (78,624,298) (141,619,561) (78,624,298)
+Net Cash Flows (Used in) / from Investing Activities (146,776,935) (76,107,146) (146,776,934) (76,107,146)
+Cash Flows from / (Used in) Financing Activities
+Net Cash Flows from /(Used in) Financing Activities 194,330,142 156,730,560 194,330,142 156,730,560
+Net (Decrease) / Increase in Cash and Cash Equivalents (142,108,917) 134,809,715 (145,371,216) 135,173,925
+"""
+
 
 @pytest.mark.parametrize(
     ("line", "expected_label", "expected_statement_line", "expected_primary"),
@@ -214,6 +238,32 @@ def test_extract_candidate_lines_finds_every_canonical_cash_flow_item():
         + by_statement_line["net_cash_from_financing_activities"]
         == by_statement_line["net_increase_in_cash"]
     )
+
+
+def test_extract_candidate_lines_finds_every_canonical_item_on_a_second_independent_filing():
+    """Swadeshi Industrial Works PLC — a different company, different
+    wording throughout, verified independently of J.F. Packaging PLC.
+    Existing purely to check the first filing's wording didn't
+    accidentally generalise (it didn't — every line here is a distinct
+    canonical variant from JFP's), and to confirm `capital_expenditure`
+    extracts correctly where the label doesn't wrap."""
+    lines = extract_candidate_lines(CASH_FLOW_STATEMENT_TEXT_SWAD)
+    by_statement_line = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+
+    assert by_statement_line["cash_flow_from_operations"] == Decimal("-189662124")
+    assert by_statement_line["capital_expenditure"] == Decimal("-141619562")
+    assert by_statement_line["net_cash_from_investing_activities"] == Decimal("-146776935")
+    assert by_statement_line["net_cash_from_financing_activities"] == Decimal("194330142")
+    assert by_statement_line["net_increase_in_cash"] == Decimal("-142108917")
+
+
+def test_identities_pass_on_the_second_independent_cash_flow_filing():
+    """The CFO + investing + financing identity, re-verified on a
+    completely independent real filing — not just re-checking the same
+    JFP numbers a second way."""
+    checks = check_accounting_identities(_values(CASH_FLOW_STATEMENT_TEXT_SWAD))
+    identity = next(c for c in checks if c.name == "CFO + investing + financing = net change in cash")
+    assert identity.passed
 
 
 def test_dual_note_reference_with_slash_is_dropped():
