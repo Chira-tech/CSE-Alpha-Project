@@ -16,6 +16,7 @@ import pytest
 
 from app.domain.financial_statement_parsing import (
     check_accounting_identities,
+    derive_additional_line_items,
     extract_candidate_lines,
     match_canonical_label,
     normalize_label,
@@ -103,6 +104,8 @@ Group Company
 2026 2025 2026 2025
 Cash Flows From Operating Activities Notes Rs. Rs. Rs. Rs.
 Profit Before Income Tax 24,132,651 3,282,308 21,906,309 (3,713,377)
+Depreciation 12 34,338,325 38,227,897 34,338,326 38,227,897
+Amortization 13 1,564,379 1,139,229 1,564,379 1,139,229
 Net Cash from / Used in Operating Activities (189,662,124) 54,186,300 (192,924,424) 54,550,510
 Cash Flows from / (Used in) Investing Activities
 Acquisition of Property, Plant and Equipment 12 (141,619,562) (78,624,298) (141,619,561) (78,624,298)
@@ -255,6 +258,36 @@ def test_extract_candidate_lines_finds_every_canonical_item_on_a_second_independ
     assert by_statement_line["net_cash_from_investing_activities"] == Decimal("-146776935")
     assert by_statement_line["net_cash_from_financing_activities"] == Decimal("194330142")
     assert by_statement_line["net_increase_in_cash"] == Decimal("-142108917")
+    assert by_statement_line["depreciation_expense"] == Decimal("34338325")
+    assert by_statement_line["amortisation_expense"] == Decimal("1564379")
+    # the combined line itself was never printed on this statement
+    assert "depreciation_and_amortisation" not in by_statement_line
+
+
+class TestDeriveAdditionalLineItems:
+    def test_sums_split_depreciation_and_amortisation(self):
+        """Swadeshi's real figures: 34,338,325 + 1,564,379 = 35,902,704."""
+        derived = derive_additional_line_items(
+            {"depreciation_expense": Decimal("34338325"), "amortisation_expense": Decimal("1564379")}
+        )
+        assert derived == {"depreciation_and_amortisation": Decimal("35902704")}
+
+    def test_never_overwrites_an_already_extracted_combined_line(self):
+        """J.F. Packaging's shape: the combined line IS present, and must
+        win over any (here, absent) component sum rather than being
+        silently replaced."""
+        derived = derive_additional_line_items({"depreciation_and_amortisation": Decimal("111039")})
+        assert derived == {}
+
+    def test_does_not_produce_a_partial_sum(self):
+        """Only depreciation known, amortisation missing — a partial sum
+        would understate the real combined figure while looking exactly
+        as precise as a genuine one."""
+        derived = derive_additional_line_items({"depreciation_expense": Decimal("34338325")})
+        assert derived == {}
+
+    def test_empty_input_derives_nothing(self):
+        assert derive_additional_line_items({}) == {}
 
 
 def test_identities_pass_on_the_second_independent_cash_flow_filing():

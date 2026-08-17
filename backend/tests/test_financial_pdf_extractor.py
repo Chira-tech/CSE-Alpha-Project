@@ -23,6 +23,7 @@ import respx
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import (
     announcements_for_ticker,
+    build_derived_fundamental_drafts,
     build_fundamental_drafts,
     classify_period_type,
     download_pdf,
@@ -39,6 +40,7 @@ from app.models.securities import Security
 from tests.test_financial_statement_parsing import (
     BALANCE_SHEET_TEXT,
     CASH_FLOW_STATEMENT_TEXT,
+    CASH_FLOW_STATEMENT_TEXT_SWAD,
     INCOME_STATEMENT_TEXT,
 )
 
@@ -199,6 +201,60 @@ def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():
         assert draft.source_snippet  # the raw line text is preserved for review
         assert draft.ticker == "JFP.N0000"
         assert draft.first_available_date == dt.date(2026, 8, 14)
+
+
+def test_build_derived_fundamental_drafts_sums_split_depreciation_and_amortisation():
+    """Swadeshi's real shape: Depreciation and Amortization printed as
+    two separate lines. build_fundamental_drafts alone would store them
+    under depreciation_expense/amortisation_expense only; this covers the
+    second pass that also derives the combined figure other code (§18's
+    DCF) expects."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(CASH_FLOW_STATEMENT_TEXT_SWAD)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    derived_drafts = build_derived_fundamental_drafts(
+        ticker="SWAD.N0000",
+        period_end=dt.date(2026, 3, 31),
+        period_type="annual",
+        first_available_date=dt.date(2026, 8, 17),
+        source_url="https://cdn.cse.lk/cmt/upload_report_file/687_1786359392289.pdf",
+        candidates=candidates,
+    )
+
+    assert len(derived_drafts) == 1
+    draft = derived_drafts[0]
+    assert draft.statement_line == "depreciation_and_amortisation"
+    # 34,338,325 + 1,564,379 = 35,902,704
+    assert draft.value == Decimal("35902704")
+    assert draft.source_page is None  # not from one printed line
+    assert "DERIVED" in draft.source_snippet
+    assert "depreciation_expense" in draft.source_snippet
+    assert "amortisation_expense" in draft.source_snippet
+    assert draft.provenance_tier is ProvenanceTier.AI_ASSISTED
+    assert draft.confirmed_by is None
+
+
+def test_build_derived_fundamental_drafts_produces_nothing_when_the_combined_line_is_already_present():
+    """J.F. Packaging's real shape: the combined line IS printed, so
+    there is nothing to derive — must not double-insert."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(CASH_FLOW_STATEMENT_TEXT)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    derived_drafts = build_derived_fundamental_drafts(
+        ticker="JFP.N0000",
+        period_end=dt.date(2026, 3, 31),
+        period_type="annual",
+        first_available_date=dt.date(2026, 8, 14),
+        source_url="https://cdn.cse.lk/cmt/upload_report_file/3399_1786715988377.pdf",
+        candidates=candidates,
+    )
+    assert derived_drafts == []
 
 
 @respx.mock

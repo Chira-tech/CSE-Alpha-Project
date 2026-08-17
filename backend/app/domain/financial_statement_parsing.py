@@ -148,14 +148,23 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
         "net increase/(decrease) in cash & cash equivalents during the year",  # JFP
         "net (decrease) / increase in cash and cash equivalents",  # SWAD
     ),
-    # Combined D&A on one line — verified on J.F. Packaging PLC only.
-    # Swadeshi Industrial Works PLC reports "Depreciation" and
-    # "Amortization" as two SEPARATE lines instead, which this extractor
-    # cannot sum into one canonical figure (matching one label to one
-    # value; no logic exists yet to combine two matched lines into a
-    # third canonical concept) — a real, named limitation, not silently
-    # dropped, tracked in ROADMAP.md next to the capex-wrapping one.
+    # Combined D&A on one line, verified on J.F. Packaging PLC. Swadeshi
+    # Industrial Works PLC reports "Depreciation" and "Amortization" as
+    # two SEPARATE lines instead — `depreciation_expense` and
+    # `amortisation_expense` below capture those individually, and
+    # `derive_combined_depreciation_and_amortisation` sums them into this
+    # same canonical concept when the combined line itself isn't present,
+    # so the two wordings converge on one figure rather than needing every
+    # caller to know which shape a given company uses.
     "depreciation_and_amortisation": ("depreciation / amortization",),  # JFP
+    # Verified on Swadeshi Industrial Works PLC only, and deliberately
+    # scoped to statement pages (_STATEMENT_PAGE_MARKERS) — a bare
+    # "Depreciation" is common enough wording that matching it outside
+    # the primary statements (e.g. a PP&E movement note) would be a real
+    # false-positive risk; on the cash-flow-statement page specifically
+    # it has never meant anything else in either filing checked so far.
+    "depreciation_expense": ("depreciation",),  # SWAD
+    "amortisation_expense": ("amortization",),  # SWAD
     # Capital expenditure — genuinely NEW as of this filing. J.F.
     # Packaging PLC's equivalent label ("Purchase & Construction of
     # Property, Plant & Equipment & Intangible Assets") wraps across two
@@ -352,6 +361,42 @@ def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityChec
         )
 
     return checks
+
+
+#: Canonical keys that get derived by summing OTHER canonical keys, and
+#: exactly which ones. Kept as data (not scattered ad-hoc across callers)
+#: so `derive_additional_line_items` stays a single, inspectable place —
+#: adding a second derived concept later is a new dict entry, not a new
+#: function.
+DERIVED_SUMS: dict[str, tuple[str, ...]] = {
+    "depreciation_and_amortisation": ("depreciation_expense", "amortisation_expense"),
+}
+
+
+def derive_additional_line_items(values: dict[str, Decimal]) -> dict[str, Decimal]:
+    """A company reports Depreciation and Amortization as two separate
+    cash-flow-statement lines (verified: Swadeshi Industrial Works PLC)
+    rather than one combined line (verified: J.F. Packaging PLC) — this
+    sums the two into the same `depreciation_and_amortisation` canonical
+    concept other code (§18's DCF assumption) already expects, so a
+    caller never needs to know which of the two real shapes a given
+    filing used.
+
+    Only derives a key when ALL of its components are present AND the
+    key itself wasn't already directly extracted — a company that prints
+    a combined line is trusted on its own combined figure, never silently
+    overwritten by a sum of parts extracted from elsewhere on the same
+    page. A partial sum (only one of two components present) is never
+    produced either; that would understate the figure while looking
+    exactly as precise as a real one.
+    """
+    derived: dict[str, Decimal] = {}
+    for target_key, component_keys in DERIVED_SUMS.items():
+        if target_key in values:
+            continue  # already directly extracted — never overwritten by a derived sum
+        if all(k in values for k in component_keys):
+            derived[target_key] = sum((values[k] for k in component_keys), Decimal(0))
+    return derived
 
 
 def extract_candidate_lines(

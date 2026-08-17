@@ -23,19 +23,23 @@ WHY THIS IS NOT WIRED TO LIVE DATA YET, AND WHY THAT'S HONEST RATHER THAN
 AN OVERSIGHT. FCFF needs depreciation & amortisation, capital expenditure,
 and the change in non-cash working capital. `app.domain.financial_
 statement_parsing.CANONICAL_LABELS` extracts `cash_flow_from_operations`
-(verified on two independent real filings) and, as of the SAME two real
-filings, both `depreciation_and_amortisation` (J.F. Packaging PLC — its
-combined-D&A wording) AND `capital_expenditure` (Swadeshi Industrial
-Works PLC — its capex label doesn't wrap the way J.F. Packaging's does).
-NEITHER SINGLE COMPANY HAS BOTH YET: J.F. Packaging's capex label wraps
-across two physical lines (this extractor has no label-continuation
-logic, a real, separate, still-open limitation — ROADMAP.md); Swadeshi
-reports Depreciation and Amortization as two separate lines this
-extractor has no logic to sum into one canonical figure (also tracked).
-So this is genuine, real, verified progress on two of three required
-inputs — just not yet co-occurring on one company's filing. The change
-in non-cash working capital remains entirely unextracted regardless — no
-canonical label maps its components on either filing checked so far.
+(verified on two independent real filings, J.F. Packaging PLC and
+Swadeshi Industrial Works PLC) and now, for Swadeshi specifically, BOTH
+`capital_expenditure` AND `depreciation_and_amortisation` — the latter
+via `derive_additional_line_items`, which sums Swadeshi's separately-
+printed Depreciation and Amortization lines into the one combined figure
+this module's `depreciation_amortisation_pct_revenue` assumption means.
+(J.F. Packaging still lacks capex specifically — its label wraps across
+two physical lines, a real, separate, still-open limitation, ROADMAP.md.)
+So Swadeshi is, as of this session, the first real company with two of
+DCF's three required cash-flow inputs simultaneously extractable. The
+change in non-cash working capital is STILL the one that blocks every
+company checked so far — no canonical label maps its components (trade
+receivables/payables/inventory movements) on either filing yet, even
+though the real lines exist on both statements; summing an unpredictable,
+company-varying SET of working-capital lines is a different, larger
+problem than summing two fixed, known ones, and is intentionally not
+attempted here without more real examples to design it against.
 Building this module anyway, fully tested against hand-worked numbers,
 means the arithmetic is verified and ready the day the remaining gaps
 close, rather than being designed and debugged for the first time under

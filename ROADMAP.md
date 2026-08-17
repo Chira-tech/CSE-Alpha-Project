@@ -876,13 +876,61 @@ a dated, sourced manual observation is.
         The CFO + investing + financing identity was re-verified on this
         fully independent filing too: -189,662,124 + -146,776,935 +
         194,330,142 = -142,108,917, exactly matching the filed line.
-        **Still, honestly, no single company has every input DCF needs**:
-        Swadeshi's capex is extractable but its D&A is reported as two
-        separate lines (Depreciation, Amortization) this extractor has
-        no logic to sum into one canonical figure — a second, precisely-
-        named limitation next to J.F. Packaging's capex-wrapping one.
+        **At the time, honestly, no single company had every input DCF
+        needs**: Swadeshi's capex was extractable but its D&A is reported
+        as two separate lines (Depreciation, Amortization) this extractor
+        had no logic to sum into one canonical figure — a second,
+        precisely-named limitation next to J.F. Packaging's capex-
+        wrapping one. Closed the same session, see the next entry.
         2 new tests against this second real filing's real text and real
         figures. Full suite: 639 passed.
+- [x] **Split-line depreciation & amortisation now sums correctly —
+      Swadeshi becomes the first real company with BOTH capex and D&A
+      simultaneously extractable, two of DCF's three cash-flow inputs.**
+      `derive_additional_line_items` (`app/domain/financial_statement_
+      parsing.py`) sums Swadeshi's real, separately-printed `Depreciation`
+      (34,338,325) and `Amortization` (1,564,379) figures into the same
+      `depreciation_and_amortisation` = 35,902,704 that J.F. Packaging's
+      combined line already produces directly — one canonical concept,
+      two real shapes, converging without either caller needing to know
+      which shape a given filing used.
+      - Deliberately a SEPARATE small function (`DERIVED_SUMS`, a data
+        table, not a hardcoded branch) rather than folded into the label-
+        matching logic — matching text to a canonical key and summing
+        already-matched canonical keys are different operations, and
+        keeping them apart means a third derived concept later is a new
+        dict entry, not new control flow.
+      - Never overwrites an already-printed combined line (J.F.
+        Packaging's own figure always wins over any hypothetical
+        component sum) and never produces a partial sum (only one of the
+        two components present understates the real figure while looking
+        exactly as precise as a genuine one) — both real failure modes,
+        both tested.
+      - Wired into ingestion as a second pass, `build_derived_
+        fundamental_drafts`: a derived draft has no single printed
+        `source_page`/`source_snippet` of its own, so its snippet cites
+        both real component values explicitly ("DERIVED... sum of
+        depreciation_expense = 34,338,325; amortisation_expense =
+        1,564,379...") rather than pretending to quote one line CSE
+        printed — a reviewer confirming it needs to check two figures
+        against the source PDF, not one, and the draft says so.
+      - Verified against the real downloaded PDF end-to-end, not just
+        the trimmed test fixture: `capital_expenditure` and the derived
+        `depreciation_and_amortisation` both come back correctly from
+        the same live extraction run.
+      - **Still, honestly, not the finish line for DCF**: the change in
+        non-cash working capital remains the one true blocker for every
+        company checked so far. The real component lines exist on both
+        statements (trade receivables/payables/inventory movements), but
+        they're an unpredictable, company-varying SET (J.F. Packaging has
+        5 such lines, Swadeshi has 4, and the exact components differ —
+        "Amounts due from Related Parties" vs "Advances and Prepayments")
+        rather than two fixed, known labels — a genuinely different,
+        larger design problem than the D&A sum, and not attempted here
+        without more real examples to design a general rule against.
+      - 6 new tests (the derive function directly, plus the ingestion-
+        level draft-building pass on both real filings' shapes). Full
+        suite: 645 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

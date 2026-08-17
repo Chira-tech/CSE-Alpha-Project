@@ -27,6 +27,14 @@ in here. What this module does provide, verified against a real filing:
   4. `build_fundamental_drafts` — turns candidates into draft
      `Fundamental` rows, provenance_tier=AI_ASSISTED, confirmed_by=None
      always. See app.api.routes.fundamentals for the confirm workflow.
+  5. `build_derived_fundamental_drafts` — a second, smaller pass for
+     canonical concepts that only exist as a SUM of other extracted
+     lines on some companies' filings (e.g. combined depreciation &
+     amortisation, when a company reports the two separately) — see
+     app.domain.financial_statement_parsing.derive_additional_line_items
+     for which sums, and why a derived draft's `source_snippet` cites
+     its components rather than quoting one printed line, because there
+     isn't one.
 """
 from __future__ import annotations
 
@@ -43,8 +51,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.financial_statement_parsing import (
+    DERIVED_SUMS,
     ExtractedLine,
     check_accounting_identities,
+    derive_additional_line_items,
     extract_candidate_lines,
 )
 from app.ingestion.cse_client import CseClient
@@ -199,6 +209,65 @@ def build_fundamental_drafts(
     return drafts
 
 
+def build_derived_fundamental_drafts(
+    *,
+    ticker: str,
+    period_end: dt.date,
+    period_type: str,
+    first_available_date: dt.date,
+    source_url: str,
+    candidates: list[tuple[int, ExtractedLine]],
+) -> list[Fundamental]:
+    """Additional draft rows for canonical concepts derived by summing
+    OTHER extracted lines — currently just `depreciation_and_
+    amortisation`, when a company reports Depreciation and Amortization
+    as two separate cash-flow-statement lines rather than one combined
+    line (see `app.domain.financial_statement_parsing.derive_additional_
+    line_items`). Kept as a separate function from `build_fundamental_
+    drafts` rather than folded in, because a derived value has no single
+    `raw_text`/`source_page` of its own — it's the sum of two — and the
+    draft's `source_snippet` says so explicitly rather than pretending to
+    quote one line CSE printed.
+    """
+    values = {
+        line.statement_line: line.primary_value
+        for _page, line in candidates
+        if line.statement_line and line.primary_value is not None
+    }
+    derived = derive_additional_line_items(values)
+    if not derived:
+        return []
+
+    drafts: list[Fundamental] = []
+    for statement_line, value in derived.items():
+        component_keys = DERIVED_SUMS[statement_line]
+        component_note = "; ".join(f"{k} = {values[k]:,}" for k in component_keys)
+        drafts.append(
+            Fundamental(
+                ticker=ticker,
+                period_end=period_end,
+                period_type=period_type,
+                first_available_date=first_available_date,
+                version=1,
+                statement_line=statement_line,
+                value=value,
+                currency="LKR",
+                provenance_tier=ProvenanceTier.AI_ASSISTED,
+                restated_flag=False,
+                source_url=source_url,
+                source_page=None,
+                source_snippet=(
+                    f"DERIVED, not read from a single printed line — sum of {component_note} "
+                    f"= {value:,}. Check both components against the source PDF before "
+                    "confirming, not just the total."
+                ),
+                confirmed_by=None,
+                confirmed_at=None,
+            )
+        )
+    return drafts
+
+
 def _already_ingested(db: Session, ticker: str, period_end: dt.date, period_type: str) -> bool:
     """One check per filing, not per statement line: if we've already
     processed this (ticker, period_end, period_type) at all — draft or
@@ -272,6 +341,14 @@ def ingest_financial_statement(
         )
 
     drafts = build_fundamental_drafts(
+        ticker=ticker,
+        period_end=period_end,
+        period_type=period_type,
+        first_available_date=first_available_date,
+        source_url=source_url,
+        candidates=candidates,
+    )
+    drafts += build_derived_fundamental_drafts(
         ticker=ticker,
         period_end=period_end,
         period_type=period_type,
