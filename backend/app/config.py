@@ -58,6 +58,19 @@ class Settings(BaseSettings):
     ASPI-implied ERP (§17.1's "third reference point") alongside this
     value for comparison — never as a silent substitute for it."""
 
+    # --- Part O #11: long-run nominal growth for terminal/steady-state g ----------
+    long_run_nominal_growth_pct: Decimal = Decimal("0.05")
+    """The `g` every steady-state valuation formula in §18-20 needs
+    (terminal DCF growth, Gordon growth, justified P/E and P/B) and that
+    this system has no series for — Sri Lanka's long-run nominal GDP
+    growth is not something any ingested source publishes. A policy
+    input, provisional exactly like `erp_effective_pct` above; see
+    PARAMETERS.md #11. Must never exceed `Rf_LKR` (§18.2's own
+    discipline: "a company growing faster than the risk-free rate
+    forever is worth infinity") — every caller of this default is
+    expected to check that against the live risk-free observation, not
+    assume it here."""
+
     # --- Point-in-time / reporting lag defaults (§6) ------------------------------
     default_quarterly_reporting_lag_days: int = 90
     default_annual_reporting_lag_days: int = 180

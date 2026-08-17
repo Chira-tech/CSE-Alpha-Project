@@ -12,6 +12,7 @@ from app.api.routes import (
     health,
     market,
     securities,
+    valuation,
 )
 from app.config import settings
 
@@ -44,3 +45,4 @@ app.include_router(market.router)
 app.include_router(corporate_actions.router)
 app.include_router(fundamentals.router)
 app.include_router(data_health.router)
+app.include_router(valuation.router)
