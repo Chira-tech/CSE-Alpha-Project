@@ -22,6 +22,7 @@ from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
+from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
 from app.ingestion.cse_client import CseClient
@@ -148,6 +149,33 @@ def cmd_backfill_index(args: argparse.Namespace) -> int:
         print(f"Wrote {written} new ASPI close(s).")
         if not written:
             print("Nothing new — the series was already complete.")
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_sectors(args: argparse.Namespace) -> int:
+    """Classify securities into the GICS industry groups the exchange
+    publishes (§12 sector-relative percentiles)."""
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            s = ingest_sectors(client, db, overwrite_manual=args.overwrite_manual)
+        print(
+            f"Classified {s['classified']} of {s['securities']} securities "
+            f"({s['updated']} updated, {s['unchanged']} already correct)."
+        )
+        if s["skipped_manual"]:
+            print(
+                f"  {s['skipped_manual']} left alone because they carry a hand-set "
+                f"classification (pass --overwrite-manual to replace them)."
+            )
+        if s["unclassified"]:
+            print(
+                f"  {s['unclassified']} remain unclassified — the exchange's GICS "
+                f"publication does not cover them."
+            )
+        print("  Archetype (§16) is NOT set by this command; it stays hand-maintained.")
     finally:
         db.close()
     return 0
@@ -313,6 +341,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cm = sub.add_parser("capture-market", help="store today's market internals into macro_series")
     p_cm.set_defaults(func=cmd_capture_market)
+
+    p_sec = sub.add_parser(
+        "sectors", help="classify securities into the exchange's GICS industry groups"
+    )
+    p_sec.add_argument(
+        "--overwrite-manual",
+        action="store_true",
+        help="also replace classifications a human has set by hand",
+    )
+    p_sec.set_defaults(func=cmd_sectors)
 
     p_reg = sub.add_parser(
         "registry", help="refresh the issuer registry, including delisted names (§7)"

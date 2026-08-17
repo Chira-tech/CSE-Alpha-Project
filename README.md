@@ -129,6 +129,7 @@ python -m app.cli capture-market          # CSE market internals (P/E, turnover,
 python -m app.cli cbsl --days 10          # CBSL T-bills, policy rate, CPI, FX
 python -m app.cli backfill-index          # ~1 year of ASPI closes (index only)
 python -m app.cli registry                # issuer registry, incl. delisted names (§7)
+python -m app.cli sectors                 # GICS industry groups from the exchange (§12)
 python -m app.cli spread                  # §29's equity-yield-minus-T-bill spread
 ```
 

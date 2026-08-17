@@ -24,7 +24,21 @@ class Security(Base):
     isin: Mapped[str | None] = mapped_column(String(20), nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     gics_sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    """One of the 11 GICS sectors, derived from the industry-group code's
+    first two digits (`app.domain.gics`). The exchange publishes only the
+    industry group; the level above follows from the standard."""
+
+    gics_industry_group_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    """e.g. "4010" for Banks. Kept so the sector above stays derivable."""
+
     cse_sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    """The industry-group NAME as the exchange publishes it, e.g. "Banks",
+    "Diversified Financials". This is the CSE's own sector taxonomy."""
+
+    sector_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    """Where the classification came from. Populated by the loader so a
+    hand-corrected value is distinguishable from a fetched one and is
+    never silently overwritten by a later run."""
     archetype: Mapped[str | None] = mapped_column(String(50), nullable=True)
     """CSE-native archetype (Master Spec §15) — bank, non_bank_finance,
     insurance, diversified_holding, manufacturing, consumer, plantation,

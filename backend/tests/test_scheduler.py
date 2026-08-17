@@ -34,6 +34,7 @@ EXPECTED_JOBS = {
 WEEKLY_JOBS = {
     "index_history_backfill": ("sat", 6, 0),
     "issuer_registry_refresh": ("sat", 6, 20),
+    "sector_refresh": ("sat", 6, 40),
 }
 
 

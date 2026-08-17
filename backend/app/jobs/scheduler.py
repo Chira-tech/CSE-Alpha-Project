@@ -28,6 +28,7 @@ from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
+from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
@@ -82,6 +83,30 @@ def _job_capture_market_internals() -> None:
         logger.info("market internals: wrote %d new observation(s)", written)
     except Exception:
         logger.exception("market internals capture failed")
+    finally:
+        db.close()
+
+
+def _job_refresh_sectors() -> None:
+    """Re-read the exchange's GICS classification (§12).
+
+    Weekly and after the registry, so a newly listed company picked up by
+    the registry gets classified in the same window. Hand-set
+    classifications are preserved — Appendix P2 expects them, because GICS
+    files diversified CSE conglomerates under whichever industry group
+    their largest segment falls into.
+    """
+    db = SessionLocal()
+    try:
+        with CseClient() as client:
+            summary = ingest_sectors(client, db)
+        if summary["unclassified"]:
+            logger.info(
+                "sector refresh: %d securities remain outside the exchange's GICS publication",
+                summary["unclassified"],
+            )
+    except Exception:
+        logger.exception("sector refresh failed")
     finally:
         db.close()
 
@@ -281,6 +306,14 @@ def build_scheduler() -> BackgroundScheduler:
         _job_refresh_issuer_registry,
         CronTrigger(day_of_week="sat", hour=6, minute=20, timezone=MARKET_TZ),
         id="issuer_registry_refresh",
+        replace_existing=True,
+    )
+    # After the registry, so a newly listed company is classified in the
+    # same window it is first seen.
+    scheduler.add_job(
+        _job_refresh_sectors,
+        CronTrigger(day_of_week="sat", hour=6, minute=40, timezone=MARKET_TZ),
+        id="sector_refresh",
         replace_existing=True,
     )
     scheduler.add_job(

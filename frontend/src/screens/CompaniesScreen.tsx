@@ -22,7 +22,12 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
     if (!all) return null;
     const q = query.trim().toLowerCase();
     if (!q) return all;
-    return all.filter((r) => r.ticker.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
+    return all.filter(
+      (r) =>
+        r.ticker.toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
+        (r.cse_sector ?? "").toLowerCase().includes(q)
+    );
   }, [all, query]);
 
   useEffect(() => setShown(PAGE_SIZE), [query]);
@@ -80,7 +85,7 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
           <input
             id="company-search"
             type="search"
-            placeholder="Ticker or company name…"
+            placeholder="Ticker, company name or sector…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -94,7 +99,7 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
       </div>
 
       {!filtered ? (
-        <SkeletonTable rows={10} columns={6} />
+        <SkeletonTable rows={10} columns={7} />
       ) : filtered.length === 0 ? (
         <EmptyState title={`No company matches "${query}".`}>
           <p style={{ margin: 0 }}>
@@ -111,6 +116,7 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                 <tr>
                   <th scope="col">Ticker</th>
                   <th scope="col">Company</th>
+                  <th scope="col">Sector</th>
                   <th scope="col" className="right">Last close (LKR)</th>
                   <th scope="col" className="right">Turnover (LKR)</th>
                   <th scope="col" className="right">Volume</th>
@@ -150,6 +156,9 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                           </span>
                         </>
                       )}
+                    </td>
+                    <td>
+                      {r.cse_sector ?? <span className="unavailable">{UNAVAILABLE}</span>}
                     </td>
                     <td className="right num">{formatPrice(r.last_close)}</td>
                     <td className="right num">{formatMagnitude(r.turnover)}</td>

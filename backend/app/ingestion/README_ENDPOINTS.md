@@ -118,6 +118,41 @@ delistings, because "absent from tradeSummary" conflates "delisted" with
 The symbol suffix encodes the instrument type and the issuer; see
 `app.domain.instrument_type`, which is what consumes this knowledge.
 
+### `sector_list` + `listBySector` — POST form (GICS classification)
+
+**These were not in the inventory below.** That inventory was derived from
+the site's JavaScript and missed them, which is why this project twice
+recorded sector membership as unavailable. They were found by opening the
+CSE's own "GICS Classification" page (Listed Entities -> GICS
+Classification) and reading the network calls it makes.
+
+```
+POST sector_list                      -> {"indicesList":[{"id":236,"name":"Banks",
+                                            "symbol":"BNK","indexCode":"4010", ...}]}
+POST listBySector   sectorId=236      -> {"reqIndustryBySectors":[
+                                            {"symbol":"COMB.N0000","name":"...", ...}]}
+```
+
+`sectorId` must be sent **form-encoded**; a JSON body returns
+`"sectorId parameter is missing"`.
+
+22 entries come back from `sector_list`: the **20 GICS industry groups**
+plus the ASPI and S&P SL20, which are market indices and arrive with
+`indexCode: null`. Filtering on that is not optional — taking the list at
+face value files listed companies under "ALL SHARE PRICE INDEX".
+
+Constituents are full line symbols (`COMB.N0000`), so both the voting and
+non-voting lines of an issuer are classified, consistently.
+
+**Coverage: 257 of 283 traded lines (90.8%).** The 26 uncovered are left
+NULL, never bucketed as "Other" — an Other bucket would let them rank in
+a sector percentile they were never classified into. They skew towards
+the small/recent listings that also carry `boardId` 5 in `cntSecurity`.
+
+The four-digit `indexCode` is a GICS industry-group code, so the 11-level
+GICS sector above it follows from the first two digits (`app.domain.gics`).
+Consumed by `app.ingestion.sector_loader`.
+
 ### `cntSecurity` — GET (the issuer registry, and §7's survivorship source)
 ```json
 {"status":"OK","statusCode":200,"content":[

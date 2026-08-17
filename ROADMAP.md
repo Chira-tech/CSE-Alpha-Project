@@ -245,13 +245,39 @@ a dated, sourced manual observation is.
       now the only identified route**, and it would also satisfy
       PARAMETERS.md #5's second-source requirement: one decision, two
       blockers cleared.
-- [ ] **`cse_sector` and `archetype` — confirmed not available from the
-      API at all.** No endpoint carries company→sector membership
-      (`allSectors` gives index levels only). This matches Appendix P2,
-      which says the archetype mapping is maintained as a hand-corrected
-      version-controlled file. Needs a deliberate mapping exercise, not
-      more API work. Blocks sector-relative percentiles (§12) and the
-      valuation model router (§16).
+- [x] **`cse_sector` is now populated from the exchange's own GICS
+      publication — 257 of 283 lines (90.8%).** This reverses a
+      conclusion recorded twice in this file ("confirmed not available
+      from the API at all"). It was wrong: `sector_list` and
+      `listBySector` do exactly this. They were missing from the endpoint
+      inventory because that inventory was derived from the site's
+      JavaScript; they were found instead by opening the CSE's own GICS
+      Classification page and reading the network calls it makes.
+      - 20 GICS industry groups, plus the ASPI and S&P SL20 mixed into
+        the same list with `indexCode: null` — filtered out, or every
+        listed company files under "ALL SHARE PRICE INDEX".
+      - The 11-level GICS sector above each group is derived from the
+        code's first two digits (4010 -> 40 -> Financials). That is the
+        standard's own hierarchy, not an inference about the company, and
+        it gives §12's percentiles a wider fallback when an industry group
+        is too thin to rank against — Sri Lanka has one listed automobile
+        company and two telecoms.
+      - The 26 uncovered lines stay NULL rather than going in an "Other"
+        bucket, which would let them rank in a sector they were never
+        classified into.
+      - Hand-set classifications are preserved on refresh (`sector_source`
+        distinguishes them), per Appendix P2.
+
+- [ ] **`archetype` is still unset, and still needs a human.** GICS is not
+      the archetype the valuation router (§16) needs, and the clearest
+      proof is in the data now: **John Keells Holdings classifies as
+      "Capital Goods"** — Sri Lanka's largest diversified conglomerate,
+      with hotels, transport, consumer foods, financial services and
+      property, filed under whichever industry group its largest segment
+      falls into. No single DDM or FCFE anchor fits that. This is exactly
+      the misclassification Appendix P2 warns about, so the archetype
+      mapping remains a deliberate hand-maintained exercise; the sector
+      loader never writes to it.
 - [x] **ASPI daily history captured — 239 closes, Aug 2025 to Aug 2026**
       (`python -m app.cli backfill-index`). The only genuine historical
       series on the public CSE API. 1 year is still well short of what
