@@ -794,6 +794,62 @@ a dated, sourced manual observation is.
       (`CANONICAL_LABELS`) is verified against exactly one real filing —
       wording varies across companies and will need expanding as more
       real filings are processed
+- [x] **Cash-flow-statement extraction — the long-tracked PARAMETERS.md
+      #9 gap is partially closed, verified against a real filing, not
+      guessed.** Freshly downloaded J.F. Packaging PLC's real FY2025/26
+      annual report (17 Aug, the same filing this extractor was
+      originally verified against — "FY2025/26" is the year ending 31
+      March 2026) specifically to inspect its statement of cash flow,
+      which no ingestion source had ever scanned before (`_STATEMENT_
+      PAGE_MARKERS` only listed the balance sheet and income statement
+      headers).
+      - Three real, single-line, unwrapped lines now extract cleanly:
+        `cash_flow_from_operations`, `net_cash_from_investing_
+        activities`, `net_cash_from_financing_activities`, plus
+        `net_increase_in_cash` and `depreciation_and_amortisation`.
+      - **Found and fixed a real, generalisable formatting gap along the
+        way**: the D&A line's note reference is "11/13" (two notes,
+        slash-separated — PPE note 11 + intangibles note 13), which the
+        existing note-reference pattern (dot-separated only, e.g. "6.1",
+        "20.1.2") didn't match, so "11/13" was being read as part of the
+        label instead of stripped. Fixed by widening the regex to accept
+        `/` as well as `.` — a slash never appears in a real Rs.000
+        value, so this is safe, not a guess.
+      - **A new, real, precisely-named limitation replaces a vague one**:
+        capital expenditure's real label ("Purchase & Construction of
+        Property, Plant & Equipment & Intangible Assets") wraps across
+        two physical lines on the real statement, and this extractor
+        works line by line with no label-continuation logic. Not solved
+        here — a merge heuristic guessed at without more real wrapped-
+        label examples to verify against would trade one gap for an
+        unverified one. DCF (`app/domain/dcf.py`) therefore still can't
+        run against live data: it now has D&A but still needs capex and
+        the working-capital delta.
+      - Added a fourth accounting-identity check (`check_accounting_
+        identities`): CFO + investing + financing = net change in cash —
+        verified to hold exactly on the real extracted figures
+        (174,382 + (-244,852) + 12,302 = -58,168, matching the filed
+        "Net Increase/(Decrease) in Cash" line precisely), the same
+        "independent arithmetic check catches wrong extraction" pattern
+        the three existing identities already use.
+      - **Three §12 ratios moved from `NOT_YET_COMPUTABLE` to real,
+        tested `DEFINITIONS`**: cash conversion, operating cash flow
+        margin, and the Sloan accrual ratio — the only three ratios in
+        that list that needed CFO and nothing else. Hand-verified against
+        the same real J.F. Packaging figures (cash conversion 91.82%,
+        operating cash flow margin 3.87%, Sloan accrual ratio 0.41%).
+        Piotroski's remaining gap shrank from three missing inputs to two
+        (total debt, share count — no longer CFO).
+      - §16's cash-flow routing question is now honestly *half*-answered
+        rather than fully blocked: CFO's sign is knowable per period, but
+        "reasonably predictable" is a multi-period judgement most
+        companies can't support yet with only one confirmed fundamentals
+        period on file — `app.domain.valuation_router` says so precisely
+        rather than either fully answering or fully blocking the question.
+      - 8 new/updated tests across `test_financial_statement_parsing.py`,
+        `test_financial_pdf_extractor.py` and `test_ratios.py`, all
+        against the real captured text and real hand-computed values.
+        Full suite: 637 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

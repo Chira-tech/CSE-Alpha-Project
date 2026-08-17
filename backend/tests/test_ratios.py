@@ -38,6 +38,15 @@ JFP = {
     "total_equity": Decimal("1643031"),
     "total_liabilities": Decimal("2164079"),
     "total_current_liabilities": Decimal("1728581"),
+    # Statement of cash flow, same FY2025/26 filing — added once
+    # financial_statement_parsing.py started extracting this page
+    # (verified against the real PDF, not re-typed by hand from a
+    # different source than the figures above).
+    "cash_flow_from_operations": Decimal("174382"),
+    "depreciation_and_amortisation": Decimal("111039"),
+    "net_cash_from_investing_activities": Decimal("-244852"),
+    "net_cash_from_financing_activities": Decimal("12302"),
+    "net_increase_in_cash": Decimal("-58168"),
 }
 
 
@@ -72,6 +81,12 @@ def _value(key: str, line_items) -> Decimal | None:
         ("equity_ratio", Decimal("0.4316"), 4),
         # 130,552 / 320,460 = 0.407390...
         ("effective_tax_rate", Decimal("0.4074"), 4),
+        # 174,382 / 189,908 = 0.918245...
+        ("cash_conversion", Decimal("0.9182"), 4),
+        # 174,382 / 4,504,801 = 0.038710...
+        ("operating_cash_flow_margin", Decimal("0.0387"), 4),
+        # (189,908 - 174,382) / 3,807,110 = 0.004078...
+        ("sloan_accrual_ratio", Decimal("0.0041"), 4),
     ],
 )
 def test_matches_hand_computed_values_from_a_real_filing(key, expected, places):
@@ -184,7 +199,7 @@ def test_unimplemented_spec_ratios_are_declared_with_their_missing_inputs():
     extractor pulls today. They are listed rather than silently absent so
     the UI can say what is needed."""
     keys = {k for k, _label, _needs in NOT_YET_COMPUTABLE}
-    for expected in ("roic", "piotroski_f_score", "altman_z", "beneish_m", "cash_conversion"):
+    for expected in ("roic", "piotroski_f_score", "altman_z", "beneish_m"):
         assert expected in keys
     for _key, _label, needs in NOT_YET_COMPUTABLE:
         assert needs, "every unimplemented ratio must name what it is missing"

@@ -213,6 +213,49 @@ DEFINITIONS: tuple[RatioDefinition, ...] = (
         ),
         guard_note="Not meaningful when the company made a pre-tax loss.",
     ),
+    # --- Cash flow (§12) — the first three ratios wired since
+    # `cash_flow_from_operations` became extractable (financial_statement_
+    # parsing.py, verified against J.F. Packaging PLC's real FY2025/26
+    # statement of cash flow). Capex, D&A's use in §18 FCFF, and the
+    # remaining cash-flow-dependent ratios below (net debt/EBITDA,
+    # interest coverage, Piotroski, Beneish) are still blocked — see
+    # NOT_YET_COMPUTABLE — because they need line items beyond CFO alone
+    # (total debt, interest expense, share count) that this extractor
+    # still doesn't pull.
+    RatioDefinition(
+        key="cash_conversion",
+        label="Cash conversion (CFO ÷ net income)",
+        formula="cash flow from operations ÷ net income",
+        unit=TIMES,
+        required=("cash_flow_from_operations", "net_income"),
+        fn=lambda v: _div_positive_denominator(v["cash_flow_from_operations"], v["net_income"]),
+        guard_note="Not meaningful when the company made a net loss.",
+    ),
+    RatioDefinition(
+        key="operating_cash_flow_margin",
+        label="Operating cash flow margin",
+        formula="cash flow from operations ÷ revenue",
+        unit=PERCENT,
+        required=("cash_flow_from_operations", "revenue"),
+        fn=lambda v: _div_positive_denominator(v["cash_flow_from_operations"], v["revenue"]),
+        guard_note="Not meaningful without positive revenue.",
+    ),
+    RatioDefinition(
+        key="sloan_accrual_ratio",
+        label="Sloan accrual ratio",
+        formula="(net income − cash flow from operations) ÷ total assets",
+        unit=PERCENT,
+        required=("net_income", "cash_flow_from_operations", "total_assets"),
+        # Sloan (1996): a large positive accrual ratio (earnings well
+        # above cash generated) is the specific pattern associated with
+        # lower earnings quality and weaker forward returns — this is a
+        # signal ratio, not a profitability one, so it is NOT run through
+        # _div_positive_denominator's "not meaningful if negative" guard;
+        # a negative total_assets company has bigger problems this ratio
+        # isn't trying to flag, but the arithmetic itself stays defined.
+        fn=lambda v: _safe_div(v["net_income"] - v["cash_flow_from_operations"], v["total_assets"]),
+        guard_note="Not meaningful when total assets is zero.",
+    ),
 )
 
 DEFINITIONS_BY_KEY = {d.key: d for d in DEFINITIONS}
@@ -224,14 +267,14 @@ DEFINITIONS_BY_KEY = {d.key: d for d in DEFINITIONS}
 NOT_YET_COMPUTABLE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("roic", "Return on invested capital", ("nopat", "total_debt", "cash")),
     ("roic_wacc_spread", "ROIC − WACC spread", ("roic", "wacc")),
-    ("cash_conversion", "Cash conversion (CFO ÷ net income)", ("cash_flow_from_operations",)),
-    ("operating_cash_flow_margin", "Operating cash flow margin", ("cash_flow_from_operations",)),
     ("net_debt_to_ebitda", "Net debt ÷ EBITDA", ("total_debt", "cash", "ebitda")),
     ("interest_coverage", "Interest coverage", ("ebit", "interest_expense")),
-    ("piotroski_f_score", "Piotroski F-Score", ("cash_flow_from_operations", "total_debt", "shares_outstanding")),
+    # cash_flow_from_operations is extractable now (financial_statement_
+    # parsing.py) — Piotroski's remaining gap is total_debt and
+    # shares_outstanding, not CFO.
+    ("piotroski_f_score", "Piotroski F-Score", ("total_debt", "shares_outstanding")),
     ("altman_z", 'Altman Z"-Score', ("working_capital", "retained_earnings", "ebit", "market_cap")),
     ("beneish_m", "Beneish M-Score", ("receivables", "gross_ppe", "depreciation", "sga", "total_accruals")),
-    ("sloan_accrual_ratio", "Sloan accrual ratio", ("cash_flow_from_operations",)),
 )
 
 

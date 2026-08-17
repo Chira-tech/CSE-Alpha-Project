@@ -36,7 +36,11 @@ from app.ingestion.schemas import FinancialAnnouncementRow
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 from app.models.securities import Security
-from tests.test_financial_statement_parsing import BALANCE_SHEET_TEXT, INCOME_STATEMENT_TEXT
+from tests.test_financial_statement_parsing import (
+    BALANCE_SHEET_TEXT,
+    CASH_FLOW_STATEMENT_TEXT,
+    INCOME_STATEMENT_TEXT,
+)
 
 REAL_FEED_ROW = {
     "id": 52726,
@@ -134,10 +138,10 @@ class _FakePdf:
 
 
 def test_extract_financial_statement_candidates_only_reads_statement_pages():
-    """A 4-page fake document: a cover page, the balance sheet, an
+    """A 5-page fake document: a cover page, the balance sheet, an
     unrelated notes page that happens to contain the word "Total" (the
-    exact false-positive risk this filtering exists to avoid), and the
-    income statement."""
+    exact false-positive risk this filtering exists to avoid), the
+    income statement, and the cash flow statement."""
     notes_page_with_a_trap = (
         "NOTES TO THE FINANCIAL STATEMENTS\n"
         "24.1 Related Party Transactions\n"
@@ -148,6 +152,7 @@ def test_extract_financial_statement_candidates_only_reads_statement_pages():
         _FakePage(BALANCE_SHEET_TEXT),
         _FakePage(notes_page_with_a_trap),
         _FakePage(INCOME_STATEMENT_TEXT),
+        _FakePage(CASH_FLOW_STATEMENT_TEXT),
     ]
 
     with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
@@ -156,6 +161,7 @@ def test_extract_financial_statement_candidates_only_reads_statement_pages():
     statement_lines = {line.statement_line for _, line in candidates}
     assert "total_assets" in statement_lines
     assert "net_income" in statement_lines
+    assert "cash_flow_from_operations" in statement_lines
     # the trap on the (unfiltered) notes page must NOT have leaked in —
     # it isn't one of our canonical labels anyway, but this also confirms
     # the page-marker filter actually skipped that page rather than
@@ -163,7 +169,7 @@ def test_extract_financial_statement_candidates_only_reads_statement_pages():
     page_numbers_used = {page for page, _ in candidates}
     assert 2 not in page_numbers_used  # the notes page is index 2
     assert 0 not in page_numbers_used  # the cover page is index 0
-    assert page_numbers_used == {1, 3}
+    assert page_numbers_used == {1, 3, 4}
 
 
 def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():

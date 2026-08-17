@@ -21,14 +21,20 @@ Pure functions over caller-supplied assumptions, exactly like
 
 WHY THIS IS NOT WIRED TO LIVE DATA YET, AND WHY THAT'S HONEST RATHER THAN
 AN OVERSIGHT. FCFF needs depreciation & amortisation, capital expenditure,
-and the change in non-cash working capital. `app.domain.financial_statement_
-parsing.CANONICAL_LABELS` extracts none of these — it has no cash-flow-
-statement line at all (PARAMETERS.md #9, the same gap that already blocks
-§14's integrity veto and two of §16's five routing questions). Building
+and the change in non-cash working capital. `app.domain.financial_
+statement_parsing.CANONICAL_LABELS` now extracts the first of these two —
+`cash_flow_from_operations` and `depreciation_and_amortisation`, verified
+against J.F. Packaging PLC's real FY2025/26 statement of cash flow (17
+Aug) — but not capital expenditure: its real label on that same statement
+("Purchase & Construction of Property, Plant & Equipment & Intangible
+Assets") wraps across two physical lines, and this extractor works line
+by line with no label-continuation logic, a real, separate, still-open
+limitation (ROADMAP.md). The change in non-cash working capital isn't
+extracted either — no canonical label yet maps its components. Building
 this module anyway, fully tested against hand-worked numbers, means the
-arithmetic is verified and ready the day that extraction gap closes,
-rather than being designed and debugged for the first time under pressure
-once real cash-flow data exists. §18.2's "never a free parameter" table
+arithmetic is verified and ready the day the remaining extraction gaps
+close, rather than being designed and debugged for the first time under
+pressure once real cash-flow data exists. §18.2's "never a free parameter" table
 is honoured in the shape of `DCFAssumptions` — every field is named for
 where §18.2 says it comes from — even though wiring each one to a live
 source (sector median growth, macro regime multiplier) is itself blocked

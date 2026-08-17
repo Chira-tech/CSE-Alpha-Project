@@ -48,7 +48,13 @@ from decimal import Decimal, InvalidOperation
 # happily accepted a leading comma — and that permissiveness silently
 # corrupted a real filing. See _repair_split_thousands below.
 _VALUE_RE = re.compile(r"^\(?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\)?$")
-_NOTE_REF_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,3}$")
+# Verified on J.F. Packaging PLC's cash flow statement (FY2025/26): a line
+# item split across two notes is referenced as "11/13" (PPE note 11 +
+# intangibles note 13), not the dot-separated sub-note form ("6.1", "20.1.2")
+# this pattern already handled. A slash never appears in a real value
+# (Rs.000 figures are digits/commas/parens only), so allowing it here is
+# safe and motivated by a real filing, not a guess at wording variance.
+_NOTE_REF_RE = re.compile(r"^\d{1,3}([./]\d{1,3}){0,3}$")
 _NIL = "-"
 
 # pdfplumber sometimes emits a space between a number's leading digit and
@@ -106,6 +112,34 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "income_tax_expense": ("income tax expense",),
     "net_income": ("profit for the year", "profit for the period"),
     "total_comprehensive_income": ("total comprehensive income for the year", "total comprehensive income for the period"),
+    # Cash-flow-statement lines — verified against J.F. Packaging PLC's
+    # real FY2025/26 statement of cash flow, the first real filing this
+    # extractor has ever read a cash-flow-statement page from (see
+    # _STATEMENT_PAGE_MARKERS in app.ingestion.financial_pdf_extractor,
+    # and PARAMETERS.md #9's history of this specific gap). "Cash
+    # generated from/ (Used in) Operations" is the pre-tax, pre-interest
+    # subtotal — a real, differently-named line on the same statement —
+    # and is deliberately NOT mapped to `net_cash_from_operating_
+    # activities`, which is the figure after tax and interest paid, the
+    # one `app.domain.ratios`' cash-flow ratios and §18's FCFF both mean
+    # by "CFO." Only wording actually seen is included; more filings will
+    # widen this list rather than guessing at variance up front, the same
+    # discipline the balance-sheet/income-statement labels above follow.
+    # Named `cash_flow_from_operations` to match the key
+    # `app.domain.ratios.NOT_YET_COMPUTABLE` has used since Phase 2 for
+    # this exact concept, rather than inventing a second name for the
+    # same figure across the two modules.
+    "cash_flow_from_operations": ("net cash flow from/ (used in) operating activities",),
+    "net_cash_from_investing_activities": (
+        "net cash flow generated from / (used in) investing activities",
+    ),
+    "net_cash_from_financing_activities": (
+        "net cash flow generated from / (used in) financing activities",
+    ),
+    "net_increase_in_cash": (
+        "net increase/(decrease) in cash & cash equivalents during the year",
+    ),
+    "depreciation_and_amortisation": ("depreciation / amortization",),
 }
 
 _LABEL_TO_STATEMENT_LINE: dict[str, str] = {
@@ -268,6 +302,27 @@ def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityChec
         rhs = values["net_income"]
         ok = lhs == rhs
         checks.append(IdentityCheck("pre-tax profit - tax = net income", ok, f"{lhs:,} vs {rhs:,}"))
+
+    # CFO + investing + financing = net change in cash — the cash-flow
+    # statement's own footing line. Verified against J.F. Packaging PLC's
+    # real FY2025/26 figures: 174,382 + (-244,852) + 12,302 = -58,168,
+    # exactly matching the printed "Net Increase/(Decrease) in Cash".
+    if have(
+        "cash_flow_from_operations",
+        "net_cash_from_investing_activities",
+        "net_cash_from_financing_activities",
+        "net_increase_in_cash",
+    ):
+        lhs = (
+            values["cash_flow_from_operations"]
+            + values["net_cash_from_investing_activities"]
+            + values["net_cash_from_financing_activities"]
+        )
+        rhs = values["net_increase_in_cash"]
+        ok = lhs == rhs
+        checks.append(
+            IdentityCheck("CFO + investing + financing = net change in cash", ok, f"{lhs:,} vs {rhs:,}")
+        )
 
     return checks
 

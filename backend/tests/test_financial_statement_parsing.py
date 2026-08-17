@@ -64,6 +64,30 @@ Total Comprehensive Income for the Year 12,566 285,660 103,623 58,412
 Earnings per Share / Diluted EPS (Rs.) 10.1 1.37 1.08 0.79 0.50
 """
 
+# Real text from page 105 of J.F. Packaging PLC's FY2025/26 annual
+# report, downloaded fresh (17 Aug 2026) specifically to verify cash-flow
+# extraction — the first real cash-flow-statement page this project has
+# ever read (PARAMETERS.md #9's long-tracked gap). Trimmed to the
+# canonical-line-bearing rows; the working-capital and financing detail
+# lines in between are real too but aren't mapped to a canonical key.
+CASH_FLOW_STATEMENT_TEXT = """\
+104 J.F. PACKAGING PLC Annual Report 2025/26
+STATEMENT OF CASH FLOW
+Group Company
+For the year ended 31st March 2026 2025 2026 2025
+Notes Rs.000 Rs.000 Rs.000 Rs.000
+Cash Flows from Operating Activities
+Profit before Taxation 8 320,460 303,020 133,643 100,628
+Adjustment for;
+Depreciation / Amortization 11/13 111,039 90,999 69,986 71,765
+Net Cash Flow from/ (used in) Operating Activities 174,382 212,224 7,903 (1,795)
+Cash Flows from Investing Activities
+Net Cash Flow generated from / (Used in) Investing Activities (244,852) (226,684) 33,545 57,031
+Cash Flow from Financing Activities
+Net Cash Flow generated from / (Used in) Financing Activities 12,302 (8,713) (33,451) (66,166)
+Net Increase/(Decrease) in Cash & Cash Equivalents during the year (58,168) (23,173) 7,997 (10,930)
+"""
+
 
 @pytest.mark.parametrize(
     ("line", "expected_label", "expected_statement_line", "expected_primary"),
@@ -174,6 +198,35 @@ def test_extract_candidate_lines_finds_every_canonical_income_statement_item():
     assert by_statement_line["revenue"] + by_statement_line["cost_of_sales"] == by_statement_line["gross_profit"]
 
 
+def test_extract_candidate_lines_finds_every_canonical_cash_flow_item():
+    lines = extract_candidate_lines(CASH_FLOW_STATEMENT_TEXT)
+    by_statement_line = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+
+    assert by_statement_line["cash_flow_from_operations"] == Decimal("174382")
+    assert by_statement_line["depreciation_and_amortisation"] == Decimal("111039")
+    assert by_statement_line["net_cash_from_investing_activities"] == Decimal("-244852")
+    assert by_statement_line["net_cash_from_financing_activities"] == Decimal("12302")
+    assert by_statement_line["net_increase_in_cash"] == Decimal("-58168")
+    # CFO + investing + financing = net change in cash, on the extracted numbers
+    assert (
+        by_statement_line["cash_flow_from_operations"]
+        + by_statement_line["net_cash_from_investing_activities"]
+        + by_statement_line["net_cash_from_financing_activities"]
+        == by_statement_line["net_increase_in_cash"]
+    )
+
+
+def test_dual_note_reference_with_slash_is_dropped():
+    """"11/13" (PPE note 11 + intangibles note 13, a real formatting
+    quirk on the cash-flow statement's D&A line) must be dropped the same
+    way a dot-separated note reference already is — not mistaken for a
+    value, and not left stuck to the label."""
+    result = split_label_and_values("Depreciation / Amortization 11/13 111,039 90,999 69,986 71,765")
+    assert result is not None
+    assert result.raw_label == "Depreciation / Amortization"
+    assert result.values == (Decimal("111039"), Decimal("90999"), Decimal("69986"), Decimal("71765"))
+
+
 @pytest.mark.parametrize(
     ("raw", "normalized"),
     [
@@ -271,6 +324,12 @@ def test_identities_pass_on_a_correctly_extracted_balance_sheet():
 
 def test_identities_pass_on_a_correctly_extracted_income_statement():
     checks = check_accounting_identities(_values(INCOME_STATEMENT_TEXT))
+    assert all(c.passed for c in checks), [c for c in checks if not c.passed]
+
+
+def test_identities_pass_on_a_correctly_extracted_cash_flow_statement():
+    checks = check_accounting_identities(_values(CASH_FLOW_STATEMENT_TEXT))
+    assert checks, "expected the CFO + investing + financing identity to be checkable"
     assert all(c.passed for c in checks), [c for c in checks if not c.passed]
 
 

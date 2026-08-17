@@ -65,6 +65,7 @@ _STATEMENT_PAGE_MARKERS = (
     "statement of financial position",
     "statement of profit or loss",
     "income statement",
+    "statement of cash flow",  # verified: J.F. Packaging PLC's FY2025/26 header, singular "flow"
 )
 
 

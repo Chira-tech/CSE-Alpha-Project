@@ -17,11 +17,20 @@ every suppression here carries a stated reason, not a bare boolean.
 
 WHAT THIS HONESTLY CANNOT ANSWER YET, AND WHY IT SAYS SO RATHER THAN
 GUESSING. Two of §16's five routing questions need data this system does
-not extract:
+not (fully) extract:
 
-  - "Are cash flows positive and reasonably predictable?" needs CFO/FCF.
-    `app.domain.financial_statement_parsing.CANONICAL_LABELS` has no
-    cash-flow-statement line at all (PARAMETERS.md #9's gap).
+  - "Are cash flows positive and reasonably predictable?" — the FIRST
+    half is now genuinely answerable: `cash_flow_from_operations` is
+    extracted (verified against J.F. Packaging PLC's real FY2025/26
+    statement of cash flow, 17 Aug), closing PARAMETERS.md #9's original
+    "no cash-flow-statement line at all" gap. The SECOND half — "and
+    reasonably predictable" — is a multi-period judgement (a trend, not
+    a single sign), and most companies still have exactly one confirmed
+    fundamentals period, the same depth limit `app.domain.trend_
+    detection`'s own module docstring already names. This module still
+    reports the question `cannot_evaluate` rather than answer it from
+    one period's sign alone — that would substitute "positive once" for
+    "predictable," which is a real, different question.
   - "Are dividends a meaningful proxy for capacity to pay?" needs a
     dividend history. Not extracted either.
   - Distress/option-value routing needs an Altman Z-score, not computed
@@ -221,7 +230,8 @@ def route_valuation(archetype: str | None) -> RoutingDecision:
     unanswered = (
         UnansweredQuestion(
             "Are cash flows positive and reasonably predictable?",
-            "CFO/FCF not extracted — CANONICAL_LABELS has no cash-flow-statement line (PARAMETERS.md #9)",
+            "CFO is extracted now (financial_statement_parsing.py), but 'reasonably predictable' "
+            "needs multi-period history most companies don't have yet, not just one period's sign",
         ),
         UnansweredQuestion(
             "Are dividends a meaningful proxy for capacity to pay?",

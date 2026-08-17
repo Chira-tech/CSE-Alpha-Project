@@ -24,10 +24,15 @@ WHICH OF §18-26'S NINE MODELS THIS ACTUALLY WIRES UP, AND WHY ONLY THESE
 TWO. Only justified P/B (§20.2) and residual income (§19.3) run against
 live data — see `app.domain.dividend_residual_income` and
 `app.domain.relative_valuation`'s own module docstrings for exactly why
-DCF, DDM, SOTP and asset-based stay unwired (no cash-flow-statement,
-dividend-history, segment or external-reference data extracted anywhere
-in this system). Both wired models need only book value, ROE and Ke —
-all three already exist by Phase 2/3's earlier work.
+DCF, DDM, SOTP and asset-based stay unwired. Cash-flow-statement
+extraction is no longer a total gap (`cash_flow_from_operations` and
+`depreciation_and_amortisation` are extracted — `app.domain.dcf`'s own
+docstring has the detail), but capital expenditure and working-capital
+components still aren't, and dividend-history/segment/external-reference
+data still isn't extracted anywhere in this system either — DCF and DDM
+each still need at least one input this session's cash-flow work didn't
+close. Both wired models need only book value, ROE and Ke — all three
+already exist by Phase 2/3's earlier work.
 
 THE RESIDUAL INCOME FORECAST USED HERE IS DELIBERATELY THE FLAT-
 PERSISTENCE CASE, NOT A FORECAST OF IMPROVEMENT. `compute_residual_
