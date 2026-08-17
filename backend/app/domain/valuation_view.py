@@ -70,6 +70,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.domain.cost_of_equity_view import cost_of_equity_for
 from app.domain.dcf import compute_fcff
+from app.domain.wacc import WACCResult, compute_cost_of_debt, compute_wacc
 from app.domain.dividend_residual_income import ResidualIncomeResult, compute_residual_income
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
@@ -323,6 +324,71 @@ def current_period_fcff_for(
 
 
 @dataclass(frozen=True)
+class WACCView:
+    period_end: dt.date | None
+    result: WACCResult | None
+    warnings: tuple[str, ...]
+
+
+def wacc_for(
+    db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None
+) -> WACCView:
+    """§18.1's discount rate for an FCFF projection — see
+    `app.domain.wacc`'s own module docstring for why this must never be
+    approximated as Ke for a levered company (mixing an unlevered cash
+    flow with a levered discount rate systematically overstates DCF
+    value for any company carrying debt).
+
+    Genuinely live-computable now: `total_interest_bearing_debt` and
+    `interest_expense` both extract from a Swadeshi-shaped filing (see
+    `app.domain.financial_statement_parsing`'s `SUM_ACROSS_OCCURRENCES`
+    for the real current/non-current maturity-split debt line this
+    needed), and `effective_tax_rate`/`cost_of_equity`/shares/price were
+    all already available. STILL NOT ENOUGH ON ITS OWN TO RUN A FULL LIVE
+    DCF, though: `app.domain.dcf`'s own module docstring has the
+    remaining, newly-precise gap — the working-capital STOCK a multi-year
+    projection needs (so it can grow proportionally with revenue) is a
+    different thing from the working-capital CHANGE this system already
+    extracts for one historical period, and isn't extracted either.
+    """
+    stamp = as_of or dt.date.today()
+    period_end, items, excluded = _confirmable_line_items(db, ticker, stamp)
+    warnings: list[str] = []
+    if excluded:
+        warnings.append(
+            f"{excluded} present for this period but still AI-assisted/unconfirmed — "
+            "excluded from this figure per §8."
+        )
+    if period_end is None:
+        warnings.append("No fundamentals visible as of this date at all.")
+        return WACCView(period_end, None, tuple(warnings))
+
+    tax_result = next((r for r in compute_all(items) if r.key == "effective_tax_rate"), None)
+    debt_item = items.get("total_interest_bearing_debt")
+    interest_item = items.get("interest_expense")
+
+    cost_of_debt = compute_cost_of_debt(
+        interest_expense=interest_item.value if interest_item else None,
+        total_interest_bearing_debt=debt_item.value if debt_item else None,
+        effective_tax_rate=tax_result.value if tax_result and tax_result.computable else None,
+    )
+
+    ke_result = cost_of_equity_for(db, ticker, stamp)
+    shares = _latest_shares_issued(db, ticker, stamp)
+
+    result = compute_wacc(
+        shares_outstanding=Decimal(shares) if shares else None,
+        current_price=current_price,
+        total_interest_bearing_debt=debt_item.value if debt_item else None,
+        cost_of_equity=ke_result.ke,
+        after_tax_cost_of_debt=cost_of_debt.after_tax_cost_of_debt,
+    )
+    if result.wacc is None:
+        warnings.append(result.note)
+    return WACCView(period_end, result, tuple(warnings))
+
+
+@dataclass(frozen=True)
 class CompanyValuationSummary:
     ticker: str
     as_of: dt.date
@@ -343,6 +409,13 @@ class CompanyValuationSummary:
     """Informational only — see `current_period_fcff_for`'s own
     docstring for why this is never one of the triangulation anchors
     below."""
+
+    wacc: WACCView
+    """Also informational only — a discount rate, not a fair value.
+    §18.1's FCFF path needs this (never Ke — see `app.domain.wacc`'s own
+    docstring), but a full live DCF still needs the multi-year forecast
+    wiring `app.domain.dcf`'s module docstring describes, so this is
+    shown for transparency without yet being consumed by anything."""
 
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
@@ -366,6 +439,7 @@ def valuation_summary_for(
     jpb = justified_price_to_book_for(db, ticker, stamp)
     ri = residual_income_for(db, ticker, stamp)
     fcff_view = current_period_fcff_for(db, ticker, stamp)
+    wacc_view = wacc_for(db, ticker, current_price, stamp)
 
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
@@ -399,6 +473,6 @@ def valuation_summary_for(
 
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
-        residual_income=ri, current_period_fcff=fcff_view, triangulation=triangulation,
+        residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, triangulation=triangulation,
         margin_of_safety=mos, price_ladder=ladder, note=note,
     )

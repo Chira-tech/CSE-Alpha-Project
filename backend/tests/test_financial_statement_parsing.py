@@ -159,6 +159,54 @@ Net Cash Flows from /(Used in) Financing Activities 194,330,142 156,730,560 194,
 Net (Decrease) / Increase in Cash and Cash Equivalents (142,108,917) 134,809,715 (145,371,216) 135,173,925
 """
 
+# Real text from page 28 of Swadeshi Industrial Works PLC's FY2025/26
+# annual report — downloaded a third time (17 Aug) specifically to look
+# for a debt line, since WACC's cost-of-debt weighting needs total
+# interest-bearing debt and neither company's cash-flow statement names
+# it directly. Found "Interest Bearing Loans and Borrowings" printed
+# TWICE, byte-identically — once under Non-current Liabilities, once
+# under Current Liabilities, the standard maturity-split presentation —
+# which is exactly the case `SUM_ACROSS_OCCURRENCES` exists for.
+BALANCE_SHEET_TEXT_SWAD = """\
+STATEMENT OF FINANCIAL POSITION
+As at 31st March 2026
+Group Company
+2026 2025 2026 2025
+ASSETS Notes Rs. Rs. Rs. Rs.
+Non-current Asset
+Property, Plant and Equipment 12 2,214,025,283 2,096,679,899 2,050,725,281 1,933,379,899
+Right of Use Assets 12 26,815,050 - 26,815,050 -
+Intangible Assets 13 15,469,862 2,446,406 15,469,862 2,446,406
+Investments in Subsidiaries 14 - - 58,141,639 58,888,472
+2,256,310,195 2,099,126,305 2,151,151,832 1,994,714,777
+Current Assets
+Inventories 16 608,398,860 592,876,477 608,398,860 592,876,477
+Trade and Other Receivables 17 645,602,031 704,098,568 626,811,209 683,241,031
+Advances and Prepayments 18 243,913,244 98,611,555 243,913,244 98,611,555
+Cash and Bank Balances 23 58,066,118 66,727,253 54,293,586 66,217,019
+1,555,980,253 1,462,313,853 1,533,416,899 1,440,946,082
+Total Assets 3,812,290,448 3,561,440,158 3,684,568,731 3,435,660,859
+EQUITY AND LIABILITIES
+Equity
+Stated Capital 19 150,634,670 150,634,670 150,634,670 150,634,670
+Retained Earnings 537,599,349 534,484,630 507,276,576 505,729,335
+Revaluation Reserve 20 1,387,693,521 1,361,883,345 1,286,968,337 1,261,158,162
+Equity attributable to Equity holders of the parent 2,075,927,540 2,047,002,645 1,944,879,583 1,917,522,167
+Non-controlling Interests 13,396,256 13,403,890 - -
+Total Equity 2,089,323,796 2,060,406,535 1,944,879,583 1,917,522,167
+Non-current Liabilities
+Interest Bearing Loans and Borrowings 15 11,672,993 - 11,672,993 -
+Deferred Tax Liabilities 10 577,984,927 563,619,591 529,000,188 514,634,854
+Retirement Benefit Liability 21 105,453,691 93,578,173 105,453,691 93,578,173
+695,111,611 657,197,764 646,126,872 608,213,027
+Current Liabilities
+Trade and Other Payables 22 377,836,430 517,499,123 446,567,737 585,946,502
+Income Tax Payable 15,855,500 8,502,558 12,831,428 6,144,984
+Interest Bearing Loans and Borrowings 15 634,163,111 317,834,179 634,163,111 317,834,179
+1,027,855,041 843,835,860 1,093,562,276 909,925,665
+Total Equity and Liabilities 3,812,290,448 3,561,440,158 3,684,568,731 3,435,660,859
+"""
+
 
 @pytest.mark.parametrize(
     ("line", "expected_label", "expected_statement_line", "expected_primary"),
@@ -308,8 +356,21 @@ def test_extract_candidate_lines_finds_every_canonical_item_on_a_second_independ
     assert by_statement_line["amortisation_expense"] == Decimal("1564379")
     assert by_statement_line["operating_profit_before_working_capital_changes"] == Decimal("127832034")
     assert by_statement_line["cash_generated_from_operations"] == Decimal("-124492704")
+    assert by_statement_line["interest_expense"] == Decimal("48834907")
     # the combined line itself was never printed on this statement
     assert "depreciation_and_amortisation" not in by_statement_line
+
+
+def test_extract_candidate_lines_finds_both_occurrences_of_a_split_maturity_debt_line():
+    """`extract_candidate_lines` itself doesn't dedupe or sum — that's
+    `build_fundamental_drafts`'s job (see test_financial_pdf_extractor.py)
+    — this only confirms BOTH real occurrences of "Interest Bearing Loans
+    and Borrowings" are found as separate candidates, byte-identical
+    label, different real values."""
+    lines = extract_candidate_lines(BALANCE_SHEET_TEXT_SWAD)
+    debt_lines = [l for l in lines if l.statement_line == "total_interest_bearing_debt"]
+    assert len(debt_lines) == 2
+    assert {l.primary_value for l in debt_lines} == {Decimal("11672993"), Decimal("634163111")}
 
 
 class TestDeriveAdditionalLineItems:

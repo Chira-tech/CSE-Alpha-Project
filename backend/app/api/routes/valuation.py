@@ -100,6 +100,19 @@ class CurrentPeriodFCFFOut(BaseModel):
     warnings: list[str]
 
 
+class WACCOut(BaseModel):
+    equity_weight: Decimal | None
+    debt_weight: Decimal | None
+    cost_of_equity: Decimal | None
+    after_tax_cost_of_debt: Decimal | None
+    wacc: Decimal | None
+    """§18.1's FCFF discount rate — never Ke for a levered company (see
+    `app.domain.wacc`'s own docstring). Informational: shown for
+    transparency, not yet consumed by any live fair value."""
+
+    warnings: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -110,6 +123,7 @@ class CompanyValuationOut(BaseModel):
     residual_income_fair_value: Decimal | None
     residual_income_warnings: list[str]
     current_period_fcff: CurrentPeriodFCFFOut
+    wacc: WACCOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
     price_ladder: PriceLadderOut | None
@@ -139,6 +153,14 @@ class CompanyValuationOut(BaseModel):
                 period_end=s.current_period_fcff.period_end,
                 fcff=s.current_period_fcff.fcff,
                 warnings=list(s.current_period_fcff.warnings),
+            ),
+            wacc=WACCOut(
+                equity_weight=s.wacc.result.equity_weight if s.wacc.result else None,
+                debt_weight=s.wacc.result.debt_weight if s.wacc.result else None,
+                cost_of_equity=s.wacc.result.cost_of_equity if s.wacc.result else None,
+                after_tax_cost_of_debt=s.wacc.result.after_tax_cost_of_debt if s.wacc.result else None,
+                wacc=s.wacc.result.wacc if s.wacc.result else None,
+                warnings=list(s.wacc.warnings),
             ),
             triangulation=TriangulationOut(
                 triangulation_category=t.triangulation_category,

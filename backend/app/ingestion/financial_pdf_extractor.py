@@ -53,6 +53,7 @@ from app.config import settings
 from app.domain.financial_statement_parsing import (
     DERIVED_DIFFERENCES,
     DERIVED_SUMS,
+    SUM_ACROSS_OCCURRENCES,
     ExtractedLine,
     check_accounting_identities,
     derive_additional_line_items,
@@ -180,11 +181,22 @@ def build_fundamental_drafts(
     (shouldn't happen given the page-marker filter, but PDFs are messy),
     the first occurrence wins and the rest are dropped rather than
     inserting conflicting drafts for the same (ticker, period_end,
-    statement_line)."""
+    statement_line) — UNLESS the key is in `SUM_ACROSS_OCCURRENCES`
+    (currently: `total_interest_bearing_debt`, verified to print twice on
+    a real balance sheet — once as the current portion, once as the
+    non-current — a real, standard presentation this rule exists
+    specifically for), in which case every occurrence is summed into one
+    draft instead, with a `source_snippet` that lists each contributing
+    value rather than only the total.
+    """
     seen: set[str] = set()
+    to_sum: dict[str, list[tuple[int, Decimal]]] = {}
     drafts: list[Fundamental] = []
     for page_number, line in candidates:
         assert line.statement_line is not None and line.primary_value is not None
+        if line.statement_line in SUM_ACROSS_OCCURRENCES:
+            to_sum.setdefault(line.statement_line, []).append((page_number, line.primary_value))
+            continue
         if line.statement_line in seen:
             continue
         seen.add(line.statement_line)
@@ -203,6 +215,34 @@ def build_fundamental_drafts(
                 source_url=source_url,
                 source_page=page_number,
                 source_snippet=line.raw_text,
+                confirmed_by=None,
+                confirmed_at=None,
+            )
+        )
+
+    for statement_line, occurrences in to_sum.items():
+        total = sum((value for _page, value in occurrences), Decimal(0))
+        pages = sorted({page for page, _value in occurrences})
+        drafts.append(
+            Fundamental(
+                ticker=ticker,
+                period_end=period_end,
+                period_type=period_type,
+                first_available_date=first_available_date,
+                version=1,
+                statement_line=statement_line,
+                value=total,
+                currency="LKR",
+                provenance_tier=ProvenanceTier.AI_ASSISTED,
+                restated_flag=False,
+                source_url=source_url,
+                source_page=pages[0] if len(pages) == 1 else None,
+                source_snippet=(
+                    f"SUM of {len(occurrences)} occurrences on page(s) {pages}: "
+                    + "; ".join(f"{v:,}" for _p, v in occurrences)
+                    + f" = {total:,}. This canonical concept prints as a current/non-current "
+                    "maturity split on this filing's shape; both are summed for the total."
+                ),
                 confirmed_by=None,
                 confirmed_at=None,
             )

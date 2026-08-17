@@ -23,6 +23,7 @@ from app.domain.valuation_view import (
     justified_price_to_book_for,
     residual_income_for,
     valuation_summary_for,
+    wacc_for,
 )
 from app.models.enums import ProvenanceTier
 from app.models.float_data import FloatData
@@ -92,6 +93,28 @@ def _seed_fcff_fundamentals(db, ticker="SWAD.N0000"):
         "depreciation_and_amortisation": Decimal(50),
         "capital_expenditure": Decimal(-80),  # cash-flow-statement sign convention
         "change_in_net_working_capital": Decimal(20),
+    }
+    db.add_all(
+        Fundamental(
+            ticker=ticker, period_end=PERIOD_END, period_type="annual",
+            first_available_date=FIRST_AVAILABLE, version=1, statement_line=line,
+            value=value, provenance_tier=ProvenanceTier.REPORTED,
+        )
+        for line, value in lines.items()
+    )
+    db.commit()
+
+
+def _seed_wacc_fundamentals(db, ticker="SWAD.N0000"):
+    """Adds the two WACC-specific lines to whatever's already seeded —
+    profit_before_tax/income_tax_expense (0.28 effective rate, same as
+    _seed_fcff_fundamentals) supply the tax rate WACC's cost-of-debt
+    needs too."""
+    lines = {
+        "profit_before_tax": Decimal(900),
+        "income_tax_expense": Decimal(-252),
+        "total_interest_bearing_debt": Decimal(500),
+        "interest_expense": Decimal(50),  # pre-tax Kd = 50/500 = 0.10
     }
     db.add_all(
         Fundamental(
@@ -251,6 +274,33 @@ class TestCurrentPeriodFCFFFor:
         view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
         assert view.fcff is None
         assert "operating_profit" in view.excluded_unconfirmed_lines
+
+
+class TestWACCFor:
+    def test_hand_worked(self, db_session, monkeypatch):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_wacc_fundamentals(db_session)
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = wacc_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is not None
+        # E = 100*20 = 2000; D = 500; We=0.8, Wd=0.2
+        # Kd pre-tax = 50/500 = 0.10; after-tax = 0.10*0.72 = 0.072
+        # WACC = 0.8*0.15 + 0.2*0.072 = 0.12 + 0.0144 = 0.1344
+        assert view.result.equity_weight == Decimal("0.8")
+        assert view.result.debt_weight == Decimal("0.2")
+        assert abs(view.result.wacc - Decimal("0.1344")) < Decimal("0.0001")
+        assert view.result.wacc < Decimal("0.15")  # strictly below Ke — the whole point of WACC existing
+
+    def test_missing_debt_gives_no_wacc(self, db_session, monkeypatch):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = wacc_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is None or view.result.wacc is None
+        assert view.warnings
 
 
 class TestValuationSummaryFor:

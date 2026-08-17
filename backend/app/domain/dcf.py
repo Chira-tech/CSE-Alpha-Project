@@ -40,26 +40,42 @@ LABELS`, `DERIVED_SUMS` and `DERIVED_DIFFERENCES` together are what make
 this possible — see that module's docstring for the full extraction
 picture, not repeated here.
 
-So why not wired up yet? Two reasons, both real: first, this is
-per-COMPANY, not universal — J.F. Packaging still lacks capex (its label
-wraps across two physical lines, unsolved, ROADMAP.md), so a caller still
-can't assume any given company has all three; the extraction layer would
-need to report per-company which inputs are actually available, and the
-view/API layer that would do that (mirroring `app.domain.valuation_view`'s
-existing pattern for justified P/B and residual income) hasn't been
-built for DCF yet. Second, and more fundamentally, DCF is a multi-YEAR
-projection (§18.2's whole assumption table — growth, margin, tax fade
-paths) built from ONE period's cash-flow figures; turning "Swadeshi's
-FY2025/26 capex was X" into "Swadeshi's Y1-10 capex assumption is X% of
-revenue, fading how" is a forecasting decision this module already
-refuses to make silently (see `DCFAssumptions`' own field-by-field
-sourcing notes), and building that wiring is real, separate work, not a
-data-availability gap anymore. Building this module anyway, fully tested
-against hand-worked numbers, means the arithmetic is verified and ready
-the day that wiring gets built, rather than being designed and debugged
-for the first time under pressure once the data existed — which, for
-capex, D&A and working capital, it now genuinely does, at least for one
-real company. §18.2's "never a free parameter" table
+The DISCOUNT RATE is solved too, as of the same session: `app.domain.wacc`
+computes real WACC from the same live data (Swadeshi's now-extractable
+`total_interest_bearing_debt` and `interest_expense`, plus Ke, tax rate,
+shares and price) — see that module's own docstring for why FCFF must
+never be discounted at Ke instead, a real mispricing bug for any levered
+company, not a rounding-level simplification.
+
+So why not wired up yet? Three reasons now, the newest one the most
+precise. First, this is per-COMPANY, not universal — J.F. Packaging still
+lacks capex (its label wraps across two physical lines, unsolved,
+ROADMAP.md), so a caller can't assume any given company has all the
+inputs; the view/API layer that would report per-company availability
+(mirroring `app.domain.valuation_view`'s existing pattern for justified
+P/B and residual income) hasn't been built for DCF yet. Second, DCF is a
+multi-YEAR projection (§18.2's whole assumption table — growth, margin,
+tax fade paths) built from ONE period's cash-flow figures; turning
+"Swadeshi's FY2025/26 capex was X" into "Swadeshi's Y1-10 capex
+assumption is X% of revenue, fading how" is a forecasting decision this
+module already refuses to make silently (see `DCFAssumptions`' own
+field-by-field sourcing notes). Third, and discovered only once WACC's
+live wiring made it worth checking precisely: `DCFAssumptions.working_
+capital_pct_revenue` needs the working-capital STOCK (non-cash working
+capital ÷ revenue, a balance-sheet LEVEL, so the projection can grow it
+proportionally as revenue grows) — a genuinely different figure from
+`change_in_net_working_capital`, the working-capital FLOW this system
+already extracts for one historical period. No canonical label maps the
+individual current-asset/current-liability components (trade
+receivables, inventories, trade payables, excluding cash and
+interest-bearing debt) that a working-capital STOCK would need to be
+built from. Building this module anyway, fully tested against
+hand-worked numbers, means the arithmetic is verified and ready the day
+that wiring — and the working-capital-stock extraction it still waits
+on — gets built, rather than being designed and debugged for the first
+time under pressure once the rest of the data existed, which for capex,
+D&A, working-capital CHANGE and the discount rate, it now genuinely
+does, at least for one real company. §18.2's "never a free parameter" table
 is honoured in the shape of `DCFAssumptions` — every field is named for
 where §18.2 says it comes from — even though wiring each one to a live
 source (sector median growth, macro regime multiplier) is itself blocked

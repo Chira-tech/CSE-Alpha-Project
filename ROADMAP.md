@@ -1033,6 +1033,65 @@ a dated, sourced manual observation is.
         wiring hand-worked case, the sign-flip regression at the view
         layer, a missing-inputs case, and a §8 confirmation-filtering
         case (`test_valuation_view.py`). Full suite: 656 passed.
+- [x] **WACC, live — §18.1's actual FCFF discount rate, not Ke.** Went
+      looking for a real debt line specifically to unlock this, and
+      found one on Swadeshi's real balance sheet: "Interest Bearing
+      Loans and Borrowings" — but it prints TWICE, byte-identically,
+      once under Non-current Liabilities (11,672,993) and once under
+      Current Liabilities (634,163,111), the standard maturity-split
+      presentation. The existing "first match wins, drop the rest" dedup
+      rule would have silently kept only the smaller non-current portion
+      and discarded the much larger current one — genuinely wrong, not
+      just incomplete.
+      - New capability: `SUM_ACROSS_OCCURRENCES`, an explicit allowlist
+        of canonical keys where every occurrence on a statement should
+        be SUMMED rather than deduplicated to the first — deliberately
+        an allowlist, not a default, because most repeated matches on a
+        real page genuinely are a bug worth catching (the page-marker
+        filter's whole purpose), not something to paper over. Verified
+        end-to-end against the real downloaded PDF: 11,672,993 +
+        634,163,111 = 645,836,104, with a `source_snippet` that cites
+        both contributing values, not just the total.
+      - `interest_expense` also now extracts, from the cash-flow
+        statement's own "Finance Costs" accrual line (deliberately not
+        "Finance Costs Paid" — a real, differently-worded line on the
+        same statement — because WACC's cost of debt wants the period's
+        expense, not the cash actually disbursed).
+      - New module `app/domain/wacc.py`: cost of debt (pre- and after-
+        tax) and WACC itself, with a real, deliberate departure from
+        `app.domain.cost_of_equity`'s missing-component pattern — a
+        missing cost of debt is NEVER treated as zero the way a missing
+        risk premium safely can be, because zero would pull WACC down
+        toward `We × Ke` alone, UNDERSTATING the discount rate and
+        therefore OVERSTATING every DCF value built on it, the dangerous
+        direction rather than the safe one. A levered company with no
+        computable cost of debt gets no WACC at all, not a falsely-
+        precise lower-bound one.
+      - Wired live via `app.domain.valuation_view.wacc_for`, exposed on
+        `GET /valuation/{ticker}` as `wacc` — informational, same as
+        `current_period_fcff`, not yet consumed by any live fair value.
+      - **A third, newly-precise DCF blocker surfaced while checking
+        whether this closed the loop, and it's now named exactly rather
+        than left vague.** `DCFAssumptions.working_capital_pct_revenue`
+        needs the working-capital STOCK (a balance-sheet level, so a
+        multi-year projection can grow it proportionally with revenue)
+        — a genuinely different figure from `change_in_net_working_
+        capital`, the working-capital CHANGE (a flow, for one historical
+        period) this system already extracts. No canonical label maps
+        the individual current-asset/current-liability components
+        (trade receivables, inventories, trade payables — excluding
+        cash and interest-bearing debt) a stock figure would need to be
+        built from. `app/domain/dcf.py`'s own module docstring has the
+        complete, current state of every DCF input, not repeated here.
+      - 13 new tests across `test_financial_statement_parsing.py` (the
+        duplicate-occurrence extraction, `interest_expense`),
+        `test_financial_pdf_extractor.py` (the sum-across-occurrences
+        draft-building pass, verified against the real balance sheet),
+        `test_wacc.py` (cost of debt, WACC itself, and the specific
+        regression that WACC must land strictly between Kd and Ke for a
+        levered company — never silently equal to Ke), and
+        `test_valuation_view.py` (the live-wiring hand-worked case).
+        Full suite: 669 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

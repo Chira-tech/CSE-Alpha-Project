@@ -198,7 +198,36 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
         "cash generated from/ (used in) operations",  # JFP
         "cash generated from operations",  # SWAD
     ),
+    # WACC's cost-of-debt input — verified on Swadeshi Industrial Works
+    # PLC's real balance sheet, where "Interest Bearing Loans and
+    # Borrowings" prints TWICE, byte-identically, once under Non-current
+    # Liabilities (11,672,993) and once under Current Liabilities
+    # (634,163,111) — the standard maturity-split presentation for one
+    # debt figure. See `SUM_ACROSS_OCCURRENCES` below: this key is
+    # deliberately summed across every match on the statement rather
+    # than keeping only the first (which would silently keep the smaller
+    # non-current portion and drop the much larger current one).
+    "total_interest_bearing_debt": ("interest bearing loans and borrowings",),  # SWAD
+    # The cash-flow statement's own interest-expense figure — the
+    # non-cash add-back line, not "... Paid" (a real, differently-worded
+    # line on the same statement, the cash actually disbursed, which is
+    # NOT what a WACC cost-of-debt calculation wants — that wants the
+    # period's expense, whether or not it was paid in cash this period).
+    "interest_expense": ("finance costs",),  # SWAD
 }
+
+#: Canonical keys where multiple occurrences on the same statement are
+#: expected — the standard current/non-current maturity split for one
+#: balance-sheet concept — and should be SUMMED into one figure rather
+#: than the usual "first occurrence wins, the rest are dropped" rule
+#: `build_fundamental_drafts` otherwise applies. Kept as an explicit
+#: allowlist rather than a default behaviour, because most repeated
+#: canonical matches on a real page ARE a bug worth catching (see
+#: `build_fundamental_drafts`'s own "shouldn't happen given the page-
+#: marker filter, but PDFs are messy" comment) — this set names the
+#: specific, verified exception to that rule, not a blanket assumption
+#: that a repeat is always fine to sum.
+SUM_ACROSS_OCCURRENCES: frozenset[str] = frozenset({"total_interest_bearing_debt"})
 
 _LABEL_TO_STATEMENT_LINE: dict[str, str] = {
     variant: key for key, variants in CANONICAL_LABELS.items() for variant in variants

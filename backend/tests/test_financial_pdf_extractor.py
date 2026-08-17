@@ -39,6 +39,7 @@ from app.models.fundamentals import Fundamental
 from app.models.securities import Security
 from tests.test_financial_statement_parsing import (
     BALANCE_SHEET_TEXT,
+    BALANCE_SHEET_TEXT_SWAD,
     CASH_FLOW_STATEMENT_TEXT,
     CASH_FLOW_STATEMENT_TEXT_SWAD,
     INCOME_STATEMENT_TEXT,
@@ -201,6 +202,42 @@ def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():
         assert draft.source_snippet  # the raw line text is preserved for review
         assert draft.ticker == "JFP.N0000"
         assert draft.first_available_date == dt.date(2026, 8, 14)
+
+
+def test_build_fundamental_drafts_sums_a_current_non_current_split_debt_line():
+    """Swadeshi's real balance sheet prints "Interest Bearing Loans and
+    Borrowings" twice — once under Non-current Liabilities (11,672,993),
+    once under Current Liabilities (634,163,111) — and this must produce
+    ONE draft with the SUM (645,836,104), not silently keep only the
+    first occurrence and drop the much larger second one, which is what
+    the ordinary "first wins" dedup rule would otherwise do."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(BALANCE_SHEET_TEXT_SWAD)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    drafts = build_fundamental_drafts(
+        ticker="SWAD.N0000",
+        period_end=dt.date(2026, 3, 31),
+        period_type="annual",
+        first_available_date=dt.date(2026, 8, 17),
+        source_url="https://cdn.cse.lk/cmt/upload_report_file/687_1786359392289.pdf",
+        candidates=candidates,
+    )
+
+    debt_drafts = [d for d in drafts if d.statement_line == "total_interest_bearing_debt"]
+    assert len(debt_drafts) == 1
+    draft = debt_drafts[0]
+    assert draft.value == Decimal("645836104")  # 11,672,993 + 634,163,111
+    assert draft.source_page == 0  # both occurrences are on the same real page
+    assert "SUM of 2 occurrences" in draft.source_snippet
+    assert "11,672,993" in draft.source_snippet
+    assert "634,163,111" in draft.source_snippet
+    assert draft.provenance_tier is ProvenanceTier.AI_ASSISTED
+
+    # Other lines on the same page are entirely unaffected by the special-cased key.
+    assert next(d for d in drafts if d.statement_line == "total_assets").value == Decimal("3812290448")
 
 
 def test_build_derived_fundamental_drafts_sums_split_depreciation_and_amortisation():
