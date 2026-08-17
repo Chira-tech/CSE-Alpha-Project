@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getSecurity } from "../api";
+import { ApiRequestError, getSecurity, getValuation } from "../api";
 import { EvidencePanel, type Evidence } from "../components/EvidencePanel";
 import { PriceHistoryChart } from "../components/PriceHistoryChart";
+import { PriceLadder } from "../components/PriceLadder";
 import { ProvenanceChip } from "../components/ProvenanceChip";
 import { RatioTable } from "../components/RatioTable";
 import { EmptyState, ErrorState, QuarantineNotice, SkeletonCard } from "../components/states";
 import { formatMagnitude, formatPrice, UNAVAILABLE } from "../format";
-import type { PricePoint, SecurityDetail } from "../types";
+import type { CompanyValuation, PricePoint, SecurityDetail } from "../types";
 
 const ACTION_LABELS: Record<string, string> = {
   dividend_cash: "Cash dividend",
@@ -31,6 +32,8 @@ export function CompanyScreen({
   const [data, setData] = useState<SecurityDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
+  const [valuation, setValuation] = useState<CompanyValuation | null>(null);
+  const [valuationError, setValuationError] = useState<string | null>(null);
 
   useEffect(() => {
     setData(null);
@@ -38,6 +41,17 @@ export function CompanyScreen({
     getSecurity(ticker)
       .then(setData)
       .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
+  }, [ticker]);
+
+  // Fetched independently of the company file itself (§15.1's per-section
+  // degradation: a valuation failure shouldn't take the rest of the page
+  // down with it, the same principle the /market endpoint already applies).
+  useEffect(() => {
+    setValuation(null);
+    setValuationError(null);
+    getValuation(ticker)
+      .then(setValuation)
+      .catch((e) => setValuationError(e instanceof ApiRequestError ? e.message : String(e)));
   }, [ticker]);
 
   if (error) {
@@ -399,8 +413,8 @@ export function CompanyScreen({
         <h2 id="routing-heading">Valuation routing</h2>
         <p className="prose t-body">
           §15/§16: which valuation methods apply to this company, and which are actively wrong for
-          it. Not a valuation — the DCF/DDM/residual-income math itself is Phase 3 work not yet
-          built (see below); this only decides which of those methods, once built, would run.
+          it. Not a valuation itself — it decides which of §18-26's methods apply; the fair value
+          those methods produce, where it can be computed today, is below.
         </p>
         {data.valuation_routing.primary_models.length === 0 ? (
           <div className="notice notice-neutral">
@@ -463,6 +477,76 @@ export function CompanyScreen({
             ))}
           </ul>
         </details>
+      </section>
+
+      <section aria-labelledby="valuation-heading" className="stack-tight">
+        <h2 id="valuation-heading">Fair value (§18-26)</h2>
+        {valuationError ? (
+          <ErrorState
+            whatFailed="The fair-value pipeline could not be loaded"
+            whatItAffects="This section only."
+            whatStillWorks="Everything else on this page."
+            whatHappensNext={<>Reload to try again. Underlying error: {valuationError}</>}
+          />
+        ) : !valuation ? (
+          <SkeletonCard lines={2} />
+        ) : (
+          <div className="card stack-tight">
+            <p className="prose t-body">{valuation.note}</p>
+
+            <div className="fact-grid">
+              <FairValueFact
+                label="Justified P/B (§20.2)"
+                value={valuation.justified_price_to_book_fair_value}
+                warnings={valuation.justified_price_to_book_warnings}
+              />
+              <FairValueFact
+                label="Residual income (§19.3)"
+                value={valuation.residual_income_fair_value}
+                warnings={valuation.residual_income_warnings}
+              />
+              <FairValueFact
+                label="Triangulated blend (§24)"
+                value={valuation.triangulation.blended_fair_value_per_share}
+                warnings={valuation.triangulation.warnings}
+              />
+            </div>
+
+            {valuation.triangulation.dispersion_pct !== null && (
+              <p className="prose t-caption">
+                Dispersion across anchors: {(Number(valuation.triangulation.dispersion_pct) * 100).toFixed(1)}%
+                {valuation.triangulation.missing_categories.length > 0 && (
+                  <> — missing anchor categories: {valuation.triangulation.missing_categories.join(", ")}</>
+                )}
+              </p>
+            )}
+
+            <div>
+              <span className="t-label">Margin of safety (§25)</span>
+              <div className="hero-value">{(Number(valuation.margin_of_safety.total_pct) * 100).toFixed(0)}%</div>
+              <p className="prose t-caption" style={{ marginTop: "var(--s1)" }}>
+                {valuation.margin_of_safety.note}
+              </p>
+            </div>
+
+            {valuation.price_ladder ? (
+              <div>
+                <span className="t-label">The price ladder (§26)</span>
+                <div style={{ marginTop: "var(--s2)" }}>
+                  <PriceLadder ladder={valuation.price_ladder} />
+                </div>
+              </div>
+            ) : (
+              <div className="notice notice-neutral">
+                <h3>No price ladder yet</h3>
+                <p className="prose t-body">
+                  Needs a triangulated fair value first — see the gaps named above. Never shown as a
+                  placeholder zero (§1, law 4).
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section aria-labelledby="fundamentals-heading" className="stack-tight">
@@ -539,6 +623,33 @@ function Fact({ label, value, note }: { label: string; value: string | null; not
       <div className={value ? "t-data" : "unavailable"} style={{ marginTop: "var(--s1)" }}>
         {value ?? UNAVAILABLE}
       </div>
+    </div>
+  );
+}
+
+/** One §18-26 anchor's fair value, or — far more often today — why it
+ * isn't computable yet. Missing is displayed as missing, with the exact
+ * reason named, never as a placeholder (§1, law 4). */
+function FairValueFact({
+  label,
+  value,
+  warnings,
+}: {
+  label: string;
+  value: string | null;
+  warnings: string[];
+}) {
+  return (
+    <div>
+      <div className="t-label">{label}</div>
+      <div className={value ? "t-data" : "unavailable"} style={{ marginTop: "var(--s1)" }}>
+        {value ? formatPrice(value) : UNAVAILABLE}
+      </div>
+      {!value && warnings.length > 0 && (
+        <p className="prose t-caption" style={{ marginTop: "var(--s1)" }}>
+          {warnings[0]}
+        </p>
+      )}
     </div>
   );
 }

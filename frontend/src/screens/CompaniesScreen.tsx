@@ -194,8 +194,11 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
       )}
 
       <p className="t-caption prose">
-        Scores, fair values and coverage tiers are absent because the engines that compute them
-        (Phases 2–3) do not exist yet — not because they are zero.
+        Composite scores and coverage tiers are absent because the engines that compute them
+        (Phase 2) do not exist yet — not because they are zero. Fair value now does exist (§18-26,
+        this list just isn't the place it's shown) — open a company file: most will still say no
+        fair value is computable yet, honestly, because almost none have a human-confirmed
+        fundamentals period.
       </p>
     </div>
   );

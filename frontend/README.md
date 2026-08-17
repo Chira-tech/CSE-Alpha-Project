@@ -12,7 +12,7 @@ two advanced ones.
 |---|---|
 | **Today** | Built. §8's four questions; sections 1–2 answered from real data, 3–4 marked as awaiting their engines. |
 | **Opportunities** | Awaiting Phases 2–3 (needs the fundamental, valuation and price engines). |
-| **Companies** | Built. All listed names, searchable, each with a company file. |
+| **Companies** | Built. All listed names, searchable, each with a company file — now including a "Fair value (§18-26)" section: justified P/B, residual income, triangulation, margin of safety and the price ladder, wired to real stored data (`GET /valuation/{ticker}`). Most companies still honestly show no fair value yet — almost none have a human-confirmed fundamentals period (§8) — and DCF/DDM/SOTP/asset-based stay unwired regardless of confirmation (ROADMAP.md's Phase 3 section says why). |
 | **Portfolio** | Awaiting Phase 8. |
 | **Macro** | Partly built — the live sector index board exists; the regime engine (§29–34) does not. |
 | **Journal** | Awaiting Phase 4. |
@@ -29,9 +29,13 @@ permanently").
 
 ## What is deliberately absent
 
-No fair values, composite scores, buy-below prices or coverage tiers —
-their engines are Phases 2–3. The API omits those fields entirely rather
-than returning null, because a null is too easy to render as "0".
+Composite scores and coverage tiers — their engine is Phase 2. The API
+omits those fields entirely rather than returning null, because a null
+is too easy to render as "0". Fair value and a buy-below price are no
+longer categorically absent (see the Companies row above); the company
+file's price-ladder bar uses the five `--zone-*` tokens in
+`design-tokens.css`, which were defined against §26 before this was the
+first thing to actually read them.
 
 ## Spec compliance
 

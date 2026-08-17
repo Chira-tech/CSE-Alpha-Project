@@ -1,5 +1,6 @@
 import type {
   Spread,
+  CompanyValuation,
   CorporateAction,
   DataHealth,
   Fundamental,
@@ -61,6 +62,10 @@ export function getSecurity(ticker: string) {
 
 export function getDataHealth() {
   return request<DataHealth>("/data-health");
+}
+
+export function getValuation(ticker: string) {
+  return request<CompanyValuation>(`/valuation/${encodeURIComponent(ticker)}`);
 }
 
 // --- Corporate actions --------------------------------------------------

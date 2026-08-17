@@ -222,6 +222,61 @@ export interface SecurityDetail {
   not_yet_built: string[];
 }
 
+export interface ValuationAnchorCategory {
+  triangulation_category: string | null;
+  anchors: never[];
+  missing_categories: string[];
+  blended_fair_value_per_share: string | null;
+  dispersion_pct: string | null;
+  warnings: string[];
+}
+
+export interface MarginOfSafetyOut {
+  base_pct: string;
+  dispersion_pct: string | null;
+  liquidity_pct: string | null;
+  regime_pct: string | null;
+  quality_integrity_pct: string | null;
+  data_completeness_pct: string | null;
+  total_pct: string;
+  is_lower_bound: boolean;
+  missing_components: string[];
+  note: string;
+}
+
+export interface PriceLadderOut {
+  fair_value: string;
+  margin_of_safety_pct: string;
+  strong_accumulate_threshold: string;
+  buy_below_price: string;
+  trim_threshold: string;
+  exit_threshold: string;
+  current_price: string | null;
+  current_zone: "strong_accumulate" | "accumulate" | "fair" | "trim" | "exit" | null;
+  zone_meaning: string | null;
+  gap_to_buy_below_pct: string | null;
+}
+
+export interface CompanyValuation {
+  ticker: string;
+  as_of: string;
+  current_price: string | null;
+  routing: {
+    archetype: string | null;
+    in_published_table: boolean;
+    primary_models: string[];
+    note: string;
+  };
+  justified_price_to_book_fair_value: string | null;
+  justified_price_to_book_warnings: string[];
+  residual_income_fair_value: string | null;
+  residual_income_warnings: string[];
+  triangulation: ValuationAnchorCategory;
+  margin_of_safety: MarginOfSafetyOut;
+  price_ladder: PriceLadderOut | null;
+  note: string;
+}
+
 export interface QuarantinedTicker {
   ticker: string;
   alert_type: string;
