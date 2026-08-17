@@ -21,20 +21,22 @@ valuation here at all — `excluded_unconfirmed_lines` says which lines
 were held back and why, rather than the output quietly using them anyway.
 
 WHICH OF §18-26'S NINE MODELS THIS ACTUALLY WIRES UP, AND WHY. Justified
-P/B (§20.2) and residual income (§19.3) run as full triangulation anchors
-against live data — see `app.domain.dividend_residual_income` and
-`app.domain.relative_valuation`'s own module docstrings. Both need only
-book value, ROE and Ke, all three already extracted/computed by Phase
-2/3's earlier work. `current_period_fcff_for` adds a THIRD live number,
-§18.1's FCFF formula applied to one real confirmed period — genuinely
-computable now for a Swadeshi-shaped filing (`app.domain.dcf`'s own
-docstring has the full extraction picture) — but it is informational
-only, never a triangulation anchor: a single undiscounted period's cash
-flow is not a per-share fair value, and a full DCF still needs the
-multi-year forecast wiring (§18.2's growth/margin/tax fade assumptions)
-that genuinely doesn't exist yet, a design gap now, not a data gap. DDM
-and SOTP stay entirely unwired — dividend history and segment data still
-aren't extracted anywhere in this system.
+P/B (§20.2), residual income (§19.3) AND, as of this session, the full
+multi-year FCFF DCF (§18.1/§18.2, `dcf_for`) all run as real "intrinsic"/
+"relative" triangulation anchors against live data — see
+`app.domain.dividend_residual_income`, `app.domain.relative_valuation`
+and `app.domain.dcf`'s own module docstrings, and `dcf_for`'s own
+docstring below for exactly which of the DCF's many assumptions are real
+extracted figures versus named, disclosed "no view" defaults (never a
+silent guess). `current_period_fcff_for` stays a FOURTH, separate,
+informational-only number — §18.1's FCFF formula applied to one real
+confirmed period without any discounting — genuinely useful for
+inspecting one period's raw cash generation, but never a triangulation
+anchor itself: a single undiscounted period's cash flow is not a
+per-share fair value, which is exactly what `dcf_for` now IS, once
+`dcf_for`'s own multi-year forecast wiring is available for a company.
+DDM and SOTP stay entirely unwired — dividend history and segment data
+still aren't extracted anywhere in this system.
 
 THE RESIDUAL INCOME FORECAST USED HERE IS DELIBERATELY THE FLAT-
 PERSISTENCE CASE, NOT A FORECAST OF IMPROVEMENT. `compute_residual_
@@ -69,7 +71,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.cost_of_equity_view import cost_of_equity_for
-from app.domain.dcf import compute_fcff
+from app.domain.dcf import DCFAssumptions, DCFResult, compute_fcff, dcf_equity_value
 from app.domain.wacc import WACCResult, compute_cost_of_debt, compute_wacc
 from app.domain.dividend_residual_income import ResidualIncomeResult, compute_residual_income
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
@@ -119,6 +121,60 @@ def _latest_shares_issued(db: Session, ticker: str, as_of: dt.date) -> int | Non
         .limit(1)
     )
     return row.shares_issued if row else None
+
+
+def _confirmed_statement_line_history(
+    db: Session, ticker: str, statement_line: str, as_of: dt.date
+) -> list[tuple[dt.date, Decimal]]:
+    """Every point-in-time-visible, §8-confirmable value for ONE canonical
+    line across ALL periods — not just the latest, the way
+    `_confirmable_line_items` deliberately restricts itself — sorted
+    oldest first. This is what a trailing multi-year growth rate needs
+    and nothing else in this module has queried for yet. Mirrors
+    `_confirmable_line_items`'s point-in-time (`fundamentals_as_of`) and
+    §8 provenance (`can_enter_valuation`) filtering exactly, just across
+    periods instead of within one."""
+    rows = fundamentals_as_of(db, ticker, as_of, statement_line=statement_line)
+    by_period: dict[dt.date, Decimal] = {
+        row.period_end: row.value for row in rows if can_enter_valuation(row.provenance_tier)
+    }
+    return sorted(by_period.items())
+
+
+def _trailing_cagr(history: list[tuple[dt.date, Decimal]]) -> Decimal | None:
+    """§18.2's own stated primary source for DCF Years 1-2 growth:
+    "Trailing 3-year CAGR". Computed here over however much confirmed
+    history actually exists — this system does not yet have 3 full years
+    of confirmed fundamentals for any real company (ingestion has so far
+    verified one period per company against a live-downloaded PDF, not
+    run the multi-year archive loader through to confirmation), so this
+    is written to work correctly with as few as 2 periods and to return
+    `None`, not a fabricated number, when fewer than that exist —
+    `dcf_for` below falls back to a disclosed no-growth-view assumption
+    in that case rather than inventing a distinct forecast number.
+
+    Annualised by the ACTUAL elapsed time between the oldest and newest
+    period (via `/ 365.25`) rather than assumed to be exactly N whole
+    years, because a restated or irregular period should not be silently
+    treated as a full year. `None` when the oldest or newest value isn't
+    positive (a loss-to-profit swing, or vice versa, has no meaningful
+    compound growth rate) or the elapsed time isn't positive.
+    """
+    if len(history) < 2:
+        return None
+    (start_date, start_value), (end_date, end_value) = history[0], history[-1]
+    if start_value <= 0 or end_value <= 0:
+        return None
+    years = (end_date - start_date).days / 365.25
+    if years <= 0:
+        return None
+    # Decimal has no fractional-exponent power operator; converting to
+    # float for this one non-integer-power step and back via `str()` is
+    # this project's own established idiom (see
+    # `app.domain.trend_detection`'s `math.sqrt(float(variance))` for the
+    # precedent), not a new pattern invented here.
+    growth = (float(end_value) / float(start_value)) ** (1.0 / years) - 1.0
+    return Decimal(str(growth))
 
 
 def _steady_state_growth(risk_free_rate: Decimal | None) -> Decimal:
@@ -262,12 +318,12 @@ def current_period_fcff_for(
     db: Session, ticker: str, as_of: dt.date | None = None
 ) -> CurrentPeriodFCFFView:
     """§18.1's FCFF formula applied to ONE real, confirmed period — NOT a
-    DCF valuation. A DCF fair value needs a multi-year forecast this
-    function does not attempt (see `app.domain.dcf`'s own module
-    docstring for exactly why one period's figures aren't a forecast);
-    this is the honestly-scoped smaller thing that IS real today: the
-    trailing-period FCFF number itself, the first of §18's figures this
-    system computes from live extracted data rather than only
+    DCF valuation. `dcf_for`, below, is now the real multi-year DCF this
+    project has; this function stays as the honestly-scoped smaller
+    thing it always was: the trailing-period FCFF number itself, useful
+    for inspecting one period's raw cash generation in isolation from any
+    discounting or forecast assumption, the first of §18's figures this
+    system ever computed from live extracted data rather than only
     hand-worked test inputs. Deliberately NOT fed into `valuation_
     summary_for`'s triangulation anchors — an undiscounted single-period
     cash flow is not a per-share fair value, and treating it as one would
@@ -344,12 +400,11 @@ def wacc_for(
     `app.domain.financial_statement_parsing`'s `SUM_ACROSS_OCCURRENCES`
     for the real current/non-current maturity-split debt line this
     needed), and `effective_tax_rate`/`cost_of_equity`/shares/price were
-    all already available. STILL NOT ENOUGH ON ITS OWN TO RUN A FULL LIVE
-    DCF, though: `app.domain.dcf`'s own module docstring has the
-    remaining, newly-precise gap — the working-capital STOCK a multi-year
-    projection needs (so it can grow proportionally with revenue) is a
-    different thing from the working-capital CHANGE this system already
-    extracts for one historical period, and isn't extracted either.
+    all already available. This WACC is now consumed directly as `dcf_
+    for`'s discount rate — see that function's own docstring for the full
+    multi-year DCF this unlocked, once the working-capital STOCK gap
+    (also since closed — `app.domain.financial_statement_parsing`'s
+    `net_working_capital` derivation) was closed too.
     """
     stamp = as_of or dt.date.today()
     period_end, items, excluded = _confirmable_line_items(db, ticker, stamp)
@@ -389,6 +444,197 @@ def wacc_for(
 
 
 @dataclass(frozen=True)
+class DCFView:
+    period_end: dt.date | None
+    result: DCFResult | None
+    fair_value_per_share: Decimal | None
+    excluded_unconfirmed_lines: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def dcf_for(
+    db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None
+) -> DCFView:
+    """§18's full three-stage FCFF DCF (`app.domain.dcf.dcf_equity_value`),
+    finally wired to live data — the multi-year forecast wiring that
+    `current_period_fcff_for` and `wacc_for`'s own docstrings both named
+    as the remaining, genuinely separate gap once every raw cash-flow
+    input and the discount rate became individually extractable. This
+    function is where that gap closes, for whichever company has every
+    input below.
+
+    EVERY ASSUMPTION IS EITHER REAL OR A NAMED, DISCLOSED "NO VIEW"
+    DEFAULT — NEVER A SILENT GUESS. §18.2's own rule ("never a free
+    parameter") is honoured the same way `_gather_inputs` already honours
+    it for residual income, just with more moving parts:
+
+      - `base_revenue`, `operating_margin_current` (= EBIT proxy ÷
+        revenue), `effective_tax_rate_current`, `depreciation_
+        amortisation_pct_revenue`, `capex_pct_revenue` and
+        `working_capital_pct_revenue` are all ratios of ONE real
+        confirmed period's extracted figures — real, not assumed.
+      - `operating_margin_target` = `operating_margin_current` — the
+        SAME "no fade, durable advantage, stated explicitly" convention
+        `DCFAssumptions.operating_margin_target`'s own docstring already
+        names, reused here rather than invented fresh.
+      - `statutory_tax_rate` = `settings.statutory_corporate_tax_rate_pct`
+        — Sri Lanka's real, current, IRD-published rate (PARAMETERS.md
+        #12), not a placeholder.
+      - `revenue_growth_y1`/`revenue_growth_y2` use the REAL trailing
+        CAGR (`_trailing_cagr`) over however many confirmed revenue
+        periods exist for this ticker when there are at least two;
+        otherwise they fall back to the same steady-state `g` below,
+        clearly flagged in `warnings` either way so a caller can tell a
+        real historical growth number from a disclosed no-growth-view
+        default apart.
+      - `revenue_growth_stage2_target` and `terminal_growth` both use
+        `_steady_state_growth` — the SAME sourced, risk-free-rate-capped
+        policy figure (`settings.long_run_nominal_growth_pct`,
+        PARAMETERS.md #11) residual income already uses for its own
+        terminal assumption, not a sector-median figure this system has
+        no source for (that source is Phase 5's macro engine, and stays
+        genuinely absent).
+      - `risk_free_rate` and `discount_rate` (WACC, never Ke — see
+        `app.domain.wacc`'s own docstring) both come from this module's
+        own already-live `cost_of_equity_for`/`wacc_for`.
+      - `total_debt` = the real, extracted `total_interest_bearing_debt`.
+      - `cash_and_non_operating_assets`, `minority_interest` and
+        `pension_deficit` are NOT extracted anywhere in this system and
+        default to zero — for `cash_and_non_operating_assets` this is
+        the SAFE direction (omitting real cash can only UNDERSTATE
+        equity value, never overstate it, the same reasoning
+        `app.domain.cost_of_equity`'s missing premiums already use); for
+        `minority_interest`/`pension_deficit` zero is the DANGEROUS
+        direction (omitting either can only OVERSTATE equity value for
+        any company that actually carries one), so those two are
+        flagged explicitly in `warnings` every time this function runs,
+        the same discipline `app.domain.wacc`'s missing-cost-of-debt
+        rule already established for a directionally-unsafe default —
+        disclosed rather than silently zeroed and left unflagged.
+
+    Wired as a genuine "intrinsic" §24 triangulation anchor (`valuation_
+    summary_for`), the same category as residual income — both now share
+    the identical "flat/no-improvement-assumed, real-data-only" honesty
+    this project's residual-income docstring first established, so
+    treating one as an anchor and not the other would be the
+    inconsistency, not treating both as one.
+    """
+    stamp = as_of or dt.date.today()
+    period_end, items, excluded = _confirmable_line_items(db, ticker, stamp)
+    warnings: list[str] = []
+    if excluded:
+        warnings.append(
+            f"{excluded} present for this period but still AI-assisted/unconfirmed — "
+            "excluded from this figure per §8."
+        )
+    if period_end is None:
+        warnings.append("No fundamentals visible as of this date at all.")
+        return DCFView(period_end, None, None, excluded, tuple(warnings))
+
+    tax_result = next((r for r in compute_all(items) if r.key == "effective_tax_rate"), None)
+    required = {
+        "revenue": items.get("revenue"),
+        "operating_profit (EBIT proxy)": items.get("operating_profit"),
+        "depreciation_and_amortisation": items.get("depreciation_and_amortisation"),
+        "capital_expenditure": items.get("capital_expenditure"),
+        "net_working_capital": items.get("net_working_capital"),
+        "total_interest_bearing_debt": items.get("total_interest_bearing_debt"),
+    }
+    missing = [name for name, item in required.items() if item is None]
+    if required["revenue"] is not None and required["revenue"].value <= 0:
+        missing.append("revenue (must be positive to project margins/percentages from)")
+    if tax_result is None or not tax_result.computable:
+        missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
+
+    wacc_view = wacc_for(db, ticker, current_price, stamp)
+    if wacc_view.result is None or wacc_view.result.wacc is None:
+        missing.append(
+            "WACC (" + (wacc_view.result.note if wacc_view.result else "not computable") + ")"
+        )
+
+    ke_result = cost_of_equity_for(db, ticker, stamp)
+    if ke_result.risk_free_rate is None:
+        missing.append("risk_free_rate (needed to cap terminal/stage-2 growth)")
+
+    shares = _latest_shares_issued(db, ticker, stamp)
+    if not shares:
+        missing.append("shares_issued (no FloatData row on or before this date)")
+
+    if missing:
+        warnings.append(f"DCF not computable — missing: {', '.join(missing)}.")
+        return DCFView(period_end, None, None, excluded, tuple(warnings))
+
+    revenue = required["revenue"].value
+    ebit = required["operating_profit (EBIT proxy)"].value
+    da = required["depreciation_and_amortisation"].value
+    # Extracted as a negative cash outflow (the cash-flow statement's own
+    # printed convention) — same sign-flip `current_period_fcff_for`
+    # already applies.
+    capex = abs(required["capital_expenditure"].value)
+    nwc = required["net_working_capital"].value
+    debt = required["total_interest_bearing_debt"].value
+
+    operating_margin_current = ebit / revenue
+
+    revenue_history = _confirmed_statement_line_history(db, ticker, "revenue", stamp)
+    trailing_growth = _trailing_cagr(revenue_history)
+    steady_state_g = _steady_state_growth(ke_result.risk_free_rate)
+    if trailing_growth is not None:
+        revenue_growth_y1 = revenue_growth_y2 = trailing_growth
+        warnings.append(
+            f"Y1/Y2 growth = {trailing_growth:.4f} real trailing CAGR over "
+            f"{len(revenue_history)} confirmed revenue periods "
+            f"({revenue_history[0][0]} to {revenue_history[-1][0]})."
+        )
+    else:
+        revenue_growth_y1 = revenue_growth_y2 = steady_state_g
+        warnings.append(
+            "Y1/Y2 growth: fewer than 2 confirmed revenue periods exist for this "
+            "ticker yet, so §18.2's trailing-CAGR source isn't available — fell back "
+            f"to the same steady-state g ({steady_state_g:.4f}) used for stage-2/"
+            "terminal growth, i.e. a 'no growth view' assumption, not a forecast of "
+            "acceleration or decline."
+        )
+    warnings.append(
+        "minority_interest and pension_deficit are not extracted anywhere in this "
+        "system and default to zero in the equity-value bridge below — this can "
+        "only OVERSTATE equity value for a company that actually carries either, "
+        "the dangerous direction (same reasoning app.domain.wacc's missing-cost-"
+        "of-debt rule already applies), so this fair value should not be trusted "
+        "uncritically for a company known to have material minority interests or "
+        "a pension deficit."
+    )
+    warnings.append(
+        "cash_and_non_operating_assets also defaults to zero (not extracted yet) — "
+        "this is the safe direction, and can only UNDERSTATE equity value."
+    )
+
+    assumptions = DCFAssumptions(
+        base_revenue=revenue,
+        revenue_growth_y1=revenue_growth_y1,
+        revenue_growth_y2=revenue_growth_y2,
+        revenue_growth_stage2_target=steady_state_g,
+        terminal_growth=steady_state_g,
+        operating_margin_current=operating_margin_current,
+        operating_margin_target=operating_margin_current,
+        effective_tax_rate_current=tax_result.value,
+        statutory_tax_rate=settings.statutory_corporate_tax_rate_pct,
+        depreciation_amortisation_pct_revenue=da / revenue,
+        capex_pct_revenue=capex / revenue,
+        working_capital_pct_revenue=nwc / revenue,
+        risk_free_rate=ke_result.risk_free_rate,
+        discount_rate=wacc_view.result.wacc,
+        cash_and_non_operating_assets=Decimal(0),
+        total_debt=debt,
+        minority_interest=Decimal(0),
+        pension_deficit=Decimal(0),
+        diluted_shares_outstanding=Decimal(shares),
+    )
+    result = dcf_equity_value(assumptions)
+    return DCFView(period_end, result, result.value_per_share, excluded, tuple(warnings))
+
+
+@dataclass(frozen=True)
 class CompanyValuationSummary:
     ticker: str
     as_of: dt.date
@@ -411,11 +657,15 @@ class CompanyValuationSummary:
     below."""
 
     wacc: WACCView
-    """Also informational only — a discount rate, not a fair value.
-    §18.1's FCFF path needs this (never Ke — see `app.domain.wacc`'s own
-    docstring), but a full live DCF still needs the multi-year forecast
-    wiring `app.domain.dcf`'s module docstring describes, so this is
-    shown for transparency without yet being consumed by anything."""
+    """Also informational — a discount rate, not a fair value by itself,
+    but no longer only that: it is `dcf`'s own discount rate below, so it
+    IS consumed now, just not directly displayed as a price."""
+
+    dcf: DCFView
+    """§18's full multi-year FCFF DCF — see `dcf_for`'s own docstring for
+    exactly which inputs are real and which are named, disclosed
+    defaults. A genuine "intrinsic" triangulation anchor below, the same
+    category as residual income, when computable."""
 
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
@@ -440,12 +690,15 @@ def valuation_summary_for(
     ri = residual_income_for(db, ticker, stamp)
     fcff_view = current_period_fcff_for(db, ticker, stamp)
     wacc_view = wacc_for(db, ticker, current_price, stamp)
+    dcf_view = dcf_for(db, ticker, current_price, stamp)
 
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
         anchors.append(ValuationAnchor("Justified P/B", "relative", jpb.fair_value_per_share))
     if ri.result is not None and ri.result.value_per_share is not None:
         anchors.append(ValuationAnchor("Residual income", "intrinsic", ri.result.value_per_share))
+    if dcf_view.fair_value_per_share is not None:
+        anchors.append(ValuationAnchor("FCFF DCF", "intrinsic", dcf_view.fair_value_per_share))
 
     triangulation = triangulate(routing, tuple(anchors))
 
@@ -473,6 +726,6 @@ def valuation_summary_for(
 
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
-        residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, triangulation=triangulation,
-        margin_of_safety=mos, price_ladder=ladder, note=note,
+        residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
+        triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder, note=note,
     )

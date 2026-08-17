@@ -19,11 +19,12 @@ reverse DCF solver, which belongs next to the forward model it inverts.
 Pure functions over caller-supplied assumptions, exactly like
 `app.domain.cost_of_equity` — no I/O, no ORM.
 
-WHY THIS IS STILL NOT WIRED TO LIVE DATA, EVEN THOUGH EVERY INPUT IT
-NEEDS IS NOW, INDIVIDUALLY, EXTRACTABLE FOR AT LEAST ONE REAL COMPANY.
-FCFF needs depreciation & amortisation, capital expenditure, and the
-change in non-cash working capital. As of this session, Swadeshi
-Industrial Works PLC's real FY2025/26 filing has all three:
+THIS IS NOW WIRED TO LIVE DATA — `app.domain.valuation_view.dcf_for`.
+Every one of §18.1's cash-flow inputs is, individually, extractable for
+at least one real company. FCFF needs depreciation & amortisation,
+capital expenditure, and the change in non-cash working capital. As of
+this session, Swadeshi Industrial Works PLC's real FY2025/26 filing has
+all three:
 `capital_expenditure` and `cash_flow_from_operations` extract directly;
 `depreciation_and_amortisation` is derived by summing Swadeshi's
 separately-printed Depreciation and Amortization lines
@@ -47,50 +48,56 @@ shares and price) — see that module's own docstring for why FCFF must
 never be discounted at Ke instead, a real mispricing bug for any levered
 company, not a rounding-level simplification.
 
-So why not wired up yet? Three reasons now, the newest one the most
-precise. First, this is per-COMPANY, not universal — J.F. Packaging still
+WHAT `dcf_for` ACTUALLY DOES WITH ALL THAT, AND WHAT IT STILL CANNOT
+HONESTLY CLAIM. It is per-COMPANY, not universal — J.F. Packaging still
 lacks capex (its label wraps across two physical lines, unsolved,
-ROADMAP.md), so a caller can't assume any given company has all the
-inputs; the view/API layer that would report per-company availability
-(mirroring `app.domain.valuation_view`'s existing pattern for justified
-P/B and residual income) hasn't been built for DCF yet. Second, DCF is a
-multi-YEAR projection (§18.2's whole assumption table — growth, margin,
-tax fade paths) built from ONE period's cash-flow figures; turning
-"Swadeshi's FY2025/26 capex was X" into "Swadeshi's Y1-10 capex
-assumption is X% of revenue, fading how" is a forecasting decision this
-module already refuses to make silently (see `DCFAssumptions`' own
-field-by-field sourcing notes). Third — no longer a blocker as of this
-session, but worth recording precisely, because it took a real
-live-data investigation to close: `DCFAssumptions.working_capital_pct_
-revenue` needs the working-capital STOCK (non-cash working capital ÷
-revenue, a balance-sheet LEVEL, so the projection can grow it
-proportionally as revenue grows) — a genuinely different figure from
+ROADMAP.md), so a caller can't assume any given company has every input;
+`dcf_for` returns `None` with a named list of exactly what's missing
+rather than guessing, the same pattern `wacc_for`/`current_period_fcff_
+for` already established. And DCF is a multi-YEAR projection (§18.2's
+whole assumption table — growth, margin, tax fade paths) built from ONE
+period's cash-flow figures; turning "Swadeshi's FY2025/26 capex was X"
+into "Swadeshi's Y1-10 capex assumption is X% of revenue, fading how" is
+a forecasting decision this module already refuses to make silently (see
+`DCFAssumptions`' own field-by-field sourcing notes) — `dcf_for` resolves
+this not by inventing forward-looking numbers but by reusing this
+project's own already-established, disclosed policy defaults: real
+trailing revenue CAGR for Y1/Y2 growth when enough confirmed history
+exists, else the SAME steady-state `g` (`settings.long_run_nominal_
+growth_pct`, PARAMETERS.md #11, already used by residual income's
+terminal assumption) for Y1/Y2, the sector-median stand-in Y3-5 fades
+toward, AND the terminal growth itself; `operating_margin_target` equal
+to `operating_margin_current` (this module's own documented "no fade —
+durable advantage" convention, not a new invention); and Sri Lanka's
+real, IRD-published statutory tax rate (PARAMETERS.md #12) rather than a
+guessed convergence target. See `dcf_for`'s own docstring for the
+complete, field-by-field account, including which two bridge items
+(`minority_interest`, `pension_deficit`) still default to zero in the
+DANGEROUS direction (can only overstate equity value) and are flagged in
+`warnings` every time, versus which one (`cash_and_non_operating_
+assets`) defaults to zero in the safe direction. §18.2's "never a free
+parameter" table is honoured in the shape of `DCFAssumptions` — every
+field is named for where §18.2 says it comes from — even where the
+"live source" that field's value ultimately traces back to is itself a
+disclosed policy placeholder rather than a live macro feed (the macro
+engine that would replace `long_run_nominal_growth_pct` with a real
+sector-median/GDP series is Phase 5 and does not exist yet).
+
+`working_capital_pct_revenue` — a genuinely different figure from
 `change_in_net_working_capital`, the working-capital FLOW this system
-already extracted for one historical period. There is no single printed
-line for the STOCK either, but `derive_additional_line_items` now sums
-whichever of a company-varying set of individual current-asset/current-
-liability component canonical keys (trade receivables, inventories,
-trade payables, plus company-specific extras such as advances and
-prepayments or related-party amounts, excluding cash and
+extracts for one historical period — needs the working-capital STOCK
+(non-cash working capital ÷ revenue, a balance-sheet LEVEL, so the
+projection can grow it proportionally as revenue grows). There is no
+single printed line for the STOCK either, but `derive_additional_line_
+items` sums whichever of a company-varying set of individual current-
+asset/current-liability component canonical keys (trade receivables,
+inventories, trade payables, plus company-specific extras such as
+advances and prepayments or related-party amounts, excluding cash and
 interest-bearing debt) are actually present into `net_working_capital`,
 verified against two real filings with genuinely different component
 sets (J.F. Packaging's related-party lines; Swadeshi's advances and
-prepayments), each cross-checked against that company's own
-Total Current Assets/Liabilities minus its known non-operating items.
-So as of this session `working_capital_pct_revenue` COULD be computed
-live for both companies as `net_working_capital ÷ revenue` — that
-division is simply not wired into the view layer yet, the same reason
-capex/D&A/WACC aren't: reasons one and two above still stand. Building
-this module anyway, fully tested against hand-worked numbers, means the
-arithmetic is verified and ready the day that wiring gets built, rather
-than being designed and debugged for the first time under pressure once
-the rest of the data existed, which for capex, D&A, both working-capital
-figures and the discount rate, it now genuinely does, at least for two
-real companies. §18.2's "never a free parameter" table
-is honoured in the shape of `DCFAssumptions` — every field is named for
-where §18.2 says it comes from — even though wiring each one to a live
-source (sector median growth, macro regime multiplier) is itself blocked
-on modules this system hasn't built yet (the macro engine is Phase 5).
+prepayments), each cross-checked against that company's own Total
+Current Assets/Liabilities minus its known non-operating items.
 
 TWO DELIBERATE SIMPLIFICATIONS FROM THE SPEC'S PROSE, BOTH STATED HERE
 RATHER THAN LEFT IMPLICIT:

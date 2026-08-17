@@ -15,11 +15,15 @@ from decimal import Decimal
 
 from app.domain import valuation_view
 from app.domain.cost_of_equity import CostOfEquityResult
+from app.domain.dcf import DCFAssumptions, dcf_equity_value
 from app.domain.valuation_view import (
     _confirmable_line_items,
+    _confirmed_statement_line_history,
     _latest_shares_issued,
     _steady_state_growth,
+    _trailing_cagr,
     current_period_fcff_for,
+    dcf_for,
     justified_price_to_book_for,
     residual_income_for,
     valuation_summary_for,
@@ -113,6 +117,33 @@ def _seed_wacc_fundamentals(db, ticker="SWAD.N0000"):
     lines = {
         "profit_before_tax": Decimal(900),
         "income_tax_expense": Decimal(-252),
+        "total_interest_bearing_debt": Decimal(500),
+        "interest_expense": Decimal(50),  # pre-tax Kd = 50/500 = 0.10
+    }
+    db.add_all(
+        Fundamental(
+            ticker=ticker, period_end=PERIOD_END, period_type="annual",
+            first_available_date=FIRST_AVAILABLE, version=1, statement_line=line,
+            value=value, provenance_tier=ProvenanceTier.REPORTED,
+        )
+        for line, value in lines.items()
+    )
+    db.commit()
+
+
+def _seed_dcf_fundamentals(db, ticker="SWAD.N0000"):
+    """Every line `dcf_for` needs for one confirmed period, chosen so its
+    embedded WACC reproduces `TestWACCFor`'s own hand-worked case exactly
+    (same debt, interest, tax rate, shares, price, Ke) rather than
+    introducing a second, un-cross-checked WACC number."""
+    lines = {
+        "revenue": Decimal(10000),
+        "operating_profit": Decimal(1000),  # margin = 0.10
+        "profit_before_tax": Decimal(900),
+        "income_tax_expense": Decimal(-252),  # 252/900 = 0.28 effective rate
+        "depreciation_and_amortisation": Decimal(50),
+        "capital_expenditure": Decimal(-80),  # cash-flow-statement sign convention
+        "net_working_capital": Decimal(500),
         "total_interest_bearing_debt": Decimal(500),
         "interest_expense": Decimal(50),  # pre-tax Kd = 50/500 = 0.10
     }
@@ -303,6 +334,176 @@ class TestWACCFor:
         assert view.warnings
 
 
+class TestConfirmedStatementLineHistory:
+    def test_returns_confirmed_only_sorted_oldest_first(self, db_session):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=dt.date(2020, 12, 31), period_type="annual",
+                    first_available_date=dt.date(2021, 3, 1), version=1, statement_line="revenue",
+                    value=Decimal(8000), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line="revenue",
+                    value=Decimal(10000), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                # A later, unconfirmed period must be excluded — §8, same
+                # gate `_confirmable_line_items` already applies within one
+                # period, applied here across periods instead.
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=dt.date(2022, 12, 31), period_type="annual",
+                    first_available_date=dt.date(2023, 3, 1), version=1, statement_line="revenue",
+                    value=Decimal(20000), provenance_tier=ProvenanceTier.AI_ASSISTED,
+                ),
+            ]
+        )
+        db_session.commit()
+        history = _confirmed_statement_line_history(db_session, "SWAD.N0000", "revenue", AS_OF)
+        assert history == [(dt.date(2020, 12, 31), Decimal(8000)), (PERIOD_END, Decimal(10000))]
+
+
+class TestTrailingCagr:
+    def test_none_with_fewer_than_two_periods(self):
+        assert _trailing_cagr([(PERIOD_END, Decimal(10000))]) is None
+        assert _trailing_cagr([]) is None
+
+    def test_hand_worked_two_periods_one_year_apart(self):
+        history = [(dt.date(2020, 12, 31), Decimal(10000)), (dt.date(2021, 12, 31), Decimal(11000))]
+        result = _trailing_cagr(history)
+        # 11000/10000 - 1 = 0.10 exactly over ~365 days; 365/365.25 is
+        # near-enough 1 year that the annualised rate should land very
+        # close to 0.10, not exactly (elapsed time isn't assumed to be a
+        # whole year).
+        assert abs(result - Decimal("0.10")) < Decimal("0.001")
+
+    def test_none_when_oldest_value_not_positive(self):
+        history = [(dt.date(2020, 12, 31), Decimal(-100)), (PERIOD_END, Decimal(10000))]
+        assert _trailing_cagr(history) is None
+
+    def test_none_when_newest_value_not_positive(self):
+        history = [(dt.date(2020, 12, 31), Decimal(10000)), (PERIOD_END, Decimal(-100))]
+        assert _trailing_cagr(history) is None
+
+
+class TestDCFFor:
+    def test_hand_worked_flat_no_growth_view(self, db_session, monkeypatch):
+        """Only ONE confirmed revenue period is seeded, so §18.2's
+        trailing-CAGR source for Y1/Y2 growth isn't available yet and
+        `dcf_for` must fall back to the same steady-state g used for
+        stage-2/terminal growth — making the whole 10-year growth path
+        flat. Cross-checked against `dcf_equity_value` called directly
+        with the SAME real figures (querying `wacc_for`/`compute_all`
+        the exact same way `dcf_for` does internally, rather than
+        hand-re-deriving WACC/effective-tax-rate's own precision), the
+        same "cross-check against the module's own computation" pattern
+        `test_dcf.py` already uses for FCFF.
+        """
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_dcf_fundamentals(db_session)
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is not None
+        assert view.fair_value_per_share is not None
+        assert view.fair_value_per_share > 0
+
+        wacc_view = wacc_for(db_session, "SWAD.N0000", Decimal(20), AS_OF)
+        expected = dcf_equity_value(
+            DCFAssumptions(
+                base_revenue=Decimal(10000),
+                revenue_growth_y1=Decimal("0.05"),
+                revenue_growth_y2=Decimal("0.05"),
+                revenue_growth_stage2_target=Decimal("0.05"),
+                terminal_growth=Decimal("0.05"),
+                operating_margin_current=Decimal("0.1"),
+                operating_margin_target=Decimal("0.1"),
+                effective_tax_rate_current=Decimal(252) / Decimal(900),
+                statutory_tax_rate=Decimal("0.30"),
+                depreciation_amortisation_pct_revenue=Decimal(50) / Decimal(10000),
+                capex_pct_revenue=Decimal(80) / Decimal(10000),
+                working_capital_pct_revenue=Decimal(500) / Decimal(10000),
+                risk_free_rate=Decimal("0.12"),
+                discount_rate=wacc_view.result.wacc,
+                total_debt=Decimal(500),
+                diluted_shares_outstanding=Decimal(100),
+            )
+        )
+        assert view.result.value_per_share == expected.value_per_share
+        assert view.result.equity_value == expected.equity_value
+
+        # The two directionally-unsafe zeroed bridge items are flagged
+        # every time, not silently trusted — same discipline as
+        # app.domain.wacc's missing-cost-of-debt rule.
+        assert any("minority_interest" in w for w in view.warnings)
+        assert any("pension_deficit" in w for w in view.warnings)
+        assert any("no growth view" in w for w in view.warnings)
+
+    def test_prefers_real_trailing_cagr_over_the_steady_state_fallback(self, db_session, monkeypatch):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        _seed_dcf_fundamentals(db_session)  # confirmed revenue = 10000 at PERIOD_END
+        # A second, earlier confirmed revenue period — now a real 2-period
+        # trailing CAGR exists and must be preferred over the flat
+        # steady-state fallback.
+        db_session.add(
+            Fundamental(
+                ticker="SWAD.N0000", period_end=dt.date(2020, 12, 31), period_type="annual",
+                first_available_date=dt.date(2021, 3, 1), version=1, statement_line="revenue",
+                value=Decimal(8000), provenance_tier=ProvenanceTier.REPORTED,
+            )
+        )
+        db_session.commit()
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is not None
+        # 10000/8000 - 1 = 0.25 trailing CAGR — well above the 0.05
+        # steady-state fallback, so Y1 revenue growth must reflect it.
+        assert view.result.years[0].revenue_growth > Decimal("0.05")
+        assert any("trailing CAGR" in w for w in view.warnings)
+        assert not any("no growth view" in w for w in view.warnings)
+
+    def test_missing_net_working_capital_is_named_not_silently_zeroed(self, db_session, monkeypatch):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line=line,
+                    value=value, provenance_tier=ProvenanceTier.REPORTED,
+                )
+                for line, value in {
+                    "revenue": Decimal(10000),
+                    "operating_profit": Decimal(1000),
+                    "profit_before_tax": Decimal(900),
+                    "income_tax_expense": Decimal(-252),
+                    "depreciation_and_amortisation": Decimal(50),
+                    "capital_expenditure": Decimal(-80),
+                    "total_interest_bearing_debt": Decimal(500),
+                    "interest_expense": Decimal(50),
+                    # net_working_capital deliberately omitted
+                }.items()
+            ]
+        )
+        db_session.commit()
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is None
+        assert view.fair_value_per_share is None
+        assert any("net_working_capital" in w for w in view.warnings)
+
+    def test_no_fundamentals_at_all(self, db_session):
+        _seed_security(db_session, ticker="SWAD.N0000")
+        view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+        assert view.result is None
+        assert view.period_end is None
+
+
 class TestValuationSummaryFor:
     def test_end_to_end_bank_triangulation_and_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)
@@ -347,3 +548,47 @@ class TestValuationSummaryFor:
         # because it was derived from `price_ladder.current_price` instead
         # of being carried on `CompanyValuationSummary` independently.
         assert summary.current_price == Decimal(12)
+
+    def test_dcf_joins_residual_income_as_a_second_intrinsic_anchor(self, db_session, monkeypatch):
+        """A Swadeshi-shaped fixture with every §18 DCF input present:
+        `dcf_for`'s own fair value must both be non-None AND actually
+        feed the "intrinsic" triangulation bucket alongside residual
+        income — the whole point of wiring the multi-year forecast, not
+        just of the pure `dcf_equity_value` arithmetic being correct in
+        isolation (already covered by `test_dcf.py`)."""
+        _seed_security(db_session, ticker="SWAD.N0000")
+        # total_equity/net_income for the residual-income anchor — seeded
+        # directly rather than via `_seed_confirmed_fundamentals`, which
+        # also seeds an unconfirmed `revenue` line at the SAME period that
+        # would otherwise collide with `_seed_dcf_fundamentals`' own
+        # confirmed `revenue` line for that key.
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line="total_equity",
+                    value=Decimal(1000), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="annual",
+                    first_available_date=FIRST_AVAILABLE, version=1, statement_line="net_income",
+                    value=Decimal(200), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+            ]
+        )
+        db_session.commit()
+        _seed_dcf_fundamentals(db_session, ticker="SWAD.N0000")  # revenue/EBIT/D&A/capex/NWC/debt → DCF anchor
+        _seed_shares(db_session, ticker="SWAD.N0000", shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        summary = valuation_summary_for(
+            db_session, "SWAD.N0000", archetype="manufacturing", current_price=Decimal(20), as_of=AS_OF
+        )
+
+        assert summary.dcf.fair_value_per_share is not None
+        assert summary.residual_income.result is not None
+        assert summary.residual_income.result.value_per_share is not None
+        # Both anchors are real, distinct numbers, both counted — not one
+        # silently overwriting the other because they share a category.
+        assert "intrinsic" in summary.triangulation.category_averages
+        assert summary.triangulation.blended_fair_value_per_share is not None

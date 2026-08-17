@@ -1156,6 +1156,73 @@ a dated, sourced manual observation is.
         its fixture, so this exact failure mode can never silently
         regress: `test_a_notes_page_whose_own_subheading_names_a_
         primary_statement_is_still_excluded`. Full suite: 676 passed.
+- [x] **The full multi-year §18 FCFF DCF is live — `app.domain.valuation_
+      view.dcf_for` — and joins residual income as a genuine "intrinsic"
+      §24 triangulation anchor, the first §18-26 model added as an anchor
+      since justified P/B and residual income at the very start of this
+      wiring effort.** Every remaining gap named in the WACC/working-
+      capital-stock entries above is now either closed or converted into
+      a named, disclosed policy default — never a silent guess, following
+      §18.2's own "never a free parameter" rule exactly:
+      - `base_revenue`, `operating_margin_current` (EBIT proxy ÷
+        revenue), `effective_tax_rate_current`, D&A%, capex% and
+        working-capital% of revenue are all real ratios of one confirmed
+        period's extracted figures.
+      - `operating_margin_target` = `operating_margin_current` — reusing
+        `DCFAssumptions`' own pre-existing "no fade, durable advantage,
+        stated explicitly" convention, not a new invention.
+      - `revenue_growth_y1`/`revenue_growth_y2` use a REAL trailing
+        revenue CAGR (`_trailing_cagr`, annualised by actual elapsed
+        days, not assumed whole years) whenever at least two confirmed
+        revenue periods exist for the ticker; today, with only one
+        verified period per company, they fall back to the same
+        steady-state `g` used for stage-2/terminal growth — a disclosed
+        "no growth view" default, flagged in `warnings` either way so a
+        caller can tell the two apart.
+      - `revenue_growth_stage2_target` and `terminal_growth` both reuse
+        `_steady_state_growth` (`settings.long_run_nominal_growth_pct`,
+        PARAMETERS.md #11, risk-free-rate-capped) — the SAME sourced
+        policy figure residual income's own terminal assumption already
+        uses, not a sector-median figure this system has no source for
+        (still genuinely Phase 5).
+      - `statutory_tax_rate` uses a NEW, real, verified figure — Sri
+        Lanka's actual current standard corporate income tax rate, 30%,
+        per Inland Revenue Department notice PN/IT/2025-01 (26 March
+        2025) — `settings.statutory_corporate_tax_rate_pct`,
+        PARAMETERS.md #12. Unlike `erp_effective_pct`/`long_run_nominal_
+        growth_pct`, this is not a provisional placeholder for lack of a
+        source; it is a cited, currently-correct rate, with its own
+        disclosed limitation (concessionary sector rates — 15% service
+        exports, 14% goods exports/education/healthcare, 40% gambling/
+        liquor — that this system doesn't route to yet, so 30% is a real
+        overstatement of the true rate for any company in one of those
+        sectors).
+      - `discount_rate` = the already-live WACC (`wacc_for`), `risk_free_
+        rate` = the already-live risk-free observation — WACC is now
+        genuinely CONSUMED, not only displayed.
+      - `total_debt` = the real, extracted `total_interest_bearing_debt`.
+      - Two bridge items — `minority_interest`, `pension_deficit` —
+        still default to zero and are NOT extracted anywhere in this
+        system. This is the DANGEROUS direction (can only overstate
+        equity value for a company that actually carries either), so
+        `dcf_for` flags it explicitly in `warnings` on every single call,
+        the same discipline `app.domain.wacc`'s missing-cost-of-debt rule
+        already established, rather than silently zeroing and moving on.
+        `cash_and_non_operating_assets` also defaults to zero but in the
+        SAFE direction (can only understate equity value), so it is
+        flagged but not treated as equally concerning.
+      - 12 new tests in `test_valuation_view.py`: trailing-CAGR unit
+        tests (including the "fewer than 2 periods → None, not a
+        fabricated number" case), a full hand-worked cross-check against
+        `dcf_equity_value` called directly with the same real figures
+        (the same "cross-check against the module's own computation"
+        pattern already used for FCFF), a case proving real trailing
+        CAGR is preferred over the steady-state fallback the moment a
+        second confirmed period exists, a missing-`net_working_capital`
+        regression, and an end-to-end test proving DCF actually joins
+        residual income inside the "intrinsic" triangulation bucket
+        rather than merely computing a number nobody consumes. Full
+        suite: 686 passed.
 - [x] **`npm audit` vulnerability fixed** — Vite 5.4→8.2.1 and
       `@vitejs/plugin-react` 4.3→6.0.5 (the version that actually declares
       a `vite@^8` peer dependency, so the upgrade doesn't leave an

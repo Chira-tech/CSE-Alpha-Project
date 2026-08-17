@@ -5,17 +5,19 @@ an actual fair value rather than routing metadata or a discount rate.
 `securities.py`'s own module docstring said, until this file existed,
 that fair values and buy-below prices are "deliberately absent... Phase
 2/3 (§12-26) and the engines that compute them do not exist yet." That's
-now only half true: the engines exist (`app/domain/dcf.py` through
-`price_ladder.py`) and two of them — justified P/B and residual income —
-are wired to live data as full triangulation anchors
-(`app.domain.valuation_view`). A third live number, `current_period_
-fcff`, is now real too (§18.1's FCFF formula on one confirmed period) but
-deliberately informational only, never an anchor — see `app.domain.
-valuation_view.current_period_fcff_for`'s own docstring for why. This
-endpoint is that wiring's front door. It is still an honest partial
-answer, not the full §24 triangulation: see `CompanyValuationOut.note`
-and ROADMAP.md's Phase 3 section for exactly which anchors are missing
-and why.
+now largely closed: the engines exist (`app/domain/dcf.py` through
+`price_ladder.py`) and three of them — justified P/B, residual income
+and, as of this session, the full multi-year FCFF DCF (`dcf`) — are
+wired to live data as real triangulation anchors (`app.domain.valuation_
+view`). `current_period_fcff` and `wacc` stay separate, deliberately
+informational-only numbers (§18.1's FCFF formula on one undiscounted
+confirmed period, and the DCF's own discount rate) — see `app.domain.
+valuation_view`'s own module docstring and `dcf_for`'s docstring for the
+full picture of what's real versus a named policy default within the
+DCF specifically. This endpoint is that wiring's front door. It is still
+an honest partial answer, not the full §24 triangulation: see
+`CompanyValuationOut.note` and ROADMAP.md's Phase 3 section for exactly
+which anchors are missing and why.
 
 Returns 404 for an unknown ticker, same convention as `securities.py`'s
 company-file route. Does NOT require `archetype` to be set on the
@@ -113,6 +115,43 @@ class WACCOut(BaseModel):
     warnings: list[str]
 
 
+class YearProjectionOut(BaseModel):
+    year: int
+    revenue: Decimal
+    revenue_growth: Decimal
+    ebit: Decimal
+    operating_margin: Decimal
+    tax_rate: Decimal
+    depreciation_amortisation: Decimal
+    capital_expenditure: Decimal
+    net_working_capital: Decimal
+    change_in_net_working_capital: Decimal
+    fcff: Decimal
+
+
+class DCFOut(BaseModel):
+    period_end: dt.date | None
+    fair_value_per_share: Decimal | None
+    """§18's full multi-year FCFF DCF — a genuine "intrinsic" triangulation
+    anchor below when computable, not informational-only like
+    `current_period_fcff`/`wacc` (see `app.domain.valuation_view.dcf_for`'s
+    own docstring for exactly which inputs are real extracted figures
+    versus named, disclosed "no view" policy defaults)."""
+
+    years: list[YearProjectionOut]
+    terminal_value: Decimal | None
+    equity_value: Decimal | None
+    enterprise_or_operating_value: Decimal | None
+    implied_reinvestment_rate_terminal: Decimal | None
+    model_warnings: list[str]
+    """From `DCFResult.warnings` — the pure model's own validation
+    warnings about the assumptions (e.g. terminal growth vs risk-free
+    rate), distinct from `warnings` below (this view's data-availability
+    warnings, e.g. which bridge items default to zero)."""
+
+    warnings: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -124,6 +163,7 @@ class CompanyValuationOut(BaseModel):
     residual_income_warnings: list[str]
     current_period_fcff: CurrentPeriodFCFFOut
     wacc: WACCOut
+    dcf: DCFOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
     price_ladder: PriceLadderOut | None
@@ -161,6 +201,40 @@ class CompanyValuationOut(BaseModel):
                 after_tax_cost_of_debt=s.wacc.result.after_tax_cost_of_debt if s.wacc.result else None,
                 wacc=s.wacc.result.wacc if s.wacc.result else None,
                 warnings=list(s.wacc.warnings),
+            ),
+            dcf=DCFOut(
+                period_end=s.dcf.period_end,
+                fair_value_per_share=s.dcf.fair_value_per_share,
+                years=(
+                    [
+                        YearProjectionOut(
+                            year=y.year,
+                            revenue=y.revenue,
+                            revenue_growth=y.revenue_growth,
+                            ebit=y.ebit,
+                            operating_margin=y.operating_margin,
+                            tax_rate=y.tax_rate,
+                            depreciation_amortisation=y.depreciation_amortisation,
+                            capital_expenditure=y.capital_expenditure,
+                            net_working_capital=y.net_working_capital,
+                            change_in_net_working_capital=y.change_in_net_working_capital,
+                            fcff=y.fcff,
+                        )
+                        for y in s.dcf.result.years
+                    ]
+                    if s.dcf.result
+                    else []
+                ),
+                terminal_value=s.dcf.result.terminal_value if s.dcf.result else None,
+                equity_value=s.dcf.result.equity_value if s.dcf.result else None,
+                enterprise_or_operating_value=(
+                    s.dcf.result.enterprise_or_operating_value if s.dcf.result else None
+                ),
+                implied_reinvestment_rate_terminal=(
+                    s.dcf.result.implied_reinvestment_rate_terminal if s.dcf.result else None
+                ),
+                model_warnings=list(s.dcf.result.warnings) if s.dcf.result else [],
+                warnings=list(s.dcf.warnings),
             ),
             triangulation=TriangulationOut(
                 triangulation_category=t.triangulation_category,

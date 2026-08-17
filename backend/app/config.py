@@ -71,6 +71,28 @@ class Settings(BaseSettings):
     expected to check that against the live risk-free observation, not
     assume it here."""
 
+    # --- Part O #12: statutory corporate tax rate (§18.2) -------------------------
+    statutory_corporate_tax_rate_pct: Decimal = Decimal("0.30")
+    """§18.2's DCF tax path converges from `effective_tax_rate_current`
+    (extracted per-company) to this statutory rate by Year 5. Unlike
+    `erp_effective_pct`/`long_run_nominal_growth_pct`, this is NOT a
+    provisional placeholder invented for lack of a source — it is Sri
+    Lanka's real, current, publicly verified standard corporate income
+    tax rate (Inland Revenue Department notice PN/IT/2025-01, 26 March
+    2025: 30% for most companies), the same rate that already governs
+    why `income_tax_expense ÷ profit_before_tax` for an ordinary CSE
+    industrial company should converge toward roughly this number, not
+    an arbitrary one. See PARAMETERS.md #12 for the full citation and,
+    critically, this default's real limitation: the IRD notice also sets
+    concessionary rates for specific sectors (15% for service exports
+    such as IT/BPO, 14% for goods exports and qualifying education/
+    healthcare, 40% for gambling/liquor) that this system has no
+    per-company routing for yet — using 30% for every company is
+    therefore correct for most CSE industrials but a real overstatement
+    of the true statutory rate for any company in one of those
+    concessionary sectors, and should not be trusted uncritically for
+    those archetypes."""
+
     # --- Point-in-time / reporting lag defaults (§6) ------------------------------
     default_quarterly_reporting_lag_days: int = 90
     default_annual_reporting_lag_days: int = 180
