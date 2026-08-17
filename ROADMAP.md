@@ -279,6 +279,101 @@ consecutive days.
         directly above it correctly names Residual Income and DDM, the
         exact models this Ke is for, as this bank's primary anchors.
 
+## Phase 3 — valuation engine, price ladder, margin-of-safety engine
+
+Gate to proceed (Master Spec §54): "Fair values reproduce hand-worked
+reference cases exactly." Every module below is checked against that
+literal bar — hand-worked numbers, not just the module's own output read
+back at itself — including transcribing §26's own JKH.N0000 worked
+example (fair value 24.00, MoS 30%, current price 21.40) directly into
+`test_price_ladder.py` and confirming every threshold and the "27% above
+your buy-below price" status line to the cent/percentage-point.
+
+- [x] **§18 DCF** (`app/domain/dcf.py`) — three-stage FCFF/FCFE, terminal
+      value, the full equity-value bridge, and §23's reverse-DCF solver
+      (bisection on a flat growth rate). 12 tests, including an
+      independent closed-form geometric-series cross-check of the whole
+      equity bridge (not a restatement of the module's own year-by-year
+      loop).
+- [x] **§19 dividend and residual income** (`app/domain/dividend_
+      residual_income.py`) — Gordon growth with its 3-part eligibility
+      gate, multi-stage DDM with the sustainable-payout dividend-capacity
+      cap, and residual income. 15 tests.
+- [x] **§20 relative valuation** (`app/domain/relative_valuation.py`) —
+      all four justified multiples (P/E, P/B, EV/EBIT, P/S). 9 tests.
+- [x] **§21 sum-of-the-parts** (`app/domain/sotp.py`) — segment waterfall
+      plus the holding-company-discount calibration §21 insists "must be
+      earned, not assumed" (historical average + three named, separately
+      visible adjustments, clamped to the stated 15-35% typical range).
+      6 tests.
+- [x] **§22 asset-based / NAV valuation** (`app/domain/asset_based_
+      valuation.py`) — hard book (both figures always shown, never hard
+      book alone), land marks (independent reference or explicitly-
+      labelled cost, never silently one or the other), hotel replacement-
+      cost cross-check, plantation hard NAV per hectare, liquidation
+      value floor. 9 tests.
+- [x] **§23 scenarios and simulation** (`app/domain/scenarios.py`) —
+      deterministic bear/base/bull construction from a historical growth/
+      margin distribution using §23's own stated deltas (WACC +150bp/
+      -100bp, terminal growth -100bp for bear), a sensitivity tornado,
+      and a Monte Carlo overlay (empirical bootstrap over each company's
+      own historical values, per §23's "not assumed normal" — this
+      project has no scipy/numpy, same constraint `trend_detection.py`
+      already documented). 8 tests, including a reproducible-with-seed
+      check and percentiles verified monotonic.
+- [x] **§24 triangulation** (`app/domain/triangulation.py`) — the
+      6-archetype weighted blend, with the archetype→triangulation-
+      category mapping DERIVED from `app.domain.valuation_router`'s
+      already-computed `RoutingDecision` flags rather than a second,
+      independently-maintained archetype list that could silently
+      disagree with the router. A missing anchor category renormalises
+      the remaining weights rather than treating the gap as zero value.
+      16 tests.
+- [x] **§25 margin of safety** (`app/domain/margin_of_safety.py`) — all
+      five components, each clamped to its own stated range (the
+      arithmetic only reconciles with §25's worked numbers if the range
+      column is read as a post-formula clamp, e.g. an integrity_score of
+      50 raw-computes to 80% before capping at 8% — stated explicitly in
+      the module docstring since the spec doesn't spell this out).
+      19 tests.
+- [x] **§26 the price ladder** (`app/domain/price_ladder.py`) — the five
+      zones. 13 tests.
+
+**WHICH OF THESE ARE ALREADY WIREABLE TO LIVE DATA, AND WHY MOST AREN'T
+YET.** Residual income and justified P/B are the two models this system
+can run today without new ingestion work — both need only book value
+(extracted since Phase 1), ROE (already computed by `app.domain.ratios`)
+and Ke (already built, §17.2). Every other model is genuinely blocked on
+data this project does not extract or source anywhere, named per module
+rather than glossed over:
+  - DCF/DDM need D&A, capex, working-capital deltas, and dividend
+    history — none extracted (PARAMETERS.md #9's cash-flow-statement gap,
+    plus a distinct, newly-named dividend-history gap).
+  - SOTP needs a segment/group-structure breakdown — no ingestion source
+    provides one.
+  - Asset-based valuation needs a revaluation-reserve line item, an
+    independent land reference, a build-cost benchmark, and a recent
+    estate-transaction price — all genuinely external reference data.
+  - The margin-of-safety engine's quality/integrity component needs a
+    continuous 0-100 integrity score that **does not exist anywhere in
+    this system by design** — §11.1 requires Gate 3 to be a hard pass/
+    fail veto specifically so "a sufficiently attractive valuation will
+    always outvote it" can't happen; `quality_integrity_component`
+    returns `None` (a lower-bound MoS, never silently zero) until a
+    genuinely separate continuous score is built for this different
+    purpose.
+  - §20.1's three comparison frames and its cross-sectional P/B
+    regression, and §23's archetype-specific bear stress / confirmed-
+    project bull uplift, are corpus-level or macro-engine-dependent
+    (Phase 5) — named as gaps in each module's own docstring rather than
+    faked with single-company data.
+
+All nine modules are pure functions over caller-supplied inputs — no I/O,
+same discipline as `app.domain.cost_of_equity` and `app.domain.ratios` —
+so each is ready to wire up the moment its blocking data source exists,
+without touching the arithmetic that's already tested today. 107 new
+tests; full suite 611 passed.
+
 ## Phase 5 groundwork — the hero variable
 
 - [x] **§29's hero spread is live**: equity earnings yield (1 ÷ market
@@ -640,13 +735,16 @@ a dated, sourced manual observation is.
 
 ## Explicitly deferred to later phases
 
-Valuation MATH (DCF, DDM, residual income, SOTP, §18-24), the earnings
-integrity veto (§14 — needs CFO, related-party revenue, auditor and
-director-dealings data this system does not extract), macro/ARDL, factor
-library, scoring, AI research writer, decision capture UI — all Phase 2+
-per §54. Fundamental ratios (§12), trend detection (§13) and the model
-router (§15/§16) are no longer in this list — see above. Building the
-still-deferred items against unvalidated data, or against inputs this
-system doesn't actually have, would produce exactly the look-ahead-biased,
-false-precision numbers the spec's failure-mode register (Part N) warns
-about.
+The earnings integrity veto (§14 — needs CFO, related-party revenue,
+auditor and director-dealings data this system does not extract), §27
+execution reality (needs a live order-book feed, 15-minute cadence — not
+part of Phase 3's own gate per Master Spec §54's build-sequence table),
+macro/ARDL, factor library, scoring, AI research writer, decision capture
+UI — all Phase 4+ per §54. Fundamental ratios (§12), trend detection
+(§13), the model router (§15/§16), and valuation MATH (DCF, DDM, residual
+income, SOTP, relative valuation, asset-based, scenarios, triangulation,
+margin of safety, the price ladder — §17-26) are no longer in this list —
+see above. Building the still-deferred items against unvalidated data, or
+against inputs this system doesn't actually have, would produce exactly
+the look-ahead-biased, false-precision numbers the spec's failure-mode
+register (Part N) warns about.

@@ -15,22 +15,30 @@ order. There is no BUY button anywhere in this product.
 
 ## Status
 
-Build follows the phased sequence in Master Spec §54. We are in **Phase 1 —
-point-in-time data spine**.
+Build follows the phased sequence in Master Spec §54. Phases 1-3's
+engines are built (data spine, fundamentals/trend/routing, and now the
+full valuation math — DCF through the price ladder); Phase 4 (scheduler
+hardening, alerting, decision capture UI) has not started.
 
 There is a **runnable web app** — see Quick start below. It shows real CSE
 data (live index levels, all 283 listed lines from 264 issuers, prices, the review
 queues, data health). It deliberately does **not** show fair values,
-scores or buy prices, because the engines that compute them are Phase 2–3
-and haven't been built: the company file lists those gaps explicitly
-rather than rendering a placeholder number, which the UI specification
-forbids outright.
+scores or buy prices: the Phase 3 valuation engines exist now and are
+unit-tested against hand-worked reference cases (`backend/app/domain/
+dcf.py` through `price_ladder.py`), but nothing wires them to a real
+company's live data or renders them in the UI yet — see ROADMAP.md's
+Phase 3 section for exactly which two models (residual income, justified
+P/B) are already wireable and which are still blocked on unextracted
+data (DCF, DDM, SOTP, asset-based). Until that wiring and a screener/
+valuation UI exist, the company file lists the gap explicitly rather than
+rendering a placeholder number, which the UI specification forbids
+outright.
 
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | 🔨 in progress |
 | 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine + trend detection (§13) + model router (§15/§16) built; integrity veto (§14) blocked on unextracted data; screener UI not started |
-| 3 | Valuation engine, price ladder, margin-of-safety engine | 🔨 model routing (§16) and cost of equity (§17, incl. real Dimson-Blume beta) built; the DCF/DDM/residual-income/SOTP math itself (§18-24) not started |
+| 3 | Valuation engine, price ladder, margin-of-safety engine | ✅ math built and tested (§17-26: cost of equity, DCF, DDM, residual income, relative valuation, SOTP, asset-based, scenarios, triangulation, margin of safety, price ladder); not yet wired to live per-company data end-to-end or exposed in the UI |
 | 4 | Scheduler, always-on service, alerting, decision capture | not started |
 | 5 | Macro engine (ARDL, regime classifier, sector sensitivity) | not started |
 | 6 | Factor library, Carhart certification, timing engine, fusion | not started |
