@@ -501,13 +501,20 @@ a dated, sourced manual observation is.
       trade balance, tourist arrivals) are NOT in the daily PDF — they
       come from monthly/weekly publications that need their own parsers.
 
-### §31 regime classifier — the first real piece of Phase 4's macro engine
+### §31 regime classifier — the first real piece of Phase 5's macro engine
 
-Phase 4 (§29-39: macro/ARDL, factor library, scoring, AI research
-writer, decision capture UI) had nothing built at all until this
-entry — the ROADMAP's own "Explicitly deferred" section below has been
-updated to stop bundling "macro/ARDL" as one untouched block, because
-part of it genuinely isn't untouched anymore.
+CORRECTED LABEL (18 Aug 2026): every earlier entry in this file called
+the macro engine "Phase 4." §54's own real build-sequence table (checked
+directly against the master spec PDF, not assumed) names it Phase 5 —
+"Macro engine — ARDL, regime classifier, sector sensitivity, project
+register, regime-conditional discount rates and margins of safety."
+Real Phase 4 is "Scheduler, always-on service, alerting, home dashboard,
+decision capture" — untouched, a real, separate gap, not what any of
+this section's entries actually built. Phase 5 (§29-39: macro/ARDL) had
+nothing built at all until this entry — the ROADMAP's own "Explicitly
+deferred" section below has been updated to stop bundling "macro/ARDL"
+as one untouched block, because part of it genuinely isn't untouched
+anymore.
 
 - [x] **§31's regime classifier is live** — `app.domain.regime_
       classification` (pure) + `app.domain.macro_engine_view.regime_for`
@@ -547,12 +554,27 @@ part of it genuinely isn't untouched anymore.
         series (150 days bull, 100 days bear, seeded) — the fit correctly
         ranks the bull regime above the bear regime and reads the
         current (final-day) state as `risk_off` with >80% confidence.
+        **This is NOT the same thing as §54's own Phase 5 gate**, which
+        reads identically but means real historical periods, not a
+        synthetic construction — checked directly (18 Aug): the dev
+        database's own real `cse.aspi` history only goes back to
+        2025-08-20 (~1 year) and `cbsl.policy_rate`/`tbill_364d`/
+        `ccpi_yoy` only have a handful of days each, nowhere near deep
+        enough to cover a real known period like the actual 2022
+        sovereign default. Backfilling CBSL's real daily editions that
+        far back is a real, separate, slow undertaking (paced ~10s/
+        request per robots.txt — hundreds of real editions, likely
+        hours of wall-clock time), not something to fold into other work
+        silently. §54's own Phase 5 gate is therefore named honestly as
+        NOT YET CLOSED against real data, distinct from this module's
+        own synthetic-ground-truth correctness check above, which IS
+        closed.
       - The Ke/discount-rate-raising consequence §31 also names was NOT
         wired at the time this entry was first written — **closed
         same-day, 18 Aug: see "§17.2's regime linkage" below.**
         Gross-exposure-capping remains unwired — this system has no
         portfolio-construction/sizing layer at all yet (§39's scoring
-        engine, Phase 4+), so there is nothing for an exposure cap to
+        engine, Phase 6), so there is nothing for an exposure cap to
         act on.
       - 38 new tests (`test_regime_classification.py`,
         `test_macro_engine_view.py`, plus 3 new `test_valuation_api.py`
@@ -577,7 +599,7 @@ part of it genuinely isn't untouched anymore.
         remaining items is faked by returning a plausible number from a
         formula that isn't actually the named method.
 
-### §33 sector sensitivity matrix — the second real piece of Phase 4's macro engine
+### §33 sector sensitivity matrix — the second real piece of Phase 5's macro engine
 
 - [x] **§33's sector sensitivity matrix is live** — `app.domain.sector_
       sensitivity` (pure) + `app.domain.sector_sensitivity_view` (wired
@@ -2180,8 +2202,12 @@ The earnings integrity veto (§14 — needs CFO, related-party revenue,
 auditor and director-dealings data this system does not extract), §27
 execution reality (needs a live order-book feed, 15-minute cadence — not
 part of Phase 3's own gate per Master Spec §54's build-sequence table),
-factor library, scoring, AI research writer, decision capture UI — all
-Phase 4+ per §54. Fundamental ratios (§12), trend detection (§13), the
+the scheduler/always-on service/decision capture (Phase 4), the factor
+library/scoring/full fusion (Phase 6), and the AI research writer
+(Phase 7) — all per §54's own real build-sequence table, checked
+directly against the PDF (earlier entries in this file called the macro
+engine "Phase 4"; §54 actually numbers it Phase 5, corrected above where
+first noticed). Fundamental ratios (§12), trend detection (§13), the
 model router (§15/§16), and valuation MATH (DCF, DDM, residual income,
 SOTP, relative valuation, asset-based, scenarios, triangulation, margin
 of safety, the price ladder — §17-26) are no longer in this list — see
