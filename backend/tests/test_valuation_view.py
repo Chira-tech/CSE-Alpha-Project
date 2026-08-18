@@ -20,7 +20,6 @@ from app.domain.valuation_view import (
     _confirmable_line_items,
     _confirmed_dividends_as_of,
     _confirmed_statement_line_history,
-    _latest_shares_issued,
     _steady_state_growth,
     _trailing_cagr,
     _trailing_dividend_per_share,
@@ -216,20 +215,6 @@ class TestConfirmableLineItems:
         period_end, items, excluded = _confirmable_line_items(db_session, "COMB.N0000", AS_OF)
         assert period_end is None
         assert items == {}
-
-
-class TestLatestSharesIssued:
-    def test_picks_latest_not_future(self, db_session):
-        _seed_security(db_session)
-        db_session.add_all(
-            [
-                FloatData(ticker="COMB.N0000", as_of=dt.date(2021, 1, 1), shares_issued=90),
-                FloatData(ticker="COMB.N0000", as_of=dt.date(2022, 1, 1), shares_issued=100),
-                FloatData(ticker="COMB.N0000", as_of=dt.date(2023, 1, 1), shares_issued=110),  # after AS_OF
-            ]
-        )
-        db_session.commit()
-        assert _latest_shares_issued(db_session, "COMB.N0000", AS_OF) == 100
 
 
 class TestSteadyStateGrowth:

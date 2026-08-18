@@ -96,6 +96,7 @@ from app.domain.dividend_residual_income import (
 )
 from app.domain.liquidity_view import liquidity_percentile_for
 from app.domain.macro_engine_view import RegimeView, regime_for
+from app.domain.market_cap_view import latest_shares_issued
 from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
@@ -107,7 +108,6 @@ from app.domain.triangulation import TriangulationResult, ValuationAnchor, trian
 from app.domain.valuation_router import RoutingDecision, route_valuation
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import CorporateActionType
-from app.models.float_data import FloatData
 
 
 def _confirmable_line_items(
@@ -136,16 +136,6 @@ def _confirmable_line_items(
             items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
 
     return latest_period, items, tuple(sorted(excluded))
-
-
-def _latest_shares_issued(db: Session, ticker: str, as_of: dt.date) -> int | None:
-    row = db.scalar(
-        select(FloatData)
-        .where(FloatData.ticker == ticker, FloatData.as_of <= as_of)
-        .order_by(FloatData.as_of.desc())
-        .limit(1)
-    )
-    return row.shares_issued if row else None
 
 
 def _confirmed_statement_line_history(
@@ -264,7 +254,7 @@ def _gather_inputs(
 
     book_value_per_share = None
     total_equity_item = items.get("total_equity")
-    shares = _latest_shares_issued(db, ticker, as_of)
+    shares = latest_shares_issued(db, ticker, as_of)
     if total_equity_item is None:
         warnings.append("total_equity not available from confirmed fundamentals.")
     if shares is None:
@@ -459,7 +449,7 @@ def wacc_for(
     )
 
     ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
-    shares = _latest_shares_issued(db, ticker, stamp)
+    shares = latest_shares_issued(db, ticker, stamp)
 
     result = compute_wacc(
         shares_outstanding=Decimal(shares) if shares else None,
@@ -767,7 +757,7 @@ def dcf_for(
     if ke_result.risk_free_rate is None:
         missing.append("risk_free_rate (needed to cap terminal/stage-2 growth)")
 
-    shares = _latest_shares_issued(db, ticker, stamp)
+    shares = latest_shares_issued(db, ticker, stamp)
     if not shares:
         missing.append("shares_issued (no FloatData row on or before this date)")
 
@@ -962,7 +952,7 @@ def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Har
             "separately-documented cases — see this function's own docstring)."
         )
 
-    shares = _latest_shares_issued(db, ticker, stamp)
+    shares = latest_shares_issued(db, ticker, stamp)
     if shares is None:
         warnings.append("shares_issued not available (no FloatData row on or before this date).")
 

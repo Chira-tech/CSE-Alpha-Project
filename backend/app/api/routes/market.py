@@ -51,6 +51,7 @@ from app.domain.causality_analysis_view import impulse_response_fevd_for, toda_y
 from app.domain.estimator_selection_view import select_and_fit_estimator
 from app.domain.event_study_view import event_study_for
 from app.domain.johansen_vecm_view import johansen_vecm_for
+from app.domain.factor_library_view import hml_hard_for
 from app.domain.liquidity import illiquidity_premium_from_percentile, percentile_rank
 from app.domain.liquidity_view import universe_amihud_ratios
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
@@ -921,6 +922,59 @@ def liquidity(ticker: str, db: Session = Depends(get_db)) -> LiquidityOut:
         ticker=ticker, as_of=stamp, universe_size=len(ratios),
         amihud_ratio=ratios.get(ticker), liquidity_percentile=percentile,
         implied_ke_illiquidity_premium=illiquidity_premium_from_percentile(percentile),
+    )
+
+
+class TwoByThreeSortResultOut(BaseModel):
+    portfolio_returns: dict[str, Decimal]
+    portfolio_counts: dict[str, int]
+    size_factor_return: Decimal
+    style_factor_return: Decimal
+    size_median: Decimal
+    style_p30: Decimal
+    style_p70: Decimal
+    constituent_count: int
+    note: str
+
+
+class HmlHardOut(BaseModel):
+    """§35's real HML_hard factor, live — see `app.domain.factor_
+    library_view`'s own docstring for exactly what real inputs feed
+    this (a disclosed full-shares-issued market-cap proxy, real hard
+    book value, a real trailing holding-period return standing in for
+    §35.1's own annual-formation convention this system's real ~1-year
+    price depth can't yet support) and what it isn't yet (a real 156-
+    week rolling factor-return series a Carhart regression could use —
+    this is one real cross-sectional snapshot). `excluded` names every
+    real ticker considered but left out and why."""
+
+    as_of: dt.date
+    formation_date: dt.date
+    included_ticker_count: int
+    excluded: list[list[str]]
+    """`[ticker, reason]` pairs."""
+
+    result: TwoByThreeSortResultOut | None
+    warnings: list[str]
+
+
+@router.get("/factors/hml-hard", response_model=HmlHardOut)
+def hml_hard(db: Session = Depends(get_db)) -> HmlHardOut:
+    view = hml_hard_for(db)
+    result_out = None
+    if view.result is not None:
+        r = view.result
+        result_out = TwoByThreeSortResultOut(
+            portfolio_returns=r.portfolio_returns, portfolio_counts=r.portfolio_counts,
+            size_factor_return=r.size_factor_return, style_factor_return=r.style_factor_return,
+            size_median=r.size_median, style_p30=r.style_p30, style_p70=r.style_p70,
+            constituent_count=r.constituent_count, note=r.note,
+        )
+    return HmlHardOut(
+        as_of=view.as_of, formation_date=view.formation_date,
+        included_ticker_count=view.included_ticker_count,
+        excluded=[[ticker, reason] for ticker, reason in view.excluded],
+        result=result_out, warnings=list(view.warnings),
     )
 
 

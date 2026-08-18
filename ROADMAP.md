@@ -1359,6 +1359,96 @@ precise and mean nothing.
         lead/lag beta correction (§35.2), and §36's Carhart certification
         regression are all real, separate, genuinely unbuilt pieces —
         not folded into a false claim that "the factor library" exists.
+        **The 2×3 sort infrastructure and HML_hard itself are no longer
+        on this list — see the next entry.**
+
+### Phase 6, second piece — real market cap, the 2×3 sort, and HML_hard end to end
+
+- [x] **The real 2×3 Fama-French portfolio-sort mechanism §35.1
+      specifies for SMB/HML/HML_hard/MOM alike is live** —
+      `app.domain.portfolio_sort` (pure): six portfolios (Small/Big ×
+      Low/Medium/High), the real SMB-style size-factor return
+      (`mean(S/L,S/M,S/H) − mean(B/L,B/M,B/H)`) and HML-style style-
+      factor return (`mean(S/H,B/H) − mean(S/L,B/L)`) — the actual
+      cross-averaging formulas that make a 2×3 sort a cleaner read of
+      size/style than a naive top-minus-bottom spread, not an
+      approximation of them. Validated against a known, DOUBLE injected
+      premium (a real +2% size premium AND a real 3% high-minus-low
+      style spread baked into a synthetic universe) — both factor
+      returns recovered within 1 percentage point of their true values.
+      Equal-weighted within each portfolio, a disclosed simplification
+      matching §33's own sector-returns precedent (this system's real
+      market-cap figures are already a disclosed proxy — value-weighting
+      on top of an approximation would compound one for a precision the
+      real inputs don't support).
+      - **A real, disclosed floor (`MIN_TICKERS = 12`)** and an outright
+        refusal — never a guess — whenever any of the six real
+        portfolios ends up with zero real constituents, a real,
+        reachable outcome on a correlated or thin universe, not a bug
+        (this project's own test fixture hit it twice while being
+        written, both times a genuine artifact of `_percentile`'s
+        nearest-rank method landing exactly on a repeated tie value —
+        real, disclosed nearest-rank percentile behaviour, not a defect,
+        and now named in that function's own docstring).
+      - `app.domain.market_cap` (pure) + `app.domain.market_cap_view`:
+        real market cap as `shares_issued × price` — a disclosed FULL-
+        shares-issued proxy for the free-float market cap §35.1 itself
+        asks for, since this system still has no real `FloatData.
+        public_float_pct` for any company. `latest_shares_issued`
+        extracted from `app.domain.valuation_view`'s own original
+        private copy once a second real consumer needed the identical
+        point-in-time `FloatData` lookup.
+      - `app.domain.price_returns.cumulative_adjusted_return` — one real
+        total return over a whole holding period (`end_adj_close ÷
+        start_adj_close − 1`), not a daily series, the real input every
+        §35 factor's own return needs. Also gave `price_returns.py` its
+        first-ever dedicated test file (`ticker_adjusted_returns` had
+        only ever been exercised indirectly through its callers').
+      - **`app.domain.factor_library_view.hml_hard_for` wires all of the
+        above into §35's own real HML_hard factor** — real market cap ×
+        real hard book (§22's own revaluation-stripped figure, "§35.1:
+        use HML_hard as primary") × a real trailing return, on
+        `GET /market/factors/hml-hard`. Every real ticker considered is
+        either included or named with a specific reason it wasn't
+        (`excluded`), never silently dropped.
+      - **The holding period is a disclosed, real substitute for §35.1's
+        own "Formation 30 September" annual-rebalancing convention, not
+        the convention itself** — that needs multiple YEARS of real
+        price history this system doesn't have (~1 year, per `app.
+        ingestion.company_price_history_loader`'s own real backfill
+        depth); this module uses the longest real trailing window that
+        depth actually supports instead, named as such rather than
+        presented as the spec's own annual cycle. Similarly, one real
+        cross-sectional snapshot is NOT yet §35.3's own "156-week
+        rolling window, re-estimated weekly" factor-return SERIES a
+        Carhart regression could consume — a real, disclosed, separate
+        gap.
+      - **Verified against the real live dev database, not just seeded
+        tests**: after running `enrich` across the full real universe
+        (284/284 real tickers now have real `shares_issued`), `GET /
+        market/factors/hml-hard` correctly reports 0 included tickers
+        and names why for every one of them — "no real confirmed hard
+        book value" — because only COMB.N0000 has any real confirmed
+        fundamentals in this dev database today. A real, honest, correct
+        refusal given real current data depth, not a bug: the gap is the
+        already-known, separately-tracked fundamentals-confirmation
+        depth (§8's own confirm queue), not this new machinery.
+      - 12 new tests (`test_portfolio_sort.py`'s double-premium
+        validation and empty-bucket refusal; `test_market_cap.py`/`test_
+        market_cap_view.py`; `test_price_returns.py`'s new dedicated
+        coverage of both real-return shapes; `test_factor_library_view.
+        py`'s real database round-trip; `test_market_hml_hard_api.py`).
+        Full suite: 970 passed, no regressions.
+      - **Still genuinely unbuilt within §35**: SMB and plain HML (both
+        now only need real data depth, not new machinery — the same
+        `two_by_three_sort` mechanism, a different `style_value`
+        for HML, and no `style_value` at all for SMB, which is really
+        the size factor alone); MOM (needs the same real market cap but
+        a momentum-based `style_value` and a monthly, not annual,
+        rebalance cadence); MKT-RF (needs a free-float-weighted
+        universe return, blocked on the same `public_float_pct` gap as
+        `size_premium`); the mandatory Dimson (1979) lead/lag beta
+        correction; and §36's Carhart certification regression.
 
 ## Not done yet — next in Phase 1
 
