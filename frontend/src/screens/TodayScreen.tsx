@@ -1,33 +1,48 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getDataHealth, getMarketOverview, getPortfolioHoldingsValued, getSpread } from "../api";
+import {
+  ApiRequestError,
+  getDataHealth,
+  getMarketOverview,
+  getOpportunityRanking,
+  getPortfolioHoldingsValued,
+  getSpread,
+} from "../api";
 import { Delta } from "../components/Delta";
 import { SpreadHero } from "../components/SpreadHero";
+import { ZoneChip } from "../components/ZoneChip";
 import { EmptyState, ErrorState, PartialNotice, SkeletonCard } from "../components/states";
 import { directionOf, formatIndexValue, formatInteger, formatPrice, UNAVAILABLE } from "../format";
-import type { DataHealth, MarketOverview, Spread, ValuedPortfolio } from "../types";
+import type { DataHealth, MarketOverview, OpportunityRanking, Spread, ValuedPortfolio } from "../types";
 
 /**
  * UI & Experience Specification §8 — Screen 1, "Today". Four questions in
  * descending order of importance.
  *
- * WHAT IS ON THE BOARD? (§4) still needs engines that don't exist yet,
- * and is shown as an explicit gap rather than an empty card, per §17's
- * placeholder prohibition. WHERE AM I? (§3) now reads the same real
- * holdings valuation the Portfolio screen shows — a one-line summary
- * here, the full breakdown there.
+ * WHERE AM I? (§3) reads the same real holdings valuation the Portfolio
+ * screen shows — a one-line summary here, the full breakdown there.
+ * WHAT IS ON THE BOARD? (§4) does the same against the Opportunities
+ * screen's real ranking — §40's own full risk-adjusted-return metric
+ * still needs engines that don't exist yet (named on Opportunities
+ * itself), but the real, narrower gap-to-buy-below ranking that DOES
+ * exist belongs here too, not hidden behind a stale "not built" notice.
  *
  * §7.2's governing constraint on this screen: it "must be fully readable
  * in under two minutes and must usually conclude with 'nothing to do'."
  * Section 2 below is written to reach that conclusion plainly when
  * there's genuinely nothing pending.
  */
-export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "portfolio" | "review") => void }) {
+export function TodayScreen({
+  onOpenScreen,
+}: {
+  onOpenScreen: (id: "macro" | "portfolio" | "opportunities" | "review") => void;
+}) {
   const [market, setMarket] = useState<MarketOverview | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
   const [health, setHealth] = useState<DataHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [spread, setSpread] = useState<Spread | null>(null);
   const [portfolio, setPortfolio] = useState<ValuedPortfolio | null | undefined>(undefined);
+  const [opportunities, setOpportunities] = useState<OpportunityRanking | null | undefined>(undefined);
 
   useEffect(() => {
     getMarketOverview()
@@ -44,6 +59,9 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "po
     getPortfolioHoldingsValued()
       .then(setPortfolio)
       .catch(() => setPortfolio(null));
+    getOpportunityRanking()
+      .then(setOpportunities)
+      .catch(() => setOpportunities(null));
   }, []);
 
   const attention: string[] = [];
@@ -119,14 +137,15 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "po
             {spread && <SpreadHero spread={spread} />}
 
             <div className="notice notice-neutral">
-              <h3>The regime classification is not built yet — Phase 5</h3>
+              <h3>No regime gauge on this screen yet</h3>
               <p className="prose t-body">
-                The spread above is §29's hero variable and the most important input to the regime
-                read, but the read itself — the Markov regime classifier with its probability, the
-                recommended gross exposure, the sector tilts and the ARDL error-correction half-life
-                — needs the macro engine.{" "}
+                The Markov regime classifier itself is real and runs live now (see the Journal
+                screen, which freezes a real regime read with every decision) — what's still missing
+                is a dedicated gauge here: the recommended gross exposure, the sector tilts and the
+                ARDL error-correction half-life, plus validation against a real historical Sri Lankan
+                regime, which this system's own macro series aren't deep enough for yet.{" "}
                 <button className="btn-link" onClick={() => onOpenScreen("macro")}>
-                  What Macro will contain
+                  See what Macro has today
                 </button>
               </p>
             </div>
@@ -225,18 +244,76 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "po
         )}
       </section>
 
-      {/* ---- 4: not built --------------------------------------------- */}
       <section aria-labelledby="board-heading" className="stack-tight">
         <h2 id="board-heading">4 · What is on the board?</h2>
-        <div className="notice notice-neutral">
-          <h3>The ranked board is not built yet — Phases 2–3</h3>
-          <p className="prose t-body">
-            The top names by composite score, each with price, buy-below, gap and agreement
-            indicator (§40). Needs the fundamental, valuation and price engines. Until then,{" "}
-            <strong>Companies</strong> lists the full universe with the real market data that does
-            exist.
-          </p>
-        </div>
+        {opportunities === null ? (
+          <div className="notice notice-neutral">
+            <h3>The board could not be loaded</h3>
+            <p className="prose t-body">
+              Check the API is running, then reload — every other section on this screen reads
+              independent data.
+            </p>
+          </div>
+        ) : opportunities === undefined ? (
+          <SkeletonCard lines={2} />
+        ) : opportunities.ranked.length === 0 ? (
+          <div className="notice notice-neutral">
+            <h3>Nothing ranks yet</h3>
+            <p className="prose t-body">
+              §40's full risk-adjusted-return ranking still needs engines that don't exist (the §38
+              composite score, Carhart certification, the timing battery) — see{" "}
+              <button className="btn-link" onClick={() => onOpenScreen("opportunities")}>
+                Opportunities
+              </button>{" "}
+              for the real, narrower ranking this system can compute today, and why nothing
+              qualifies yet.
+            </p>
+          </div>
+        ) : (
+          <div className="card">
+            <p className="t-caption" style={{ margin: "0 0 var(--s3)" }}>
+              Real gap-to-buy-below ranking (§25-26) — not yet §40's full risk-adjusted-return metric,
+              see Opportunities for what's still missing.
+            </p>
+            <div className="table-wrap table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Ticker</th>
+                    <th scope="col" className="right">Price</th>
+                    <th scope="col">Zone</th>
+                    <th scope="col" className="right">Gap to buy below</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {opportunities.ranked.slice(0, 3).map((c) => (
+                    <tr key={c.ticker}>
+                      <th scope="row" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
+                        {c.ticker}
+                      </th>
+                      <td className="right num">{c.current_price !== null ? formatPrice(c.current_price) : UNAVAILABLE}</td>
+                      <td>
+                        <ZoneChip zone={c.price_ladder_zone} />
+                      </td>
+                      <td className="right">
+                        {c.gap_to_buy_below_pct !== null ? (
+                          <Delta percentage={Number(c.gap_to_buy_below_pct) * 100} />
+                        ) : (
+                          <span className="muted">{UNAVAILABLE}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: "var(--s4)" }}>
+              <button onClick={() => onOpenScreen("opportunities")}>
+                Open Opportunities ({opportunities.ranked.length} ranked)
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {market && (
