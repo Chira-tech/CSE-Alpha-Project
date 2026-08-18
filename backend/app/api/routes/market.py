@@ -33,7 +33,7 @@ import logging
 import threading
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -49,6 +49,7 @@ from app.domain.macro_view import (
 from app.domain.ardl_cointegration_view import ardl_bounds_test_for
 from app.domain.causality_analysis_view import impulse_response_fevd_for, toda_yamamoto_for
 from app.domain.estimator_selection_view import select_and_fit_estimator
+from app.domain.event_study_view import event_study_for
 from app.domain.johansen_vecm_view import johansen_vecm_for
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.domain.stationarity_view import stationarity_for_series
@@ -790,6 +791,101 @@ def toda_yamamoto(
         independent_consensus=view.independent_consensus,
         result=result_out,
         warnings=list(view.warnings),
+    )
+
+
+class SingleEventResultOut(BaseModel):
+    alpha: Decimal
+    beta: Decimal
+    estimation_observation_count: int
+    event_window_observation_count: int
+    abnormal_returns: list[Decimal]
+    cumulative_abnormal_return: Decimal
+    standard_error: Decimal
+    t_statistic: Decimal
+    p_value: Decimal
+    significant: bool
+    note: str
+
+
+class EventOutcomeOut(BaseModel):
+    event_date: dt.date
+    result: SingleEventResultOut | None
+    skip_reason: str | None
+
+
+class AggregateEventStudyResultOut(BaseModel):
+    event_count: int
+    car_values: list[Decimal]
+    average_car: Decimal
+    t_statistic: Decimal
+    p_value: Decimal
+    significant: bool
+    note: str
+
+
+class EventStudyOut(BaseModel):
+    """§30 step 5, live — the last piece of §30's own six-step method
+    chain. Currently wired to exactly one real event type, `"cbsl_
+    policy_rate_change"` (see `app.domain.event_study_view`'s own
+    docstring for why CCPI/IMF/budget/election events aren't here yet —
+    a real, disclosed scope gap, not an oversight). Every real candidate
+    event is reported individually in `events`, including ones that
+    couldn't be studied (`skip_reason` names why) — never silently
+    dropped from the count. `aggregate` is `None` below two real,
+    studyable events."""
+
+    ticker: str
+    event_type: str
+    as_of: dt.date
+    trading_day_count: int
+    events: list[EventOutcomeOut]
+    aggregate: AggregateEventStudyResultOut | None
+    warnings: list[str]
+
+
+@router.get("/event-study", response_model=EventStudyOut)
+def event_study(
+    ticker: str,
+    event_type: str = "cbsl_policy_rate_change",
+    db: Session = Depends(get_db),
+) -> EventStudyOut:
+    try:
+        view = event_study_for(db, ticker, event_type=event_type)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    def _single_out(r) -> SingleEventResultOut:
+        return SingleEventResultOut(
+            alpha=r.alpha, beta=r.beta,
+            estimation_observation_count=r.estimation_observation_count,
+            event_window_observation_count=r.event_window_observation_count,
+            abnormal_returns=list(r.abnormal_returns),
+            cumulative_abnormal_return=r.cumulative_abnormal_return,
+            standard_error=r.standard_error, t_statistic=r.t_statistic,
+            p_value=r.p_value, significant=r.significant, note=r.note,
+        )
+
+    events_out = [
+        EventOutcomeOut(
+            event_date=o.event_date,
+            result=_single_out(o.result) if o.result is not None else None,
+            skip_reason=o.skip_reason,
+        )
+        for o in view.events
+    ]
+    aggregate_out = None
+    if view.aggregate is not None:
+        a = view.aggregate
+        aggregate_out = AggregateEventStudyResultOut(
+            event_count=a.event_count, car_values=list(a.car_values),
+            average_car=a.average_car, t_statistic=a.t_statistic,
+            p_value=a.p_value, significant=a.significant, note=a.note,
+        )
+    return EventStudyOut(
+        ticker=view.ticker, event_type=view.event_type, as_of=view.as_of,
+        trading_day_count=view.trading_day_count,
+        events=events_out, aggregate=aggregate_out, warnings=list(view.warnings),
     )
 
 

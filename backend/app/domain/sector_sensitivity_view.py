@@ -48,6 +48,7 @@ from app.domain.cbsl_parsing import (
     SERIES_USD_LKR_BUY,
 )
 from app.domain.macro_view import series_history
+from app.domain.price_returns import ticker_adjusted_returns
 from app.domain.sector_sensitivity import (
     MIN_CONSTITUENTS_FOR_SECTOR_ESTIMATE,
     MacroShockSeries,
@@ -55,7 +56,6 @@ from app.domain.sector_sensitivity import (
     SectorSensitivityRow,
     compute_sector_sensitivity_matrix,
 )
-from app.models.prices import PriceDaily
 from app.models.securities import Security
 
 #: How far back to look for sector/shock history — comfortably covers
@@ -81,33 +81,6 @@ def _sector_groups(db: Session) -> dict[str, list[str]]:
     return groups
 
 
-def _ticker_adjusted_returns(
-    db: Session, ticker: str, as_of: dt.date, lookback_days: int
-) -> dict[dt.date, Decimal]:
-    """Real daily total-return series for one ticker, from adjusted
-    closes (`close × adj_factor`) — see module docstring for why
-    adjusted, not raw."""
-    start = as_of - dt.timedelta(days=lookback_days)
-    rows = db.scalars(
-        select(PriceDaily)
-        .where(
-            PriceDaily.ticker == ticker,
-            PriceDaily.date >= start,
-            PriceDaily.date <= as_of,
-            PriceDaily.close.is_not(None),
-        )
-        .order_by(PriceDaily.date)
-    ).all()
-    returns: dict[dt.date, Decimal] = {}
-    prev_adj: Decimal | None = None
-    for row in rows:
-        adj = row.close * row.adj_factor
-        if prev_adj is not None and prev_adj > 0:
-            returns[row.date] = (adj - prev_adj) / prev_adj
-        prev_adj = adj
-    return returns
-
-
 def sector_returns_for(
     db: Session, sector: str, tickers: list[str], as_of: dt.date, lookback_days: int
 ) -> SectorReturns:
@@ -116,7 +89,7 @@ def sector_returns_for(
     requiring every constituent to have traded that day (a thinly-traded
     small cap missing one day should not blank out the whole sector's
     reading for that day)."""
-    per_ticker = [_ticker_adjusted_returns(db, t, as_of, lookback_days) for t in tickers]
+    per_ticker = [ticker_adjusted_returns(db, t, as_of, lookback_days) for t in tickers]
     all_dates = sorted({d for series in per_ticker for d in series})
     returns_by_date: dict[dt.date, Decimal] = {}
     for date in all_dates:

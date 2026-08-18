@@ -1182,6 +1182,71 @@ of 0.09 against a 205.75 share price) led directly to the diagnosis.
         `test_market_causality_api.py`). Full suite: 911 passed, no
         regressions.
 
+### §30 step 5 — the event study: §30's own six-step method chain is now complete
+
+- [x] **§30 step 5 is live** — `app.domain.event_study` (pure) +
+      `app.domain.event_study_view`, exposed on new `GET /market/
+      event-study?ticker=...`. The real MacKinlay (1997) market-model
+      event-study methodology — never hand-rolled: real `statsmodels.
+      api.OLS` fits the market model over a pre-event estimation window,
+      the abnormal-return/CAR arithmetic and the standard-error formula
+      are the textbook Brown & Warner (1985) ones. The last piece of
+      §30's own six-step chain — every step §30 names is now genuinely
+      built.
+      - **Wired to exactly ONE of §30's own five named event
+        categories** — "CARs around CBSL/CCPI/IMF/budget/election
+        dates" names five, but only CBSL policy RATE CHANGES have a
+        real, already-ingested date source in this system: a genuine
+        change is any date where `cbsl.policy_rate`'s own stored value
+        differs from its immediately preceding real observation, not
+        every date the series has a reading (most are "still
+        unchanged," not an event). CCPI-release, IMF-programme-
+        milestone, budget, and election dates all need a NEW real
+        structured date source this project doesn't have yet (a
+        scraped or human-maintained calendar, analogous to §34's
+        national-project register) — a disclosed, named scope gap, not
+        a silent omission, the same "named precisely what remains
+        unbuilt" discipline every other §30 module this phase applies
+        to itself.
+      - **Trading-day windows, not calendar-day offsets** — the
+        estimation and event windows are positions in the sorted list
+        of dates where a ticker's own real `prices_daily` return AND
+        the real ASPI's own daily return both exist, not calendar-day
+        arithmetic that would silently drift across weekends/holidays.
+        A real candidate event whose window can't fully fit within this
+        system's own real ~1-year price-history depth is skipped and
+        NAMED (`skip_reason`), never silently dropped from the count or
+        padded with fabricated data.
+      - **Validated against a known, injected abnormal return, not just
+        that it runs** — a synthetic asset return series built to
+        follow the market model exactly, with a real, known abnormal
+        jump added on one event-window day, correctly recovers a CAR
+        close to the injected value and flags it significant; the same
+        construction with no injected jump correctly does not reject
+        the null (a specific seed checked to land comfortably non-
+        significant — a true null still rejects at roughly the stated
+        5% rate by chance alone, the same caveat this phase's other
+        hypothesis-testing modules already name).
+      - **`aggregate_car_across_events` is the real cross-sectional
+        average-CAR test** MacKinlay's own methodology uses to combine
+        several real, independent single-event results — `None` below
+        two real studyable events, since a cross-sectional standard
+        deviation is undefined for one observation and reporting a
+        "result" from a single event would misrepresent an event
+        study's own point (statistical power from aggregating across
+        events).
+      - **`app.domain.price_returns` extracted** — the real adjusted-
+        return calculation `app.domain.sector_sensitivity_view` had
+        already built, reused here rather than duplicated a second time
+        (the same "extract once a second module needs the exact same
+        logic" pattern `app.domain.series_alignment` already
+        established for §30 step 2's own view modules).
+      - 17 new tests (`test_event_study.py`'s validation against known
+        injected/null abnormal returns, single-event and aggregate;
+        `test_event_study_view.py`'s real trading-day alignment and
+        skip-reason coverage; `test_market_event_study_api.py`). Full
+        suite: 928 passed, no regressions.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —
@@ -2121,17 +2186,23 @@ model router (§15/§16), and valuation MATH (DCF, DDM, residual income,
 SOTP, relative valuation, asset-based, scenarios, triangulation, margin
 of safety, the price ladder — §17-26) are no longer in this list — see
 above. **Macro/ARDL (§29-34) is also no longer a single untouched
-block** — §31's regime classifier, §33's sector sensitivity matrix,
-§34's national project register, §30 step 1's stationarity/break testing,
-ALL of §30 step 2 (all three named estimators — ARDL bounds testing,
-Johansen/VECM, VAR-in-differences — plus the estimator-selection capstone
-that actually routes between them using each series' own real
-stationarity read), and now step 3 (impulse response, FEVD, and Toda-
-Yamamoto causality) are all live (see those entries above); only step 5
-(the event study) remains genuinely unbuilt within Part G — §30's own
-six-step method chain is complete but for that one step, named precisely
-rather than left as one vague "macro/ARDL" line item. Building
-the still-deferred items against
+block — §30's own six-step method chain is now fully built.** §31's
+regime classifier, §33's sector sensitivity matrix, §34's national
+project register, and every one of §30's own six steps (stationarity/
+break testing; the three named estimators — ARDL bounds testing,
+Johansen/VECM, VAR-in-differences — plus the estimator-selection
+capstone that routes between them; impulse response/FEVD/Toda-Yamamoto
+causality; and now the event study) are all live (see those entries
+above). Within §30 specifically, only the event study's own real gap
+remains: CCPI-release, IMF-programme-milestone, budget, and election
+event DATES have no real structured source yet (CBSL policy rate
+CHANGES are the one event type this system can study today), named
+precisely in that module's own docstring rather than silently assumed
+away. §34's own possible future variable-set expansion (reserves, M2b,
+private credit, trade balance, tourist arrivals — noted in §29's own
+entry as not available from the daily CBSL PDF) is likewise a real,
+separate, disclosed gap, not part of "macro/ARDL" as a line item
+anymore. Building the still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the
 spec's failure-mode register (Part N) warns about.
