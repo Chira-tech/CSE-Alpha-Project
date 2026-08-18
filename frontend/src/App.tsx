@@ -6,6 +6,7 @@ import { CompanyScreen } from "./screens/CompanyScreen";
 import { DataHealthScreen } from "./screens/DataHealthScreen";
 import { MacroScreen } from "./screens/MacroScreen";
 import { NotBuiltScreen } from "./screens/NotBuiltScreen";
+import { OpportunitiesScreen } from "./screens/OpportunitiesScreen";
 import { PortfolioScreen } from "./screens/PortfolioScreen";
 import { ReviewScreen } from "./screens/ReviewScreen";
 import { TodayScreen } from "./screens/TodayScreen";
@@ -62,6 +63,8 @@ export function App() {
         return <MacroScreen />;
       case "portfolio":
         return <PortfolioScreen />;
+      case "opportunities":
+        return <OpportunitiesScreen />;
       case "data-health":
         return <DataHealthScreen onOpenReview={() => go("review")} />;
       case "review":

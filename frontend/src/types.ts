@@ -384,6 +384,26 @@ export interface ValuedPortfolio {
   positions_missing_a_live_price: string[];
 }
 
+export interface OpportunityCandidate {
+  ticker: string;
+  name: string;
+  archetype: string | null;
+  current_price: string | null;
+  blended_fair_value_per_share: string | null;
+  margin_of_safety_pct: string;
+  price_ladder_zone: PriceLadderZone | null;
+  buy_below_price: string | null;
+  gap_to_buy_below_pct: string | null;
+  dispersion_pct: string | null;
+  warnings: string[];
+}
+
+export interface OpportunityRanking {
+  as_of: string;
+  ranked: OpportunityCandidate[];
+  excluded: OpportunityCandidate[];
+}
+
 export interface SensitivityEstimate {
   shock_name: string;
   coefficient: string;

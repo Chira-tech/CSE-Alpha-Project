@@ -6,6 +6,7 @@ import type {
   Fundamental,
   IndexHistory,
   MarketOverview,
+  OpportunityRanking,
   PortfolioSnapshotDetail,
   SectorSensitivity,
   SecurityDetail,
@@ -133,6 +134,12 @@ export function getSpread() {
 
 export function getSectorSensitivity() {
   return request<SectorSensitivity>("/market/sector-sensitivity");
+}
+
+// --- Opportunities ------------------------------------------------------
+
+export function getOpportunityRanking() {
+  return request<OpportunityRanking>("/opportunities");
 }
 
 // --- Portfolio --------------------------------------------------------

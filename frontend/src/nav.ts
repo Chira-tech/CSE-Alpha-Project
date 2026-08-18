@@ -55,9 +55,9 @@ export const NAV_ITEMS: NavItem[] = [
     id: "opportunities",
     label: "Opportunities",
     blurb: "The ranked board, the screener, the watchlist",
-    awaitingPhase: "Phases 2–3",
+    awaitingPhase: null,
     willContain:
-      "Every investable name ranked by risk-adjusted expected return net of the cost of building the position (§40) — with the composite score, the price ladder zone, the gap to your buy-below price, and the agreement indicator showing how many model layers actually support each case. It needs the fundamental engine (§12), the valuation engine (§16–24) and the price engine (§25–27) to exist first.",
+      "Built: every confirmed-fundamentals ticker ranked by the real gap between its current price and its real buy-below price from the price ladder (§25-26). Still awaiting §38-40's full metric: the composite score (business quality, growth, financial strength, macro & sector fit, timing & momentum, an automated integrity veto) and §39's sequential fusion — none of that machinery exists yet, so this is a genuine but narrower ordering, not risk-adjusted expected return net of transaction cost.",
     group: "primary",
   },
   {
