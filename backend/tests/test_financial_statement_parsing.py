@@ -780,6 +780,50 @@ def test_a_comma_leading_fragment_is_not_a_valid_number():
     assert result is None or result.primary_value != Decimal("453103")
 
 
+# A DIFFERENT real split-digit artifact, found live (18 Aug 2026) on
+# Wealthtrust Securities PLC's (WLTH.N0000) real interim statement for
+# the period ended 30 June 2026 — see `_repair_split_leading_digits`'s
+# own module-level comment for the full finding, including the
+# cross-check against the balance sheet's own real, independently-
+# verified total that confirms this reading rather than assuming it.
+SPLIT_LEADING_DIGIT_LINES = {
+    "Total Assets 4 7,325,768,494 4 3,942,985,474": (
+        "total_assets",
+        Decimal("47325768494"),
+    ),
+    "Total Liabilities 4 0,918,613,066 3 7,080,599,730": (
+        "total_liabilities",
+        Decimal("40918613066"),
+    ),
+    "Total Equity and Liabilities 4 7,325,768,494 4 3,942,985,474": (
+        "total_equity_and_liabilities",
+        Decimal("47325768494"),
+    ),
+}
+
+
+@pytest.mark.parametrize(("line", "expected"), SPLIT_LEADING_DIGIT_LINES.items())
+def test_split_leading_digit_is_rejoined_not_dropped_as_a_note_reference(line, expected):
+    key, value = expected
+    result = split_label_and_values(line)
+    assert result is not None
+    assert result.statement_line == key
+    assert result.primary_value == value
+
+
+def test_jf_packagings_real_note_reference_is_not_wrongly_merged():
+    """The safety boundary `_repair_split_leading_digits` is deliberately
+    narrow to protect: J.F. Packaging PLC's real Revenue line has a
+    genuine note reference ("5"), not a split digit. It has an ODD
+    number of numeric tokens (5), so the new repair must never touch
+    it — merging "5" into "4,504,801" would silently turn a currently-
+    correct extraction into a wrong one."""
+    result = split_label_and_values("Revenue 5 4,504,801 4,385,214 2,356,951 2,371,137")
+    assert result is not None
+    assert result.statement_line == "revenue"
+    assert result.primary_value == Decimal("4504801")
+
+
 # --- accounting identities ----------------------------------------------
 
 

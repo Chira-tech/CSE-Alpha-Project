@@ -74,6 +74,60 @@ _SPLIT_THOUSANDS_RE = re.compile(r"(\d)\s+(?=,\d{3})")
 def _repair_split_thousands(line: str) -> str:
     return _SPLIT_THOUSANDS_RE.sub(r"\1", line)
 
+
+def _is_lone_leading_digit(token: str) -> bool:
+    return len(token) == 1 and token.isdigit()
+
+
+def _repair_split_leading_digits(numeric_tokens: list[str]) -> list[str]:
+    """A DIFFERENT real pdfplumber artifact from `_repair_split_thousands`
+    above (that one repairs a stray space landing right before a number's
+    own first comma; this one repairs a stray space landing one character
+    earlier, splitting off the number's own leading digit as a
+    seemingly-standalone token). Found live (18 Aug 2026) on Wealthtrust
+    Securities PLC's (WLTH.N0000) real interim statement for the period
+    ended 30 June 2026: "Total Assets 4 7,325,768,494 4 3,942,985,474"
+    tokenises as four numeric-looking tokens ("4", "7,325,768,494", "4",
+    "3,942,985,474") when only two real values are printed —
+    47,325,768,494 and 43,942,985,474. Confirmed by cross-checking every
+    real asset line on the same page against the balance sheet's own
+    printed total: reading every line this way and summing reconciles to
+    the real total_assets figure to within LKR 2 (manual transcription
+    slop, not evidence against the reading) — not a coincidence.
+
+    DELIBERATELY NARROW to avoid corrupting the real, already-working
+    case this could otherwise break: J.F. Packaging PLC's own real
+    "Revenue 5 4,504,801 4,385,214 2,356,951 2,371,137" line, where "5"
+    IS a genuine note reference, not a split digit. That line has an ODD
+    number of numeric tokens (5) and is untouched here — it's left to
+    the existing excess-note-reference drop logic below, which already
+    handles it correctly. This repair only fires when the ENTIRE numeric
+    tail alternates lone-single-digit, full-value, lone-single-digit,
+    full-value — i.e. every one of the line's real values was
+    independently split the same way, not just one isolated leading
+    token — a pattern a single genuine note reference could not produce
+    by coincidence across multiple columns. KNOWN, UNADDRESSED RISK: a
+    real filing with a genuine single-digit note reference immediately
+    before its ONLY value column (an exact 2-token "note value" line)
+    would be indistinguishable from this pattern and would be wrongly
+    merged — no real filing exhibiting that exact shape has been seen
+    yet; if one turns up, this heuristic needs a stronger signal than
+    token shape alone (e.g. cross-checking against `check_accounting_
+    identities`, which is what actually caught this bug in the first
+    place)."""
+    if len(numeric_tokens) < 2 or len(numeric_tokens) % 2 != 0:
+        return numeric_tokens
+    merged: list[str] = []
+    for i in range(0, len(numeric_tokens), 2):
+        lead, rest = numeric_tokens[i], numeric_tokens[i + 1]
+        if not _is_lone_leading_digit(lead):
+            return numeric_tokens  # not a uniform split pattern; leave untouched
+        candidate = lead + rest
+        if not _VALUE_RE.match(candidate):
+            return numeric_tokens
+        merged.append(candidate)
+    return merged
+
 # CSE comparative statements consistently print exactly this many value
 # columns (Group this-year, Group last-year, Company this-year, Company
 # last-year — verified on J.F. Packaging PLC, whose own column header
@@ -511,6 +565,8 @@ def split_label_and_values(
     label_tokens = tokens[:i]
     if not numeric_tokens or not label_tokens:
         return None
+
+    numeric_tokens = _repair_split_leading_digits(numeric_tokens)
 
     # Drop a leading note-reference token: one more numeric token than the
     # statement's own declared column count, AND that extra leading token
