@@ -10,13 +10,13 @@ two advanced ones.
 
 | Destination | State |
 |---|---|
-| **Today** | Built. §8's four questions; sections 1–2 answered from real data, 3–4 marked as awaiting their engines. |
-| **Opportunities** | Awaiting Phases 2–3 (needs the fundamental, valuation and price engines). |
-| **Companies** | Built. All listed names, searchable, each with a company file — now including a "Fair value (§18-26)" section: justified P/B, residual income, triangulation, margin of safety and the price ladder, wired to real stored data (`GET /valuation/{ticker}`). Most companies still honestly show no fair value yet — almost none have a human-confirmed fundamentals period (§8) — and DCF/DDM/SOTP/asset-based stay unwired regardless of confirmation (ROADMAP.md's Phase 3 section says why). |
-| **Portfolio** | Awaiting Phase 8. |
-| **Macro** | Partly built — the live sector index board exists; the regime engine (§29–34) does not. |
-| **Journal** | Awaiting Phase 4. |
-| **Lab** | Awaiting Phase 8. |
+| **Today** | Built. §8's four questions, all four now answered from real data: the hero spread, what needs confirming, a real portfolio summary, and the top of the real Opportunities board. |
+| **Opportunities** | Built. Ranks every confirmed-fundamentals ticker by the real gap to its own buy-below price (§25-26) — a genuine but narrower proxy for §40's full risk-adjusted-return-net-of-costs metric, which still needs the §38 composite score. |
+| **Companies** | Built. All listed names, searchable, each with a company file including a real "Fair value (§18-26)" section: justified P/B, residual income, the full multi-year FCFF DCF, triangulation, margin of safety and the price ladder, wired to real stored data (`GET /valuation/{ticker}`). Most companies still honestly show no fair value yet — almost none have a human-confirmed fundamentals period (§8) — and DDM/SOTP/asset-based stay unwired or informational-only regardless of confirmation (see `app/domain/valuation_view.py`'s own docstring for why). |
+| **Portfolio** | Built. Upload a real CDS/broker holdings export; every position is valued live against the same engine as the Company file. The full §41 portfolio engine (transaction log, realised P&L, thesis-drift monitor) is genuinely still Phase 8. |
+| **Macro** | Built — the real §29 hero spread and the real §33 sector sensitivity matrix, both live estimates. The regime gauge itself (probability, gross exposure, sector tilts, the ARDL half-life) isn't a dedicated UI yet, and the classifier hasn't been validated against a real historical Sri Lankan regime. |
+| **Journal** | Built. Record a real decision — action, reasoning, conviction, §45's "what would prove me wrong?" — with this system's own real fair value, price ladder and margin-of-safety breakdown frozen at that moment, and record a real exit outcome against it. |
+| **Lab** | Awaiting Phase 8 — the one destination still a named, unbuilt gap. |
 | **Data health** | Built. §9's screen: coverage, freshness, queue depths, quarantine. |
 | **Confirm queue** | Built. Reached from Data health — §7.1 specifies eight destinations and adding a ninth would misrepresent the IA. |
 
@@ -29,13 +29,14 @@ permanently").
 
 ## What is deliberately absent
 
-Composite scores and coverage tiers — their engine is Phase 2. The API
-omits those fields entirely rather than returning null, because a null
-is too easy to render as "0". Fair value and a buy-below price are no
-longer categorically absent (see the Companies row above); the company
-file's price-ladder bar uses the five `--zone-*` tokens in
-`design-tokens.css`, which were defined against §26 before this was the
-first thing to actually read them.
+Composite scores (§38, Phase 6) and coverage tiers (§11, Phase 2) — the
+API omits those fields entirely rather than returning null, because a
+null is too easy to render as "0". Fair value and a buy-below price are
+no longer categorically absent (see the Companies, Portfolio,
+Opportunities and Journal rows above); the price-ladder bar and every
+`ZoneChip` use the same five `--zone-*` tokens in `design-tokens.css`,
+which were defined against §26 before the Company file was the first
+thing to actually read them.
 
 ## Spec compliance
 
