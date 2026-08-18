@@ -33,6 +33,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.liquidity_view import universe_amihud_ratios
 from app.domain.valuation_view import valuation_summary_for
 from app.models.portfolio import PortfolioPosition, PortfolioSnapshot
 from app.models.prices import PriceDaily
@@ -95,7 +96,11 @@ def _latest_price(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
 
 
 def value_position(
-    db: Session, position: PortfolioPosition, as_of: dt.date
+    db: Session,
+    position: PortfolioPosition,
+    as_of: dt.date,
+    *,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> ValuedPosition:
     warnings: list[str] = []
     security = db.get(Security, position.ticker)
@@ -110,7 +115,10 @@ def value_position(
     if security is not None and live_price is None:
         warnings.append(f"No real live price found for {position.ticker!r} on or before {as_of}.")
 
-    summary = valuation_summary_for(db, position.ticker, archetype, live_price, as_of)
+    summary = valuation_summary_for(
+        db, position.ticker, archetype, live_price, as_of,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+    )
 
     live_market_value = None
     live_unrealized_gain_loss = None
@@ -138,7 +146,18 @@ def value_portfolio(
     db: Session, snapshot: PortfolioSnapshot, as_of: dt.date | None = None
 ) -> ValuedPortfolio:
     stamp = as_of or dt.date.today()
-    valued = [value_position(db, p, stamp) for p in snapshot.positions]
+    # Computed ONCE for the whole portfolio and threaded through every
+    # position — see `app.domain.liquidity_view.liquidity_percentile_
+    # for`'s own docstring for why this matters: a real profiling run
+    # (18 Aug 2026) found a real 9-position portfolio taking 89 seconds
+    # to value because this same market-wide scan was being recomputed
+    # from scratch 6 times per position (54 times total) with no
+    # sharing at all, even within one position's own valuation.
+    universe_ratios = universe_amihud_ratios(db, stamp)
+    valued = [
+        value_position(db, p, stamp, universe_liquidity_ratios=universe_ratios)
+        for p in snapshot.positions
+    ]
 
     missing = tuple(v.ticker for v in valued if v.live_current_price is None)
     priced = [v for v in valued if v.live_market_value is not None]

@@ -94,7 +94,7 @@ from app.domain.dividend_residual_income import (
     compute_residual_income,
     gordon_growth_value,
 )
-from app.domain.liquidity_view import liquidity_percentile_for
+from app.domain.liquidity_view import liquidity_percentile_for, universe_amihud_ratios
 from app.domain.macro_engine_view import RegimeView, regime_for
 from app.domain.market_cap_view import latest_shares_issued
 from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
@@ -221,7 +221,12 @@ class LiveValuationInputs:
 
 
 def _gather_inputs(
-    db: Session, ticker: str, as_of: dt.date, *, regime: str | None = None
+    db: Session,
+    ticker: str,
+    as_of: dt.date,
+    *,
+    regime: str | None = None,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> LiveValuationInputs:
     warnings: list[str] = []
 
@@ -246,7 +251,9 @@ def _gather_inputs(
                 + (f" ({roe_result.note})" if roe_result and roe_result.note else ".")
             )
 
-    ke_result = cost_of_equity_for(db, ticker, as_of, regime=regime)
+    ke_result = cost_of_equity_for(
+        db, ticker, as_of, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
     if ke_result.ke is None:
         warnings.append(f"Cost of equity not computable: {ke_result.note}")
 
@@ -282,10 +289,17 @@ class JustifiedPBView:
 
 
 def justified_price_to_book_for(
-    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+    db: Session,
+    ticker: str,
+    as_of: dt.date | None = None,
+    *,
+    regime: str | None = None,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> JustifiedPBView:
     stamp = as_of or dt.date.today()
-    inputs = _gather_inputs(db, ticker, stamp, regime=regime)
+    inputs = _gather_inputs(
+        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
 
     if inputs.roe is None or inputs.cost_of_equity is None:
         return JustifiedPBView(inputs, None, None)
@@ -306,10 +320,17 @@ class ResidualIncomeView:
 
 
 def residual_income_for(
-    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+    db: Session,
+    ticker: str,
+    as_of: dt.date | None = None,
+    *,
+    regime: str | None = None,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> ResidualIncomeView:
     stamp = as_of or dt.date.today()
-    inputs = _gather_inputs(db, ticker, stamp, regime=regime)
+    inputs = _gather_inputs(
+        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
 
     if inputs.roe is None or inputs.cost_of_equity is None or inputs.book_value_per_share is None:
         return ResidualIncomeView(inputs, None)
@@ -407,7 +428,7 @@ class WACCView:
 
 def wacc_for(
     db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None,
-    *, regime: str | None = None,
+    *, regime: str | None = None, universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> WACCView:
     """§18.1's discount rate for an FCFF projection — see
     `app.domain.wacc`'s own module docstring for why this must never be
@@ -448,7 +469,9 @@ def wacc_for(
         effective_tax_rate=tax_result.value if tax_result and tax_result.computable else None,
     )
 
-    ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
+    ke_result = cost_of_equity_for(
+        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
     shares = latest_shares_issued(db, ticker, stamp)
 
     result = compute_wacc(
@@ -554,7 +577,12 @@ class DDMView:
 
 
 def gordon_growth_ddm_for(
-    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+    db: Session,
+    ticker: str,
+    as_of: dt.date | None = None,
+    *,
+    regime: str | None = None,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> DDMView:
     """§19.1's Gordon-growth DDM (`V0 = D1 / (Ke - g)`) wired to real —
     if, for essentially every ticker today, currently EMPTY — confirmed
@@ -630,7 +658,9 @@ def gordon_growth_ddm_for(
             "single declaration."
         )
 
-    ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
+    ke_result = cost_of_equity_for(
+        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
     if ke_result.ke is None:
         warnings.append(f"Cost of equity not computable: {ke_result.note}")
         return DDMView(stamp, None, tuple(warnings))
@@ -654,7 +684,7 @@ class DCFView:
 
 def dcf_for(
     db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None,
-    *, regime: str | None = None,
+    *, regime: str | None = None, universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> DCFView:
     """§18's full three-stage FCFF DCF (`app.domain.dcf.dcf_equity_value`),
     finally wired to live data — the multi-year forecast wiring that
@@ -747,13 +777,17 @@ def dcf_for(
     if tax_result is None or not tax_result.computable:
         missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
 
-    wacc_view = wacc_for(db, ticker, current_price, stamp, regime=regime)
+    wacc_view = wacc_for(
+        db, ticker, current_price, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
     if wacc_view.result is None or wacc_view.result.wacc is None:
         missing.append(
             "WACC (" + (wacc_view.result.note if wacc_view.result else "not computable") + ")"
         )
 
-    ke_result = cost_of_equity_for(db, ticker, stamp, regime=regime)
+    ke_result = cost_of_equity_for(
+        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+    )
     if ke_result.risk_free_rate is None:
         missing.append("risk_free_rate (needed to cap terminal/stage-2 growth)")
 
@@ -1035,6 +1069,7 @@ class CompanyValuationSummary:
 def valuation_summary_for(
     db: Session, ticker: str, archetype: str | None, current_price: Decimal | None,
     as_of: dt.date | None = None,
+    *, universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> CompanyValuationSummary:
     """The full, real, end-to-end Phase 3 pipeline for one company: route
     → the two live-wireable anchors → triangulate → margin of safety →
@@ -1042,8 +1077,24 @@ def valuation_summary_for(
     compute — this function does not paper over a gap by skipping a
     stage silently; `note` on the result, and each sub-result's own
     fields, say what ran and what didn't.
-    """
+
+    `universe_liquidity_ratios` — like `regime` below, the caller's job
+    to supply when it already has one, not this function's to fetch
+    unconditionally. Left `None` (computed once here, exactly as before)
+    for a single-company call; a caller valuing several companies against
+    the same `as_of` — `app.domain.portfolio_valuation_view.
+    value_portfolio` is the real one — computes `app.domain.liquidity_
+    view.universe_amihud_ratios` ONCE and passes it to every call
+    instead, since it is market-wide and identical across every one of
+    them. See `app.domain.liquidity_view.liquidity_percentile_for`'s own
+    docstring for the real, profiled cost this avoids: 89 seconds for 9
+    positions before this was threaded through, on a real portfolio."""
     stamp = as_of or dt.date.today()
+    universe_ratios = (
+        universe_liquidity_ratios
+        if universe_liquidity_ratios is not None
+        else universe_amihud_ratios(db, stamp)
+    )
     routing = route_valuation(archetype)
 
     # Computed ONCE, here, and threaded through every call below that
@@ -1063,12 +1114,22 @@ def valuation_summary_for(
     regime_view = regime_for(db, stamp)
     regime_label = regime_view.result.label if regime_view.result is not None else None
 
-    jpb = justified_price_to_book_for(db, ticker, stamp, regime=regime_label)
-    ri = residual_income_for(db, ticker, stamp, regime=regime_label)
+    jpb = justified_price_to_book_for(
+        db, ticker, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+    )
+    ri = residual_income_for(
+        db, ticker, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+    )
     fcff_view = current_period_fcff_for(db, ticker, stamp)
-    wacc_view = wacc_for(db, ticker, current_price, stamp, regime=regime_label)
-    dcf_view = dcf_for(db, ticker, current_price, stamp, regime=regime_label)
-    ddm_view = gordon_growth_ddm_for(db, ticker, stamp, regime=regime_label)
+    wacc_view = wacc_for(
+        db, ticker, current_price, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+    )
+    dcf_view = dcf_for(
+        db, ticker, current_price, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+    )
+    ddm_view = gordon_growth_ddm_for(
+        db, ticker, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+    )
     hard_book_view = hard_book_for(db, ticker, stamp)
 
     anchors: list[ValuationAnchor] = []
@@ -1083,7 +1144,9 @@ def valuation_summary_for(
 
     mos = compute_margin_of_safety(
         dispersion_pct=triangulation.dispersion_pct,
-        liquidity_percentile=liquidity_percentile_for(db, ticker, stamp),  # real Amihud percentile, live 18 Aug 2026
+        liquidity_percentile=liquidity_percentile_for(
+            db, ticker, stamp, universe_ratios=universe_ratios
+        ),  # real Amihud percentile, live 18 Aug 2026
         regime=regime_label,  # §29-33's regime read, live — see regime_for's own docstring
         integrity_score=None,  # no continuous integrity score exists anywhere in this system, by design — see margin_of_safety.py
         data_completeness_pct=None,  # not computed at the per-company level anywhere yet

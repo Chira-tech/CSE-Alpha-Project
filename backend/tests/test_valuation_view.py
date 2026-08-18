@@ -51,7 +51,7 @@ AS_OF = dt.date(2022, 6, 1)
 
 
 def _fake_ke(ke: Decimal | None, rf: Decimal | None = Decimal("0.12")):
-    def _fn(db, ticker, as_of=None, *, regime=None):
+    def _fn(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None):
         return CostOfEquityResult(
             ke=ke, risk_free_rate=rf, beta=Decimal("1.0"), erp_effective=Decimal("0.07"),
             beta_times_erp=Decimal("0.07"), size_premium=None, illiquidity_premium=None,

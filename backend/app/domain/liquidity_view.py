@@ -83,12 +83,31 @@ def universe_amihud_ratios(
 
 
 def liquidity_percentile_for(
-    db: Session, ticker: str, as_of: dt.date | None = None, *, lookback_days: int = DEFAULT_LOOKBACK_DAYS
+    db: Session,
+    ticker: str,
+    as_of: dt.date | None = None,
+    *,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    universe_ratios: dict[str, Decimal] | None = None,
 ) -> Decimal | None:
     """This ticker's own real liquidity percentile within the real
     universe (0-100, HIGHER = MORE liquid — see `app.domain.liquidity`'s
     own docstring). `None` when this ticker itself doesn't have enough
-    real data to rank, regardless of how many other tickers do."""
+    real data to rank, regardless of how many other tickers do.
+
+    `universe_ratios` — the caller's job to supply, not this function's
+    to fetch, exactly the same convention `app.domain.cost_of_equity_
+    view.cost_of_equity_for`'s own `regime` parameter already
+    established for the identical reason: `universe_amihud_ratios`
+    scans every real ticker's full real price history and is market-
+    wide, not company-specific — identical across every call within one
+    valuation run. A real profiling run (18 Aug 2026) found this
+    function recomputing it from scratch 6 times over inside a single
+    `app.domain.valuation_view.valuation_summary_for` call, and 54 times
+    across one 9-position real portfolio view — over 89 seconds total
+    for what should be one real computation. Defaults to `None` (compute
+    fresh) so every existing caller that doesn't pass one keeps its
+    exact prior behaviour."""
     stamp = as_of or dt.date.today()
-    ratios = universe_amihud_ratios(db, stamp, lookback_days)
+    ratios = universe_ratios if universe_ratios is not None else universe_amihud_ratios(db, stamp, lookback_days)
     return percentile_rank(ratios).get(ticker)

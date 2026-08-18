@@ -12,6 +12,7 @@ restatement risk to guard against here the way there is for fundamentals.
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -64,7 +65,12 @@ def beta_for(db: Session, ticker: str, as_of: dt.date | None = None) -> BetaResu
 
 
 def cost_of_equity_for(
-    db: Session, ticker: str, as_of: dt.date | None = None, *, regime: str | None = None
+    db: Session,
+    ticker: str,
+    as_of: dt.date | None = None,
+    *,
+    regime: str | None = None,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
 ) -> CostOfEquityResult:
     """`regime` — one of `"risk_on"`/`"transition"`/`"risk_off"`, or
     `None` — is the caller's job to supply, not this function's to fetch:
@@ -78,13 +84,18 @@ def cost_of_equity_for(
     valuation_view.valuation_summary_for`'s own docstring for where it's
     computed once and threaded through instead. Defaults to `None`
     (no regime adjustment) so every existing caller that doesn't pass
-    one keeps its exact prior behaviour."""
+    one keeps its exact prior behaviour.
+
+    `universe_liquidity_ratios` is the identical convention applied to
+    `app.domain.liquidity_view.liquidity_percentile_for`'s own expensive
+    market-wide scan — see that function's docstring for the real,
+    profiled cost this avoids."""
     stamp = as_of or dt.date.today()
 
     beta_result = beta_for(db, ticker, stamp)
     rf_observation = risk_free_observation(db, stamp)
     spread = current_spread(db, stamp)
-    liquidity_percentile = liquidity_percentile_for(db, ticker, stamp)
+    liquidity_percentile = liquidity_percentile_for(db, ticker, stamp, universe_ratios=universe_liquidity_ratios)
 
     return compute_cost_of_equity(
         CostOfEquityInputs(
