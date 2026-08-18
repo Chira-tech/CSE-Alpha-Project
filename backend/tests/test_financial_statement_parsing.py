@@ -860,6 +860,24 @@ class TestDetectUnitScale:
         )
         assert detect_unit_scale(comb_header) == Decimal(1000)
 
+    def test_combs_2019_annual_report_uses_a_unicode_right_quote_not_ascii_apostrophe(self):
+        """A REAL, SEPARATE encoding variant found live: COMB.N0000's
+        2019 annual report (a different filing/toolchain vintage from its
+        2026 interim statement above) renders the same "Rs.'000"
+        declaration with U+2019 (RIGHT SINGLE QUOTATION MARK, "’"), not
+        the straight ASCII apostrophe (U+0027, "'") — pdfplumber decodes
+        whichever glyph that PDF's own embedded font actually maps to
+        that position. Found by a dedicated diagnostic run against the
+        real PDF after the ASCII-only pattern silently dropped 11 real,
+        extractable pages from this one filing alone, including the
+        primary balance sheet itself — not a theoretical variant."""
+        real_header_with_unicode_quote = (
+            "GROUP BANK\n"
+            "As at December 31, 2019 2018 Change 2019 2018 Change\n"
+            "Note Page No. Rs. ’000 Rs. ’000 % Rs. ’000 Rs. ’000 %\n"
+        )
+        assert detect_unit_scale(real_header_with_unicode_quote) == Decimal(1000)
+
     def test_swadeshis_real_rs_header_is_a_full_value_scale(self):
         """Swadeshi Industrial Works PLC's real statements are genuinely
         NOT in thousands — Revenue of 4,649,049,764 is a real ~4.6bn LKR

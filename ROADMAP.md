@@ -1079,6 +1079,35 @@ of 0.09 against a 205.75 share price) led directly to the diagnosis.
         direct proof the fix doesn't scale what shouldn't be scaled.
         Full suite: 890 passed, no regressions.
 
+- [x] **A SECOND real bug, found immediately by re-running the real
+      backfill against the fix above**: the "refuse rather than guess"
+      behaviour just added started refusing far more real statement
+      pages than expected on COMB.N0000's real 2019 annual report — 22
+      pages on one filing alone. Diagnosed with a dedicated script that
+      reproduced the real pipeline exactly (not a guess): 11 of those 22
+      refusals were genuinely losing real, extractable data, including
+      the filing's own primary balance sheet (page 142 — "Total assets
+      1,408,941,366", the right order of magnitude for COMB's real 2019
+      balance sheet in thousands). Reading the raw page text at the
+      codepoint level found the cause: this older filing's own PDF
+      toolchain renders the same "Rs.'000" declaration using a Unicode
+      RIGHT SINGLE QUOTATION MARK (U+2019, "’") rather than the straight
+      ASCII apostrophe (U+0027, "'") the pattern above only matched —
+      pdfplumber decodes whichever glyph the PDF's own embedded font
+      actually maps to that position, a genuine real-world encoding
+      difference across filing vintages, not an OCR error. Fixed by
+      widening `_UNIT_THOUSANDS_RE` to accept either character. Re-ran
+      the same diagnostic after the fix: refused-with-real-data pages
+      dropped from 11 to 2, and both remaining refusals are CORRECT —
+      pages 357-358 are a genuine US-Dollar-denominated appendix table
+      this LKR-only pipeline should never treat as an LKR thousands
+      figure regardless (confirmed by the numbers themselves: the same
+      total assets figure divided by ~181, a plausible 2019 LKR/USD
+      rate). 1 new regression test (`test_combs_2019_annual_report_
+      uses_a_unicode_right_quote_not_ascii_apostrophe`). Full suite: 891
+      passed, no regressions. The COMB.N0000 backfill was re-run again
+      against this second fix to repopulate the dev database correctly.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —

@@ -395,7 +395,21 @@ def match_canonical_label(label: str) -> str | None:
 # consecutively (matching Swadeshi's real "Rs. Rs. Rs. Rs." header
 # exactly) rather than matching on a single stray "Rs." anywhere on the
 # page, which could appear incidentally in unrelated body text.
-_UNIT_THOUSANDS_RE = re.compile(r"rs\.?\s*'?000s?\b")
+#
+# THE APOSTROPHE ITSELF HAS TWO REAL ENCODINGS, FOUND LIVE. COMB.N0000's
+# own real 2019 annual report (a different filing/toolchain vintage from
+# its 2026 interim statement checked first) renders the SAME "Rs.'000"
+# declaration with a Unicode RIGHT SINGLE QUOTATION MARK (U+2019, "’"),
+# not the straight ASCII apostrophe (U+0027, "'") the original pattern
+# only matched — pdfplumber decodes whichever glyph the PDF's own
+# embedded font actually maps to that position, and this is a genuine,
+# observed difference across real filings, not an OCR error. Confirmed
+# by inspecting the exact codepoint on a real downloaded PDF
+# (`Rs. ’000`) after this exact gap silently dropped 11 real,
+# extractable statement/summary pages (including the real primary
+# balance sheet on page 142) from that one filing alone — caught by a
+# dedicated diagnostic run, not by re-reading the regex in the abstract.
+_UNIT_THOUSANDS_RE = re.compile(r"rs\.?\s*['’]?000s?\b")
 _UNIT_FULL_VALUE_RE = re.compile(r"(?:\brs\.\s*){2,}")
 
 
