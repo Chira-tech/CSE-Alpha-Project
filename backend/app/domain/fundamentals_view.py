@@ -18,8 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.point_in_time import fundamentals_as_of
+from app.domain.provenance import can_enter_valuation
 from app.domain.ratios import LineItem, RatioResult, compute_all
 from app.domain.trend_detection import RatioSeriesPoint, RatioTrend, analyse_ratio_trend
+from app.domain.ttm import trailing_twelve_months
 from app.models.fundamentals import Fundamental
 
 
@@ -41,6 +43,7 @@ def latest_period_line_items(
 
     latest_period = max(r.period_end for r in rows)
     items: dict[str, LineItem] = {}
+    net_income_period_type: str | None = None
     for row in rows:
         if row.period_end != latest_period:
             continue
@@ -49,6 +52,35 @@ def latest_period_line_items(
         existing = items.get(row.statement_line)
         if existing is None:
             items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
+            if row.statement_line == "net_income":
+                net_income_period_type = row.period_type
+
+    # Same real P0 fix as `app.domain.valuation_view._confirmable_line_
+    # items` — see `app.domain.ttm`'s own module docstring. Only applied
+    # when the line is itself already confirmed: an AI-assisted
+    # `net_income` is intentionally shown here as-is (this function,
+    # unlike the valuation one, deliberately displays AI-assisted ratios
+    # with their own chip rather than withholding them), and `trailing_
+    # twelve_months` only ever reasons over CONFIRMED periods — mixing
+    # an unconfirmed current period with a confirmed-period TTM
+    # computation could silently pair mismatched dates, exactly what
+    # this function's own docstring says never to do.
+    if (
+        "net_income" in items
+        and net_income_period_type is not None
+        and can_enter_valuation(items["net_income"].provenance)
+    ):
+        ttm_net_income = trailing_twelve_months(
+            db, ticker, "net_income", as_of,
+            current_period_end=latest_period, current_period_type=net_income_period_type,
+            current_value=items["net_income"].value,
+        )
+        if ttm_net_income is not None:
+            items["net_income"] = LineItem(
+                value=ttm_net_income, provenance=items["net_income"].provenance
+            )
+        else:
+            del items["net_income"]
 
     return latest_period, items
 

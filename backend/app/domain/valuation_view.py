@@ -105,6 +105,7 @@ from app.domain.provenance import can_enter_valuation
 from app.domain.ratios import LineItem, compute_all
 from app.domain.relative_valuation import JustifiedMultipleResult, justified_price_to_book
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
+from app.domain.ttm import trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import CorporateActionType
@@ -126,6 +127,7 @@ def _confirmable_line_items(
     latest_period = max(r.period_end for r in rows)
     items: dict[str, LineItem] = {}
     excluded: set[str] = set()
+    net_income_period_type: str | None = None
     for row in rows:
         if row.period_end != latest_period:
             continue
@@ -134,6 +136,40 @@ def _confirmable_line_items(
             continue
         if row.statement_line not in items:
             items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
+            if row.statement_line == "net_income":
+                net_income_period_type = row.period_type
+
+    # A REAL P0 fix (18 Aug 2026) — see `app.domain.ttm`'s own module
+    # docstring for the full finding: `net_income` for a "quarterly"
+    # period is CUMULATIVE SINCE THE FISCAL YEAR START in this system's
+    # own real CSE filings, not a standalone quarter. Using it directly
+    # understated COMB.N0000's real ROE by roughly half (9.73% instead
+    # of the correct 17.92%), which alone was the entire reason
+    # residual income and justified P/B put a real, liquid, well-run
+    # bank in the "Exit" zone. Replaced here with the real trailing-
+    # twelve-month figure — or removed entirely (never left as the raw,
+    # misleading cumulative value) when TTM annualisation isn't yet
+    # possible for this ticker.
+    if "net_income" in items and net_income_period_type is not None:
+        ttm_net_income = trailing_twelve_months(
+            db, ticker, "net_income", as_of,
+            current_period_end=latest_period, current_period_type=net_income_period_type,
+            current_value=items["net_income"].value,
+        )
+        if ttm_net_income is not None:
+            items["net_income"] = LineItem(
+                value=ttm_net_income, provenance=items["net_income"].provenance
+            )
+        else:
+            # Deliberately NOT added to `excluded` — that set's own
+            # downstream warning says "still AI-assisted/unconfirmed",
+            # which would be false here (this line IS confirmed; it's
+            # the ANNUALISATION that's missing a component). Removing it
+            # from `items` is enough: every ROE-dependent ratio/anchor
+            # already names "net_income" as a missing required input on
+            # its own terms via `app.domain.ratios`' existing
+            # missing-input reporting.
+            del items["net_income"]
 
     return latest_period, items, tuple(sorted(excluded))
 
