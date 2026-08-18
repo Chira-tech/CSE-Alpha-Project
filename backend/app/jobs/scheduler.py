@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
@@ -29,6 +30,7 @@ from app.ingestion.financial_pdf_extractor import ingest_financial_statements_fo
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.jobs.market_cap_reconciliation import run_nightly_market_cap_check
+from app.jobs.runner import poll_and_run_one
 from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
@@ -327,6 +329,32 @@ def _job_financial_statement_scan() -> None:
         db.close()
 
 
+def _job_poll_manual_job_queue() -> None:
+    """P1.1: notices a `queued` `JobRun` row — written by `POST
+    /jobs/{job}/run`, which only ever INSERTS and returns immediately,
+    never executes inline (see `app.jobs.runner`'s own module docstring
+    for why) — and runs it to completion in THIS process, the always-on
+    worker, per the brief's own "Execution rules... not optional" rule 1.
+
+    Drains the whole queue in one tick (`while poll_and_run_one(): ...`)
+    rather than waiting a further 5s between each manually-triggered job
+    — `poll_and_run_one` already enforces "one job at a time" via its own
+    running-jobs check, so draining here doesn't race the cron jobs
+    above it. `max_instances=1` on this job's own id (set where it's
+    registered below) is what stops a SECOND tick from starting a
+    concurrent poll if one manual run's real ingestion work — up to the
+    ~10 minutes `app.jobs.registry`'s own `est_seconds` discloses for a
+    full per-ticker sweep — is still running when the next 5s interval
+    fires; APScheduler simply skips that overlapping tick rather than
+    running two pollers at once.
+    """
+    try:
+        while poll_and_run_one():
+            pass
+    except Exception:
+        logger.exception("manual job queue poll failed")
+
+
 def _colombo_cron(hour: int, minute: int) -> CronTrigger:
     """Every schedule in this system is anchored to the exchange's clock,
     never the host's.
@@ -428,6 +456,18 @@ def build_scheduler() -> BackgroundScheduler:
         _job_financial_statement_scan,
         _colombo_cron(16, 30),
         id="financial_statement_scan",
+        replace_existing=True,
+    )
+    # P1.1: the manual "Run Capture" queue poller. Not exchange-hours-
+    # gated like every job above — a human can trigger a manual run at
+    # any time of day, so this must always be listening, weekends
+    # included (a manual run still respects CseClient's own pacing and
+    # the 15-minute cooldown regardless of when it's triggered).
+    scheduler.add_job(
+        _job_poll_manual_job_queue,
+        IntervalTrigger(seconds=5),
+        id="manual_job_queue_poll",
+        max_instances=1,
         replace_existing=True,
     )
 

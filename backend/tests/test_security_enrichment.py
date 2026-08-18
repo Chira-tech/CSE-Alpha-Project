@@ -217,6 +217,71 @@ def test_one_failing_company_does_not_abort_the_sweep(db_session):
 
 
 @respx.mock
+def test_on_ticker_returning_false_actually_stops_the_sweep(db_session):
+    """Real bug, caught live in the browser: an earlier version of
+    `app.jobs.runner._run_enrich_securities` only RECORDED a cancel
+    request in a local variable without this function itself ever
+    checking it — clicking Cancel in the sidebar set `cancel_requested`
+    in the database correctly, but the worker kept fetching ticker after
+    ticker to the end of the universe regardless, because nothing in
+    this loop actually broke on it. `on_ticker` returning `False` must
+    stop the sweep after the ticker that just completed, not just be
+    observed."""
+    db_session.add_all(
+        [
+            Security(ticker="AEL.N0000", name="ACCESS ENGINEERING PLC"),
+            Security(ticker="BAD.N0000", name="Never Reached"),
+        ]
+    )
+    db_session.commit()
+    respx.post(f"{BASE}/companyInfoSummery", data={"symbol": "AEL.N0000"}).mock(
+        return_value=httpx.Response(200, json=REAL_INFO)
+    )
+    # No mock registered for BAD.N0000 — respx raises if this is ever
+    # actually requested, which is exactly the assertion this test needs.
+
+    client = _client()
+    calls: list[str] = []
+
+    def on_ticker(i: int, n: int, ticker: str) -> bool:
+        calls.append(ticker)
+        return False  # stop after the very first ticker
+
+    result = enrich_securities(client, db_session, ["AEL.N0000", "BAD.N0000"], on_ticker=on_ticker)
+    client.close()
+
+    assert calls == ["AEL.N0000"]
+    assert result["enriched"] == 1
+    assert db_session.get(Security, "BAD.N0000").isin is None
+
+
+@respx.mock
+def test_on_ticker_returning_none_does_not_stop_the_sweep(db_session):
+    """The signal is opt-in: every pre-existing caller (`app.cli`, every
+    test above) never returns anything from its callback, and must keep
+    sweeping every ticker exactly as before."""
+    db_session.add_all(
+        [
+            Security(ticker="AEL.N0000", name="ACCESS ENGINEERING PLC"),
+            Security(ticker="AEL2.N0000", name="Also Reached"),
+        ]
+    )
+    db_session.commit()
+    respx.post(f"{BASE}/companyInfoSummery").mock(return_value=httpx.Response(200, json=REAL_INFO))
+
+    client = _client()
+    calls: list[str] = []
+    result = enrich_securities(
+        client, db_session, ["AEL.N0000", "AEL2.N0000"],
+        on_ticker=lambda i, n, ticker: calls.append(ticker),  # returns None
+    )
+    client.close()
+
+    assert calls == ["AEL.N0000", "AEL2.N0000"]
+    assert result["enriched"] == 2
+
+
+@respx.mock
 def test_rerun_does_not_duplicate_the_float_snapshot(db_session):
     db_session.add(Security(ticker="AEL.N0000", name="ACCESS ENGINEERING PLC"))
     db_session.commit()

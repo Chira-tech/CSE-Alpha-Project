@@ -11,6 +11,7 @@ from app.api.routes import (
     decisions,
     fundamentals,
     health,
+    jobs,
     market,
     national_projects,
     opportunities,
@@ -54,3 +55,4 @@ app.include_router(national_projects.router)
 app.include_router(portfolio.router)
 app.include_router(opportunities.router)
 app.include_router(decisions.router)
+app.include_router(jobs.router)

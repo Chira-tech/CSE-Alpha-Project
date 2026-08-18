@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RunCapture } from "./components/RunCapture";
 import { useReviewerName } from "./hooks/useReviewerName";
 import { NAV_ITEMS, REVIEW_SCREEN, type ScreenId } from "./nav";
 import { CompaniesScreen } from "./screens/CompaniesScreen";
@@ -125,6 +126,7 @@ export function App() {
           </div>
 
           <div className="rail-foot">
+            <RunCapture />
             <p className="t-caption prose" style={{ margin: 0 }}>
               Deterministic code computes; AI explains. There is no BUY button in this product, by
               design (§4, law 6).

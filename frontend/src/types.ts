@@ -510,3 +510,45 @@ export interface IndexHistory {
    * the feed's raw level is NOT the close on ~38% of days. */
   recovered: number;
 }
+
+// --- Jobs (P1.1 "Run Capture") --------------------------------------------
+
+export type JobKey =
+  | "capture_prices"
+  | "capture_market"
+  | "capture_macro"
+  | "capture_filings"
+  | "capture_corporate_actions"
+  | "enrich_securities"
+  | "recompute"
+  | "capture_all";
+
+export type JobRunStatus = "queued" | "running" | "success" | "failed" | "cancelled";
+
+export interface JobRun {
+  id: number;
+  job: JobKey;
+  label: string;
+  trigger: "manual" | "scheduled";
+  status: JobRunStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  progress_pct: string;
+  progress_note: string | null;
+  rows_written: number;
+  error: string | null;
+  cancel_requested: boolean;
+  created_at: string;
+}
+
+export interface JobStatusEntry {
+  job: JobKey;
+  label: string;
+  est_seconds: number;
+  last_run: JobRun | null;
+  next_scheduled_at: string | null;
+}
+
+export interface JobsStatus {
+  jobs: JobStatusEntry[];
+}

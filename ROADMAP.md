@@ -2575,15 +2575,102 @@ snapshot.
       - Backend: 1089 passed (was 1061 before this pair of tasks).
         Frontend: `tsc` + `vite build` + the new lint guard all clean.
 
-**P1.1 (the manual "Run Capture" job control §5's brief also asks for)
-is IN PROGRESS, not yet complete** — `app.jobs.registry`, `app.models.
-job_run.JobRun` (migration 0017) and `app.jobs.runner` (enqueue,
-concurrency guard, 15-minute manual cooldown, per-ticker progress
-reporting reusing this session's own corporate-actions resumability
-work, cooperative cancel) are written and import cleanly, but are not
-yet wired into `app.api.routes.jobs`, the scheduler's own poll loop, or
-the sidebar UI, and have no test coverage yet. Named honestly as
-unfinished rather than folded into the completed list above.
+### P1.1 — the manual "Run Capture" job control: complete, wired end to end
+
+The previous entry left this "in progress" — the runner existed but
+wasn't reachable from anywhere. It now is, verified live in the browser
+against the real dev DB and worker process, not just against the test
+suite.
+
+- [x] **`app.api.routes.jobs`** — all four endpoints the brief's own
+      table names: `POST /jobs/{job}/run` (202 + the queued row, 404 on
+      an unknown job, 409 via `JobConflict`, 429 via `JobCooldown` with
+      `{message, retry_after}` as the JSON `detail`), `GET /jobs/status`
+      (every registered job, even one never run — a real, honest `None`
+      last-run rather than an error), `POST /jobs/{run_id}/cancel`
+      (instant-cancels a still-`queued` row outright since nothing has
+      started; sets `cancel_requested` on a `running` one for the
+      worker's own loop to honour), `GET /jobs/{run_id}/stream` (SSE,
+      polling `job_runs` once a second until a terminal status, then
+      closing). `next_scheduled_at` is read from the SAME `CronTrigger`
+      objects `app.jobs.scheduler.build_scheduler` registers — never a
+      second, independently-typed hour/minute table that could silently
+      drift from the real schedule.
+- [x] **`app.jobs.scheduler`'s own `manual_job_queue_poll`** — a new
+      5-second `IntervalTrigger` job, `max_instances=1`, that drains
+      `app.jobs.runner.poll_and_run_one` in a loop every tick. This is
+      the piece that actually turns a queued row into a running job, in
+      the always-on worker process, never inline in the API request
+      handler that enqueued it — per the brief's own "Execution rules...
+      not optional" rule 1.
+- [x] **The sidebar itself** (`frontend/src/components/RunCapture.tsx`,
+      rendered once in `App.tsx`'s `rail-foot` so it survives screen
+      navigation) — freshness dots (`--pos`/`--caution` with a glyph,
+      never colour alone, §2.3/§15.2) for the five jobs with a real cron
+      cadence to be stale against, a "Run Capture ▸" menu built directly
+      from `GET /jobs/status`'s own labels (never a second hand-typed
+      list), a live SSE-driven progress bar + note + Cancel link while a
+      run is active, and a 429's `retry_after` surfaced as "Try again in
+      Nm" rather than a generic error. `src/dataRefresh.ts` is the
+      brief's own "invalidate the query cache... do not force a page
+      reload" rule, honestly scoped: this project has no query-cache
+      library, so it's a plain subscribe/publish pair; only
+      `DataHealthScreen` subscribes today, named as a real, narrow,
+      disclosed gap rather than claimed as an app-wide refresh.
+- [x] 38 new backend tests (`test_jobs_runner.py`, `test_jobs_api.py`)
+      plus 2 new scheduler tests for the interval job. Full suite: 1131
+      passed (was 1089). Frontend: `tsc` + `vite build` + the TASK 0.2
+      lint guard all clean.
+
+**Three real bugs found closing this out — two before any browser was
+opened, one only by actually clicking the button:**
+
+- **The 15-minute cooldown check crashed on this project's own real dev
+  database.** SQLite (the documented dev fallback) round-trips a
+  `DateTime(timezone=True)` column back as NAIVE; Postgres preserves it.
+  `app.jobs.runner.enqueue`'s cooldown math subtracted an aware "now"
+  from that naive `created_at` — `TypeError: can't subtract offset-naive
+  and offset-aware datetimes` — the first time a real second manual
+  trigger inside the 15-minute window ever hit this exact line, which is
+  the acceptance test the brief itself asks for
+  (`test_cooldown_enforced`). Caught by a real freezegun test against
+  the real in-memory SQLite fixture, not reasoned about in the abstract.
+  Fixed by treating a tzinfo-less read as UTC (which it always,
+  unambiguously is — every write on this table already uses
+  `dt.datetime.now(dt.timezone.utc)`).
+- **The same class of bug, surfaced a second time by the UI rather than
+  a test.** `JobRunOut`'s timestamps hit the exact same naive/aware gap,
+  but Pydantic doesn't raise on it — it just serialises an offset-less
+  ISO string, and the frontend's `new Date(...)` parses THAT as the
+  browser's own local time. Live in the browser, on this host (8 hours
+  ahead of UTC): a job that had finished seconds earlier showed
+  "8h ago" in the freshness dots. Fixed the same way, at the API's own
+  serialization boundary this time (`_as_utc` in `app.api.routes.jobs`),
+  with a regression test asserting the JSON response always carries an
+  explicit UTC offset regardless of what the DB layer handed back.
+- **Cooperative cancel was cosmetic for `enrich_securities` specifically
+  — found by clicking Cancel in the real running app and watching the
+  worker's own log keep fetching ticker after ticker for a full minute
+  afterwards.** `_run_enrich_securities`'s `on_ticker` closure only
+  recorded "cancel was requested" in a local variable; nothing in
+  `app.ingestion.security_enrichment.enrich_securities`'s own for-loop
+  ever checked it, because that callback's signature returned `None` —
+  there was no signal FOR the loop to check. `capture_corporate_
+  actions`'s own cancel path was never affected — its loop lives
+  directly in `runner.py` and already returned early correctly, verified
+  live the same way (cancelled cleanly at ticker 4/283). Fixed by giving
+  `on_ticker` a real contract: returning `False` now stops
+  `enrich_securities`'s own loop after the ticker that just completed,
+  matching the earlier-established `_set_progress` bool convention
+  rather than inventing a second signalling style. Two new tests in
+  `test_security_enrichment.py` assert the loop actually stops on
+  `False` and actually continues on `None` (the return value every
+  pre-existing caller already produced, so nothing else changed
+  behaviour). This is the reason this project keeps checking a new
+  feature against the real running app rather than trusting a green
+  test suite alone — every one of these three was invisible to
+  `pytest -q` until the exact real condition (a second manual trigger,
+  a host east of UTC, an actual click on Cancel) was reproduced.
 
 ## Explicitly deferred to later phases
 

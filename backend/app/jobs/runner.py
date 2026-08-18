@@ -113,7 +113,19 @@ def enqueue(db: Session, job_key: str, *, trigger: str = "manual") -> JobRun:
             .limit(1)
         )
         if last_manual is not None:
-            elapsed = (dt.datetime.now(dt.timezone.utc) - last_manual.created_at).total_seconds()
+            # SQLite (this project's real dev database — see JobRun's own
+            # docstring) round-trips a `DateTime(timezone=True)` column
+            # back as NAIVE; Postgres preserves it. Every `created_at` in
+            # this table is always written as UTC-aware, so a naive read
+            # is unambiguously UTC, not a guess — subtracting it directly
+            # against an aware "now" would otherwise raise `TypeError:
+            # can't subtract offset-naive and offset-aware datetimes` the
+            # first time this exact path (a real manual re-trigger inside
+            # the cooldown window) is actually exercised on SQLite.
+            last_manual_at = last_manual.created_at
+            if last_manual_at.tzinfo is None:
+                last_manual_at = last_manual_at.replace(tzinfo=dt.timezone.utc)
+            elapsed = (dt.datetime.now(dt.timezone.utc) - last_manual_at).total_seconds()
             if elapsed < MANUAL_COOLDOWN_SECONDS:
                 raise JobCooldown(int(MANUAL_COOLDOWN_SECONDS - elapsed))
 
@@ -223,20 +235,17 @@ def _run_capture_corporate_actions(db: Session, run: JobRun) -> int:
 
 def _run_enrich_securities(db: Session, run: JobRun) -> int:
     tickers = _all_tickers(db)
-    total = len(tickers)
-    cancelled = False
 
-    def on_ticker(i: int, n: int, ticker: str) -> None:
-        nonlocal cancelled
-        if cancelled:
-            return
-        if not _set_progress(db, run, 100 * i / n, f"Security enrichment · {i} / {n} tickers ({ticker})"):
-            cancelled = True
+    def on_ticker(i: int, n: int, ticker: str) -> bool:
+        # `enrich_securities` itself breaks its own loop on a `False`
+        # return (see that function's own docstring for why this must be
+        # an honoured signal, not just a locally-remembered flag) — so
+        # `_set_progress`'s own bool ("did the caller ask to cancel?")
+        # passes straight through with nothing extra to track here.
+        return _set_progress(db, run, 100 * i / n, f"Security enrichment · {i} / {n} tickers ({ticker})")
 
     with CseClient() as client:
         summary = enrich_securities(client, db, tickers, on_ticker=on_ticker)
-    if cancelled:
-        logger.info("enrich_securities run %s: cancel requested mid-sweep", run.id)
     return summary.get("enriched", 0) if isinstance(summary, dict) else int(summary or 0)
 
 

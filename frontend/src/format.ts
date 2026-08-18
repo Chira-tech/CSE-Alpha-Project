@@ -77,3 +77,23 @@ export function directionGlyph(direction: Direction): string {
       return "";
   }
 }
+
+/**
+ * "2m ago" / "3d ago" — the sidebar DATA section's own freshness dots
+ * (P1.1) need this compactly, unlike every other screen's full
+ * `toLocaleString()` timestamp. Coarsens deliberately: once something is
+ * more than a day old, the exact minute stops being the useful unit.
+ */
+export function formatAgo(iso: string | null | undefined): string {
+  if (!iso) return UNAVAILABLE;
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return UNAVAILABLE;
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}

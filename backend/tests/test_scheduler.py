@@ -40,6 +40,14 @@ WEEKLY_JOBS = {
     "price_gap_repair": ("sat", 7, 0),
 }
 
+# P1.1: the manual "Run Capture" queue poller — deliberately NOT weekday/
+# hour-gated like every job above (a human can trigger a manual run any
+# time), so it gets its own category rather than being forced into
+# EXPECTED_JOBS's Colombo-cron shape.
+INTERVAL_JOBS = {
+    "manual_job_queue_poll": 5,
+}
+
 
 @pytest.fixture()
 def scheduler():
@@ -54,7 +62,33 @@ def test_market_tz_is_colombo_not_the_host_zone():
 
 
 def test_all_expected_jobs_are_registered(scheduler):
-    assert {job.id for job in scheduler.get_jobs()} == set(EXPECTED_JOBS) | set(WEEKLY_JOBS)
+    assert {job.id for job in scheduler.get_jobs()} == (
+        set(EXPECTED_JOBS) | set(WEEKLY_JOBS) | set(INTERVAL_JOBS)
+    )
+
+
+@pytest.mark.parametrize(("job_id", "seconds"), INTERVAL_JOBS.items())
+def test_interval_jobs_fire_at_their_named_period(scheduler, job_id, seconds):
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    job = scheduler.get_job(job_id)
+    assert job is not None
+    assert isinstance(job.trigger, IntervalTrigger)
+    assert job.trigger.interval.total_seconds() == seconds
+
+
+def test_manual_job_queue_poll_allows_only_one_instance():
+    """A manual sweep can take up to ~10 minutes (registry.py's own
+    est_seconds); if a second 5s tick started a concurrent poll while one
+    was still running, two workers could both call CseClient at once and
+    break the >=2s pacing every other job in this system respects."""
+    s = build_scheduler()
+    try:
+        job = s.get_job("manual_job_queue_poll")
+        assert job.max_instances == 1
+    finally:
+        if s.running:  # pragma: no cover - defensive
+            s.shutdown(wait=False)
 
 
 @pytest.mark.parametrize(("job_id", "expected"), EXPECTED_JOBS.items())

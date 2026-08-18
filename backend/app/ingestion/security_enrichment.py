@@ -147,7 +147,7 @@ def enrich_security(db: Session, ticker: str, info: CompanyInfoSummary, as_of: d
 
 def enrich_securities(
     client: CseClient, db: Session, tickers: list[str], as_of: dt.date | None = None,
-    *, on_ticker: Callable[[int, int, str], None] | None = None,
+    *, on_ticker: Callable[[int, int, str], bool | None] | None = None,
 ) -> dict[str, int]:
     """Sweeps the given tickers. One bad company never aborts the run —
     with an unofficial upstream and ~283 calls, a mid-sweep failure that
@@ -163,6 +163,18 @@ def enrich_securities(
     which is a single bulk `tradeSummary` call with no per-ticker steps
     to report). Optional and keyword-only so every existing caller
     (`app.cli`, `app.jobs.scheduler` if ever wired there) is unaffected.
+
+    Returning `False` from `on_ticker` stops the sweep after the ticker
+    that just completed — TASK 1.1's own cooperative cancel ("scraper
+    checks a flag between tickers"). This is a real, honoured signal, not
+    cosmetic: a caller that only RECORDS a cancel request without
+    actually breaking this loop (an earlier version of `app.jobs.runner`
+    did exactly that) leaves the sweep running to completion regardless
+    of what the UI shows — caught live, clicking Cancel in the browser
+    and watching the worker's own log keep fetching ticker after ticker
+    for a full minute afterwards. Any other return value, including
+    `None` (what every caller returned before this signal existed),
+    continues the sweep unchanged.
     """
     stamp = as_of or dt.date.today()
     enriched = 0
@@ -176,8 +188,8 @@ def enrich_securities(
         except Exception:  # noqa: BLE001 — unofficial upstream, many failure modes
             logger.exception("enrichment fetch failed for %s", ticker)
             failed += 1
-            if on_ticker is not None:
-                on_ticker(i, total, ticker)
+            if on_ticker is not None and on_ticker(i, total, ticker) is False:
+                break
             continue
 
         if info is None:
@@ -187,8 +199,8 @@ def enrich_securities(
         else:
             skipped += 1
 
-        if on_ticker is not None:
-            on_ticker(i, total, ticker)
+        if on_ticker is not None and on_ticker(i, total, ticker) is False:
+            break
 
     db.commit()
     logger.info("enrichment: %d updated, %d unchanged, %d failed", enriched, skipped, failed)

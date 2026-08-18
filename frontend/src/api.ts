@@ -7,6 +7,9 @@ import type {
   DecisionAction,
   Fundamental,
   IndexHistory,
+  JobKey,
+  JobRun,
+  JobsStatus,
   MarketOverview,
   OpportunityRanking,
   PortfolioSnapshotDetail,
@@ -22,6 +25,11 @@ export class ApiRequestError extends Error {
   constructor(
     message: string,
     public status: number,
+    /** FastAPI's raw `detail` value, whatever shape it was. Almost always
+     * a string (surfaced as `message` above too), but `POST /jobs/{job}/
+     * run`'s 429 sends `{message, retry_after}` — callers that need
+     * `retry_after` read it from here rather than parsing `message`. */
+    public detail?: unknown,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -34,18 +42,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
-    // FastAPI's HTTPException body is {"detail": "..."} — surface that
-    // message directly rather than a generic "request failed", since the
-    // detail is usually the exact reason a confirm/reject was refused
-    // (e.g. "already confirmed", or which fields are missing).
-    let detail = response.statusText;
+    // FastAPI's HTTPException body is {"detail": ...} — surface that
+    // directly rather than a generic "request failed", since the detail
+    // is usually the exact reason a confirm/reject was refused (e.g.
+    // "already confirmed", or which fields are missing).
+    let message = response.statusText;
+    let detail: unknown = undefined;
     try {
       const body = await response.json();
-      if (typeof body?.detail === "string") detail = body.detail;
+      detail = body?.detail;
+      if (typeof detail === "string") message = detail;
     } catch {
       // response body wasn't JSON — fall back to statusText, already set
     }
-    throw new ApiRequestError(detail, response.status);
+    throw new ApiRequestError(message, response.status, detail);
   }
   return response.json() as Promise<T>;
 }
@@ -185,6 +195,38 @@ export function getPortfolioHoldingsValued() {
  * `Content-Type` (with the multipart boundary) when the body is a
  * `FormData`, so no Content-Type header is set here at all.
  */
+// --- Jobs (P1.1 "Run Capture") --------------------------------------------
+
+export function getJobsStatus() {
+  return request<JobsStatus>("/jobs/status");
+}
+
+/**
+ * `enqueue`-only — see `app.jobs.runner`'s own docstring. Returns
+ * immediately with a `queued` row; the always-on worker (not this
+ * request) is what actually runs the job. Throws `ApiRequestError` with
+ * status 409 (already running) or 429 (15-minute manual cooldown — the
+ * message carries `{message, retry_after}` as a JSON string, since
+ * FastAPI's own `HTTPException.detail` here is an object, not a plain
+ * string).
+ */
+export function runJob(job: JobKey) {
+  return request<JobRun>(`/jobs/${encodeURIComponent(job)}/run`, { method: "POST" });
+}
+
+export function cancelJob(runId: number) {
+  return request<JobRun>(`/jobs/${runId}/cancel`, { method: "POST" });
+}
+
+/**
+ * Not routed through `request()`: this is a URL for `EventSource`, which
+ * makes its own GET request outside `fetch` and can't carry a JSON
+ * `Content-Type` header (nor would one mean anything for an SSE GET).
+ */
+export function jobStreamUrl(runId: number): string {
+  return `${BASE_URL}/jobs/${runId}/stream`;
+}
+
 export async function uploadPortfolio(file: File): Promise<PortfolioSnapshotDetail> {
   const form = new FormData();
   form.append("file", file);

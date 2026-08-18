@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiRequestError, getDataHealth } from "../api";
 import { AsOf, EmptyState, ErrorState, SkeletonCard } from "../components/states";
+import { onDataRefreshed } from "../dataRefresh";
 import { formatInteger, UNAVAILABLE } from "../format";
 import type { DataHealth } from "../types";
 
@@ -9,9 +10,16 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getDataHealth()
-      .then(setData)
-      .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
+    function load() {
+      getDataHealth()
+        .then(setData)
+        .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
+    }
+    load();
+    // P1.1: a completed "Run Capture" job just wrote real rows this
+    // screen's own counts depend on — refetch rather than wait for the
+    // human to happen to reload.
+    return onDataRefreshed(load);
   }, []);
 
   if (error) {
