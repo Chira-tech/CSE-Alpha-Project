@@ -16,3 +16,4 @@ from app.models.registry import IssuerRegistry  # noqa: F401
 from app.models.national_projects import NationalProject, NationalProjectTickerImpact  # noqa: F401
 from app.models.portfolio import PortfolioSnapshot, PortfolioPosition  # noqa: F401
 from app.models.decisions import Decision, Outcome  # noqa: F401
+from app.models.corporate_action_scan_log import CorporateActionScanLog  # noqa: F401

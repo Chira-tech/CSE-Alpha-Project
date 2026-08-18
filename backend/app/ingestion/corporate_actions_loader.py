@@ -49,6 +49,7 @@ from app.ingestion.schemas import (
     CompanyAnnouncementResponse,
     CompanyAnnouncementRow,
 )
+from app.models.corporate_action_scan_log import CorporateActionScanLog
 from app.models.corporate_actions import CorporateAction
 from app.models.corporate_actions import CorporateActionType as DbActionType
 
@@ -437,10 +438,34 @@ def _insert_draft(db: Session, draft: DraftCorporateAction) -> bool:
     return True
 
 
+def recently_scanned_tickers(db: Session, since: dt.datetime) -> set[str]:
+    """Every ticker `ingest_corporate_actions_for_ticker` has recorded a
+    scan for at or after `since` — see `CorporateActionScanLog`'s own
+    docstring for why this exists (a real, interrupted-and-resumed sweep
+    converging on full coverage instead of restarting from ticker #1
+    every time)."""
+    rows = db.scalars(
+        select(CorporateActionScanLog.ticker).where(CorporateActionScanLog.last_scanned_at >= since)
+    ).all()
+    return set(rows)
+
+
+def _record_ticker_scanned(db: Session, ticker: str, scanned_at: dt.datetime) -> None:
+    row = db.get(CorporateActionScanLog, ticker)
+    if row is None:
+        db.add(CorporateActionScanLog(ticker=ticker, last_scanned_at=scanned_at))
+    else:
+        row.last_scanned_at = scanned_at
+    db.commit()
+
+
 def ingest_corporate_actions_for_ticker(client: CseClient, db: Session, ticker: str) -> int:
     """Returns the number of new draft rows inserted. Never touches an
     existing row — confirmed or not — so a human's in-progress review is
-    never clobbered by a re-run."""
+    never clobbered by a re-run. Records a real scan timestamp for
+    `ticker` regardless of how many (if any) new drafts this run found —
+    a ticker with genuinely no new corporate actions is just as much a
+    completed scan as one that found ten."""
     rows = fetch_company_announcements(client, ticker)
 
     grouped: dict[str, list[CompanyAnnouncementRow]] = {}
@@ -490,4 +515,5 @@ def ingest_corporate_actions_for_ticker(client: CseClient, db: Session, ticker: 
 
     if inserted:
         db.commit()
+    _record_ticker_scanned(db, ticker, dt.datetime.now(dt.timezone.utc))
     return inserted

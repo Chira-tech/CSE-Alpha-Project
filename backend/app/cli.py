@@ -28,7 +28,10 @@ from app.ingestion.financial_reports_archive_loader import ingest_report_archive
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
-from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
+from app.ingestion.corporate_actions_loader import (
+    ingest_corporate_actions_for_ticker,
+    recently_scanned_tickers,
+)
 from app.ingestion.cse_client import CseClient
 from app.ingestion.security_enrichment import enrich_securities
 from app.models.securities import Security
@@ -62,17 +65,47 @@ def cmd_ingest_corporate_actions(args: argparse.Namespace) -> int:
     >=2s (§5) — that's 10+ minutes minimum, longer with detail lookups.
     `--limit` exists so a first run can be sanity-checked on a handful of
     names before committing to the full sweep.
+
+    RESUMABLE ACROSS INTERRUPTED RUNS BY DEFAULT. A real, structural gap
+    found live (18 Aug 2026): every invocation used to restart from
+    ticker #1 in alphabetical order, with no memory of a previous run —
+    so an environment that kills a long-running process a few minutes
+    in (observed repeatedly, real and reproducible, independent of this
+    specific command) meant a full sweep could NEVER progress past
+    whatever a single few-minute window covered, no matter how many
+    times it was retried. `CorporateActionScanLog` (see its own
+    docstring) now records a real scan timestamp per ticker regardless
+    of outcome, and a full sweep (no `--ticker` given) skips anything
+    scanned within the last `--rescan-after-hours` (default 20, just
+    under §52's own real daily production cadence, so a normal
+    scheduled run is never accidentally skipped) — pass `--force` to
+    scan everything regardless. An explicit `--ticker` always runs,
+    recency aside — a human asking about one specific company should
+    never be silently skipped.
     """
     db = SessionLocal()
     try:
         tickers = [t for (t,) in db.execute(select(Security.ticker).order_by(Security.ticker)).all()]
-        if args.ticker:
-            tickers = [t for t in tickers if t in set(args.ticker)]
-        if args.limit:
-            tickers = tickers[: args.limit]
         if not tickers:
             print("No matching tickers. Run `bootstrap` first?", file=sys.stderr)
             return 1
+        if args.ticker:
+            tickers = [t for t in tickers if t in set(args.ticker)]
+        elif not args.force:
+            cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=args.rescan_after_hours)
+            already_done = recently_scanned_tickers(db, cutoff)
+            skipped = len(already_done)
+            tickers = [t for t in tickers if t not in already_done]
+            if skipped:
+                print(
+                    f"Skipping {skipped} ticker(s) scanned within the last {args.rescan_after_hours}h "
+                    "(resuming a sweep, not restarting it — pass --force to rescan everything)."
+                )
+        if args.limit:
+            tickers = tickers[: args.limit]
+        if not tickers:
+            print("Nothing left to scan — every ticker was already covered within the rescan window.")
+            return 0
 
         print(f"Scanning {len(tickers)} ticker(s) — paced at >={settings.cse_min_seconds_between_calls}s/request.")
         total = 0
@@ -473,6 +506,15 @@ def main(argv: list[str] | None = None) -> int:
     p_ca = sub.add_parser("ingest-corporate-actions", help="scrape corporate actions into the confirm queue")
     p_ca.add_argument("--ticker", action="append", help="limit to specific ticker(s); repeatable")
     p_ca.add_argument("--limit", type=int, help="only process the first N tickers")
+    p_ca.add_argument(
+        "--rescan-after-hours", type=float, default=20.0,
+        help="skip a ticker already scanned within this many hours, so an interrupted full sweep "
+        "resumes instead of restarting from ticker #1 (default 20; ignored with --ticker)",
+    )
+    p_ca.add_argument(
+        "--force", action="store_true",
+        help="scan every ticker regardless of --rescan-after-hours",
+    )
     p_ca.set_defaults(func=cmd_ingest_corporate_actions)
 
     p_en = sub.add_parser("enrich", help="fill ISIN / listing date / shares issued per company")

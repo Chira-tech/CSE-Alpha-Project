@@ -14,7 +14,11 @@ from decimal import Decimal
 import httpx
 import respx
 
-from app.ingestion.corporate_actions_loader import _pair_rows, ingest_corporate_actions_for_ticker
+from app.ingestion.corporate_actions_loader import (
+    _pair_rows,
+    ingest_corporate_actions_for_ticker,
+    recently_scanned_tickers,
+)
 from app.ingestion.cse_client import CseClient
 from app.ingestion.schemas import CompanyAnnouncementRow
 from app.models.corporate_actions import CorporateAction
@@ -269,6 +273,55 @@ def test_ingest_is_idempotent_on_rerun(db_session):
     assert first_run == 2
     assert second_run == 0  # already-drafted rows must not duplicate
     assert len(list(db_session.query(CorporateAction).all())) == 2
+
+
+@respx.mock
+def test_a_scan_is_recorded_even_when_it_finds_nothing_new(db_session):
+    """Real bug, found live (18 Aug 2026): a full-universe sweep always
+    restarted from ticker #1 because nothing recorded that a ticker had
+    been scanned at all — see `CorporateActionScanLog`'s own docstring.
+    A scan that finds zero NEW drafts (everything already drafted, or
+    genuinely nothing to find) must still count as a real, completed
+    scan of that ticker, exactly like a scan that found ten."""
+    db_session.add(Security(ticker=TICKER, name="Asia Asset Finance PLC"))
+    db_session.commit()
+
+    respx.post(f"{BASE}/getAnnouncementByCompany").mock(
+        return_value=httpx.Response(200, json=ANNOUNCEMENT_LIST)
+    )
+    respx.post(f"{BASE}/getAnnouncementById", data={"announcementId": "38054"}).mock(
+        return_value=httpx.Response(200, json=CASH_DIVIDEND_DETAIL)
+    )
+    respx.post(f"{BASE}/getAnnouncementById", data={"announcementId": "37897"}).mock(
+        return_value=httpx.Response(204)
+    )
+    respx.post(f"{BASE}/getGeneralAnnouncementById", data={"announcementId": "37897"}).mock(
+        return_value=httpx.Response(200, json=RIGHTS_DATES_DETAIL)
+    )
+
+    before = dt.datetime.now(dt.timezone.utc)
+    client = _client()
+    ingest_corporate_actions_for_ticker(client, db_session, TICKER)  # first run: 2 real drafts
+    second_run = ingest_corporate_actions_for_ticker(client, db_session, TICKER)  # 0 new
+    client.close()
+
+    assert second_run == 0
+    # A scan that found nothing new is STILL a real, recorded scan —
+    # this is exactly the case the original bug lost.
+    assert TICKER in recently_scanned_tickers(db_session, before)
+
+
+def test_recently_scanned_tickers_respects_the_real_cutoff(db_session):
+    from app.models.corporate_action_scan_log import CorporateActionScanLog
+
+    now = dt.datetime.now(dt.timezone.utc)
+    db_session.add(CorporateActionScanLog(ticker="OLD.N0000", last_scanned_at=now - dt.timedelta(hours=48)))
+    db_session.add(CorporateActionScanLog(ticker="RECENT.N0000", last_scanned_at=now - dt.timedelta(hours=1)))
+    db_session.commit()
+
+    cutoff = now - dt.timedelta(hours=20)
+    scanned = recently_scanned_tickers(db_session, cutoff)
+    assert scanned == {"RECENT.N0000"}
 
 
 @respx.mock
