@@ -93,6 +93,22 @@ class Settings(BaseSettings):
     concessionary sectors, and should not be trusted uncritically for
     those archetypes."""
 
+    # --- Real, sourced round-trip transaction cost (§2.1) -------------------------
+    round_trip_transaction_cost_pct: Decimal = Decimal("0.0224")
+    """§2.1's own real, itemised figure — NOT a provisional placeholder,
+    a directly-stated fact in the master spec: 0.640% brokerage + 0.300%
+    share transaction levy + 0.084% CSE fee + 0.072% SEC cess + 0.024%
+    CDS = 1.12% one way, doubled for a round trip. Used by `app.domain.
+    decision_record_view.record_outcome_for` to compute a real
+    net-of-cost return alongside the gross figure (§45's own
+    `gross_return`/`net_return` fields), the same "report gross and net
+    side by side, and treat net as the only real number" discipline
+    §48's backtest protocol applies to the eventual full backtest suite.
+    Deliberately excludes bid-ask spread and market impact — §2.1 itself
+    says realistic ALL-IN friction is "3-5% per round trip on mid-caps"
+    once those are added, so this constant is a real floor, not the
+    full real cost."""
+
     # --- Point-in-time / reporting lag defaults (§6) ------------------------------
     default_quarterly_reporting_lag_days: int = 90
     default_annual_reporting_lag_days: int = 180

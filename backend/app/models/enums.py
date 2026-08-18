@@ -83,3 +83,15 @@ class NationalProjectImpactMetric(str, enum.Enum):
 
     REVENUE = "revenue"
     MARGIN = "margin"
+
+
+class DecisionAction(str, enum.Enum):
+    """§45's own schema comment, verbatim: "buy / watchlist / pass /
+    partial / sell / trim"."""
+
+    BUY = "buy"
+    WATCHLIST = "watchlist"
+    PASS = "pass"
+    PARTIAL = "partial"
+    SELL = "sell"
+    TRIM = "trim"

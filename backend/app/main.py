@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import (
     corporate_actions,
     data_health,
+    decisions,
     fundamentals,
     health,
     market,
@@ -52,3 +53,4 @@ app.include_router(valuation.router)
 app.include_router(national_projects.router)
 app.include_router(portfolio.router)
 app.include_router(opportunities.router)
+app.include_router(decisions.router)
