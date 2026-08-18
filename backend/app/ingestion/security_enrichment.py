@@ -39,6 +39,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from decimal import Decimal
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -145,33 +146,49 @@ def enrich_security(db: Session, ticker: str, info: CompanyInfoSummary, as_of: d
 
 
 def enrich_securities(
-    client: CseClient, db: Session, tickers: list[str], as_of: dt.date | None = None
+    client: CseClient, db: Session, tickers: list[str], as_of: dt.date | None = None,
+    *, on_ticker: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, int]:
     """Sweeps the given tickers. One bad company never aborts the run —
     with an unofficial upstream and ~283 calls, a mid-sweep failure that
     discarded everything already fetched would make the command
-    practically unusable."""
+    practically unusable.
+
+    `on_ticker`, when given, is called after EVERY ticker (not just the
+    successful ones) with `(index_completed, total, ticker)` — TASK
+    1.1's own "Prices · 148 / 286 tickers"-style live progress needs a
+    hook exactly like this, and this is the one real per-ticker,
+    minutes-long sweep in this codebase where that kind of granular
+    progress is both honest and worth showing (unlike e.g. EOD prices,
+    which is a single bulk `tradeSummary` call with no per-ticker steps
+    to report). Optional and keyword-only so every existing caller
+    (`app.cli`, `app.jobs.scheduler` if ever wired there) is unaffected.
+    """
     stamp = as_of or dt.date.today()
     enriched = 0
     skipped = 0
     failed = 0
 
-    for ticker in tickers:
+    total = len(tickers)
+    for i, ticker in enumerate(tickers, start=1):
         try:
             info = fetch_company_info(client, ticker)
         except Exception:  # noqa: BLE001 — unofficial upstream, many failure modes
             logger.exception("enrichment fetch failed for %s", ticker)
             failed += 1
+            if on_ticker is not None:
+                on_ticker(i, total, ticker)
             continue
 
         if info is None:
             skipped += 1
-            continue
-
-        if enrich_security(db, ticker, info, stamp):
+        elif enrich_security(db, ticker, info, stamp):
             enriched += 1
         else:
             skipped += 1
+
+        if on_ticker is not None:
+            on_ticker(i, total, ticker)
 
     db.commit()
     logger.info("enrichment: %d updated, %d unchanged, %d failed", enriched, skipped, failed)
