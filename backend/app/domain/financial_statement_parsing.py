@@ -513,6 +513,27 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
         "other components of equity",  # AHPL — combined, revaluation-dominated proxy (verified end-to-end)
         "revaluation reserve",  # Galadari — pure, but not yet live-extractable (2-column filing)
     ),
+    # A REAL, GENUINE third balance-sheet bucket, found live (18 Aug
+    # 2026) on Lanka Walltiles PLC's (LWL.N0000) real interim statement
+    # for the period ended 30 June 2026 — NOT an extraction bug. IFRS 5
+    # requires assets of a disposal group classified as held for sale to
+    # be presented SEPARATELY from ordinary current/non-current assets;
+    # LWL's own real balance sheet does exactly that ("Assets held for
+    # sale 366,082 277,606 - -", printed between "Total current assets"
+    # and "Total assets", with a matching "Reserves of a disposal group
+    # held for sale" equity line confirming a real disposal group exists
+    # for this company). `total_assets` genuinely equals
+    # `total_current_assets + total_non_current_assets +
+    # assets_held_for_sale` on this real filing — the 366,082,000 gap
+    # `check_accounting_identities`'s "assets = current + non-current"
+    # check used to (correctly) flag was this real, third line item, not
+    # a misread number. See that function's own comment for how this key
+    # is used, and `liabilities_associated_with_assets_held_for_sale`
+    # below for LWL's matching real liabilities-side line.
+    "assets_held_for_sale": ("assets held for sale",),
+    "liabilities_associated_with_assets_held_for_sale": (
+        "liabilities associated with assets held for sale",
+    ),
 }
 
 #: The working-capital STOCK's two sides — see `derive_net_working_
@@ -810,17 +831,36 @@ def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityChec
         checks.append(IdentityCheck("assets = equity and liabilities", ok, f"{lhs:,} vs {rhs:,}"))
 
     # Current + non-current = total, both sides of the balance sheet.
+    # PLUS assets/liabilities "held for sale" (IFRS 5), WHEN a company's
+    # own real filing reports them — a real, genuine third bucket, found
+    # live on Lanka Walltiles PLC's (LWL.N0000) real interim statement
+    # for the period ended 30 June 2026 (see `assets_held_for_sale`'s own
+    # comment in CANONICAL_LABELS for the full finding), NOT folded into
+    # either current or non-current on that company's own balance sheet.
+    # Optional and additive only: a company with no such line simply has
+    # `values.get(...)` default to zero, leaving this identity exactly as
+    # it was for every filing checked before LWL's (J.F. Packaging,
+    # Swadeshi, AHPL, COMB, NTB, PAP — none of which have a held-for-sale
+    # line at all).
     if have("total_assets", "total_current_assets", "total_non_current_assets"):
         lhs = values["total_assets"]
-        rhs = values["total_current_assets"] + values["total_non_current_assets"]
+        held_for_sale = values.get("assets_held_for_sale", Decimal(0))
+        rhs = values["total_current_assets"] + values["total_non_current_assets"] + held_for_sale
         ok = lhs == rhs
-        checks.append(IdentityCheck("assets = current + non-current", ok, f"{lhs:,} vs {rhs:,}"))
+        detail = f"{lhs:,} vs {rhs:,}"
+        if held_for_sale:
+            detail += f" (includes assets held for sale = {held_for_sale:,})"
+        checks.append(IdentityCheck("assets = current + non-current", ok, detail))
 
     if have("total_liabilities", "total_current_liabilities", "total_non_current_liabilities"):
         lhs = values["total_liabilities"]
-        rhs = values["total_current_liabilities"] + values["total_non_current_liabilities"]
+        held_for_sale = values.get("liabilities_associated_with_assets_held_for_sale", Decimal(0))
+        rhs = values["total_current_liabilities"] + values["total_non_current_liabilities"] + held_for_sale
         ok = lhs == rhs
-        checks.append(IdentityCheck("liabilities = current + non-current", ok, f"{lhs:,} vs {rhs:,}"))
+        detail = f"{lhs:,} vs {rhs:,}"
+        if held_for_sale:
+            detail += f" (includes liabilities associated with assets held for sale = {held_for_sale:,})"
+        checks.append(IdentityCheck("liabilities = current + non-current", ok, detail))
 
     # Revenue - cost of sales = gross profit (cost stored negative).
     if have("revenue", "cost_of_sales", "gross_profit"):

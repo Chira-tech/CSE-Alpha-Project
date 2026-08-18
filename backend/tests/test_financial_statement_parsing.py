@@ -492,6 +492,71 @@ Chairman CEO / Executive Director
 """
 
 
+# Real text from page 1 of Lanka Walltiles PLC's (LWL.N0000) real interim
+# statement for the period ended 30 June 2026, downloaded fresh (18 Aug
+# 2026) from https://cdn.cse.lk/cmt/upload_report_file/678_1786015830338
+# .pdf. Sought out specifically because this real filing's own extraction
+# failed check_accounting_identities's "assets = current + non-current"
+# check live: "62,364,259,000 vs 61,998,177,000", a 366,082,000 gap.
+# NOT an extraction bug — LWL's own real balance sheet has a genuine
+# THIRD bucket, "Assets held for sale 366,082 277,606 - -" (IFRS 5,
+# printed between "Total current assets" and "Total assets", with a
+# matching "Reserves of a disposal group held for sale" equity line
+# confirming a real disposal group), that this system didn't extract at
+# all before this fix. See `assets_held_for_sale`'s own comment in
+# CANONICAL_LABELS for the full finding.
+BALANCE_SHEET_TEXT_LWL = """\
+STATEMENT OF FINANCIAL POSITION
+As at 30th June 2026
+GROUP COMPANY
+As at 30.06.2026 As at 31.03.2026 As at 30.06.2026 As at 31.03.2026
+Unaudited Audited Unaudited Audited
+Rs.000 Rs.000 Rs.000 Rs.000
+ASSETS
+Non-current assets
+Property, plant and equipment 28,495,679 28,544,668 12,512,000 12,673,190
+Investment properties 830,874 830,874 - -
+Intangible assets 225,848 230,318 26,906 27,485
+Investments in subsidiaries - - 1,696,035 1,696,035
+Investments in associates 202,378 202,352 - -
+Right of use assets 332,297 138,657 8,011 8,141
+Deferred tax asset 180,787 159,355 - -
+Total non-current assets 30,267,863 30,106,224 14,242,952 14,404,851
+Current assets
+Inventories 21,611,776 20,430,499 6,926,947 6,084,766
+Trade and Other Receivables 8,543,630 8,444,292 1,015,343 844,489
+Amounts Due from Related Parties 16,449 65,092 91,810 90,074
+Short Term Investment 4,796 4,726 4,796 4,726
+Cash and balances with banks 1,553,663 2,067,478 91,827 79,798
+Total current assets 31,730,314 31,012,087 8,130,723 7,103,853
+Assets held for sale 366,082 277,606 - -
+Total assets 62,364,259 61,395,917 22,373,675 21,508,704
+EQUITY AND LIABILITIES
+Stated Capital 787,765 787,765 787,765 787,765
+Reserves 5,073,440 5,073,440 2,506,339 2,506,339
+Reserves of a disposal group held for sale (7,401) (5,609) - -
+Retained earnings 16,774,267 16,464,489 4,340,985 4,304,736
+Total equity attributable to equity holders of the company 22,628,071 22,320,085 7,635,089 7,598,840
+Non- controlling interest 7,591,380 7,430,056 - -
+Total equity 30,219,451 29,750,141 7,635,089 7,598,840
+Non-current liabilities
+Interest bearing liabilities 4,382,220 4,661,957 2,249,029 2,472,199
+Deferred tax liabilities 3,112,137 3,119,596 734,086 754,526
+Retirement benefit liability 903,782 884,067 310,092 301,935
+Total Non-current liabilities 8,398,139 8,665,620 3,293,207 3,528,660
+Current liabilities
+Trade and other payables 5,508,959 6,383,922 1,235,397 968,147
+Contract liability 172,449 267,202 71,189 102,410
+Income tax liabilities 430,156 357,615 560 560
+Amounts due to related parties 437,418 438,464 3,572,383 3,086,060
+Interest bearing liabilities 16,784,737 15,217,192 6,565,849 6,224,027
+Total Current liabilities 23,333,719 22,664,394 11,445,378 10,381,204
+Liabilities associated with assets held for sale 412,950 315,762 - -
+Total equity and liabilities 62,364,259 61,395,917 22,373,674 21,508,704
+Net Assets Value Per Share (Rs.) 83 82 28 28
+"""
+
+
 @pytest.mark.parametrize(
     ("line", "expected_label", "expected_statement_line", "expected_primary"),
     [
@@ -1074,6 +1139,47 @@ def test_identities_catch_the_split_thousands_corruption_independently():
 def test_identities_skip_what_cannot_be_checked_rather_than_failing():
     checks = check_accounting_identities({"total_assets": Decimal("100")})
     assert checks == []
+
+
+def test_extract_candidate_lines_finds_lwls_real_assets_held_for_sale_lines():
+    """LWL's real, genuine IFRS 5 held-for-sale lines — verified present
+    and extractable, not just theorised."""
+    by_statement_line = {
+        l.statement_line: l.primary_value
+        for l in extract_candidate_lines(BALANCE_SHEET_TEXT_LWL)
+        if l.statement_line
+    }
+    assert by_statement_line["assets_held_for_sale"] == Decimal("366082")
+    assert by_statement_line["liabilities_associated_with_assets_held_for_sale"] == Decimal("412950")
+
+
+def test_identities_pass_on_lwls_real_balance_sheet_including_assets_held_for_sale():
+    """A REAL bug, found live (18 Aug 2026): LWL.N0000's real interim
+    statement for the period ended 30 June 2026 failed
+    check_accounting_identities's "assets = current + non-current"
+    check — "62,364,259,000 vs 61,998,177,000", a 366,082,000 gap. NOT an
+    extraction bug: the gap is LWL's own real "Assets held for sale"
+    line, a genuine third balance-sheet bucket under IFRS 5 that this
+    system didn't extract at all before this fix. With
+    `assets_held_for_sale` now extracted and folded into the identity as
+    an optional addend, this real filing's own real figures now balance
+    exactly."""
+    values = _values(BALANCE_SHEET_TEXT_LWL)
+    checks = check_accounting_identities(values)
+    assert checks, "expected at least one identity to be checkable"
+    assert all(c.passed for c in checks), [c for c in checks if not c.passed]
+    identity = next(c for c in checks if c.name == "assets = current + non-current")
+    assert "includes assets held for sale = 366,082" in identity.detail
+
+
+def test_assets_held_for_sale_identity_is_a_pure_addition_not_a_behaviour_change():
+    """A company with no held-for-sale line (every real fixture already
+    verified before LWL) must see this identity exactly as before —
+    `assets_held_for_sale` simply defaults to zero when absent."""
+    checks = check_accounting_identities(_values(BALANCE_SHEET_TEXT))
+    identity = next(c for c in checks if c.name == "assets = current + non-current")
+    assert identity.passed
+    assert "held for sale" not in identity.detail
 
 
 class TestDetectUnitScale:
