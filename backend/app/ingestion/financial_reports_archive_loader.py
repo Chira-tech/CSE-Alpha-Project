@@ -63,6 +63,7 @@ from app.ingestion.financial_pdf_extractor import (
 )
 from app.ingestion.schemas import CompanyArchiveReportFile, CompanyFinancialArchiveResponse
 from app.models.fundamentals import Fundamental
+from app.models.ingestion_log import IngestedFilingLog
 
 logger = logging.getLogger("cse_alpha.ingestion.financial_reports_archive")
 
@@ -98,13 +99,32 @@ def _already_ingested_by_source(db: Session, ticker: str, source_url: str) -> bo
     different from `financial_pdf_extractor._already_ingested`, because
     THIS loader must still process a second (amended) filing for a period
     already on file. Skips only if this specific PDF was processed
-    before."""
-    existing = db.scalar(
-        select(Fundamental)
+    before.
+
+    Checks TWO sources, deliberately, not one: a `Fundamental` row
+    carrying this `source_url` (a filing that produced at least one real
+    draft — the ONLY signal this function used to check, and the real bug
+    `IngestedFilingLog` exists to close — see that model's own docstring)
+    OR an `IngestedFilingLog` row for it (every filing this loader has
+    processed since that table existed, including the ones that
+    genuinely produced zero drafts). Checking both, rather than switching
+    over to the log table alone, means filings ingested before this fix
+    — which DO have a `Fundamental` row for every draft they produced —
+    stay correctly recognised as already-ingested without a backfill
+    migration of historical data."""
+    existing_fundamental = db.scalar(
+        select(Fundamental.id)
         .where(Fundamental.ticker == ticker, Fundamental.source_url == source_url)
         .limit(1)
     )
-    return existing is not None
+    if existing_fundamental is not None:
+        return True
+    existing_log_entry = db.scalar(
+        select(IngestedFilingLog.id)
+        .where(IngestedFilingLog.ticker == ticker, IngestedFilingLog.source_url == source_url)
+        .limit(1)
+    )
+    return existing_log_entry is not None
 
 
 def _next_version(db: Session, ticker: str, period_end: dt.date, period_type: str) -> int:
@@ -222,7 +242,22 @@ def ingest_archived_report(
 
     if drafts:
         db.add_all(drafts)
-        db.commit()
+    # Recorded REGARDLESS of drafted_count, including zero — see
+    # IngestedFilingLog's own docstring for the real bug this closes: a
+    # filing that genuinely produced 0 drafts (or one whose processing
+    # crashed before this point in a prior run) must still be
+    # distinguishable, on retry, from a filing never attempted at all.
+    db.add(
+        IngestedFilingLog(
+            ticker=ticker,
+            source_url=source_url,
+            period_end=period_end,
+            period_type=period_type,
+            drafted_count=len(drafts),
+            processed_at=dt.datetime.now(tz=_SRI_LANKA_TZ),
+        )
+    )
+    db.commit()
     return len(drafts)
 
 

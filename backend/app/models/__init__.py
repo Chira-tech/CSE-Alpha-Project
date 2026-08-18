@@ -8,6 +8,7 @@ from app.models.securities import Security  # noqa: F401
 from app.models.prices import PriceDaily  # noqa: F401
 from app.models.corporate_actions import CorporateAction  # noqa: F401
 from app.models.fundamentals import Fundamental  # noqa: F401
+from app.models.ingestion_log import IngestedFilingLog  # noqa: F401
 from app.models.float_data import FloatData  # noqa: F401
 from app.models.macro import MacroSeries  # noqa: F401
 from app.models.data_quality import DataAlert  # noqa: F401

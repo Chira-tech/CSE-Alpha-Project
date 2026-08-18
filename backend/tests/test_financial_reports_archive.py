@@ -8,6 +8,7 @@ FY2022 period, exactly as the exchange actually returned it.
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ from app.ingestion.financial_reports_archive_loader import (
 from app.ingestion.schemas import CompanyArchiveReportFile
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
+from app.models.ingestion_log import IngestedFilingLog
 from app.models.securities import Security
 
 TICKER = "COMB.N0000"
@@ -141,6 +143,123 @@ class TestIdempotency:
         assert not _already_ingested_by_source(
             db, TICKER, "https://cdn.cse.lk/cmt/upload_report_file/369_1680307200000.pdf"
         )
+
+
+class TestZeroDraftFilingsAreRecordedAsIngested:
+    """A REAL, structural bug, found live (18 Aug 2026), independent of
+    any specific ticker: `ingest_archived_report` only recorded that a
+    filing had been processed by inserting `Fundamental` rows carrying
+    its `source_url` — and only did that when `drafts` was non-empty. A
+    filing that legitimately produces 0 real drafts (a real, confirmed
+    case: PAP.N0000's 31 March 2026 interim statement, a genuinely
+    scanned PDF with no text layer — see app.ingestion.financial_pdf_
+    extractor's test suite) left no trace anywhere that it had ever been
+    attempted, so a naive retry would re-download and re-parse the
+    identical PDF from scratch, forever. See IngestedFilingLog's own
+    docstring for the full finding."""
+
+    @pytest.fixture()
+    def db(self, db_session):
+        db_session.add(Security(ticker=TICKER, name="COMMERCIAL BANK", issuer_code="COMB"))
+        db_session.commit()
+        return db_session
+
+    def _mock_a_textless_pdf(self, monkeypatch):
+        """Mirrors what a genuinely scanned, textless real PDF produces
+        end-to-end: `download_pdf` succeeds, but `extract_financial_
+        statement_candidates` finds nothing extractable on any page."""
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"%PDF-1.4 fake, no real text layer",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [],
+        )
+
+    def test_a_zero_draft_filing_is_recorded_in_the_ingested_filing_log(self, db, monkeypatch):
+        self._mock_a_textless_pdf(monkeypatch)
+        report = CompanyArchiveReportFile(
+            id=1, path="scanned.pdf", manualDate=1774895400000, uploadedDate=1779964134895,
+        )
+        inserted = ingest_archived_report(None, db, TICKER, report, period_type="quarterly")
+        assert inserted == 0
+        # No Fundamental row exists — this is exactly the real gap that
+        # left the OLD idempotency check blind to this filing.
+        assert db.query(Fundamental).filter_by(ticker=TICKER).count() == 0
+
+        log_entry = db.query(IngestedFilingLog).filter_by(ticker=TICKER).one()
+        assert log_entry.source_url == "https://cdn.cse.lk/scanned.pdf"
+        assert log_entry.drafted_count == 0
+        assert log_entry.period_type == "quarterly"
+
+    def test_a_zero_draft_filing_is_not_reprocessed_on_retry(self, db, monkeypatch):
+        """The actual fix, proven end-to-end: a second real attempt at
+        the SAME filing must not re-download or re-parse it — it must be
+        recognised as already (genuinely) tried."""
+        self._mock_a_textless_pdf(monkeypatch)
+        report = CompanyArchiveReportFile(
+            id=1, path="scanned.pdf", manualDate=1774895400000, uploadedDate=1779964134895,
+        )
+        first = ingest_archived_report(None, db, TICKER, report, period_type="quarterly")
+        assert first == 0
+
+        # Simulate a fresh retry: download_pdf would now raise if called
+        # again, proving the skip actually short-circuits before any
+        # network access, not just returning 0 after redundant work.
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("download_pdf should not be called again for an already-tried filing")
+
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf", fail_if_called
+        )
+        second = ingest_archived_report(None, db, TICKER, report, period_type="quarterly")
+        assert second == 0
+        assert db.query(IngestedFilingLog).filter_by(ticker=TICKER).count() == 1  # not duplicated
+
+    def test_already_ingested_by_source_checks_the_log_table_too(self, db):
+        """Direct unit coverage of the idempotency check's new second
+        branch, independent of the full `ingest_archived_report` flow."""
+        assert not _already_ingested_by_source(db, TICKER, "https://cdn.cse.lk/scanned.pdf")
+        db.add(
+            IngestedFilingLog(
+                ticker=TICKER,
+                source_url="https://cdn.cse.lk/scanned.pdf",
+                period_end=dt.date(2026, 3, 31),
+                period_type="quarterly",
+                drafted_count=0,
+                processed_at=dt.datetime(2026, 8, 18, tzinfo=dt.timezone.utc),
+            )
+        )
+        db.commit()
+        assert _already_ingested_by_source(db, TICKER, "https://cdn.cse.lk/scanned.pdf")
+
+    def test_a_filing_with_real_drafts_is_also_logged(self, db, monkeypatch):
+        """The log records EVERY processed filing, not only the zero-
+        draft ones — a successful filing gets both a `Fundamental` row
+        (unchanged behaviour) AND a log entry (new)."""
+        from app.domain.financial_statement_parsing import ExtractedLine
+
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"%PDF-1.4 fake",
+        )
+        line = ExtractedLine(
+            raw_label="Total Assets", statement_line="total_assets",
+            values=(Decimal("100"),), raw_text="Total Assets 100",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, line)],
+        )
+        report = CompanyArchiveReportFile(
+            id=2, path="real.pdf", manualDate=1774895400000, uploadedDate=1779964134895,
+        )
+        inserted = ingest_archived_report(None, db, TICKER, report, period_type="quarterly")
+        assert inserted == 1
+        assert db.query(Fundamental).filter_by(ticker=TICKER).count() == 1
+        log_entry = db.query(IngestedFilingLog).filter_by(ticker=TICKER).one()
+        assert log_entry.drafted_count == 1
 
 
 class TestUnavailableFilesAreCountedNotFatal:
