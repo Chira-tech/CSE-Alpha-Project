@@ -866,3 +866,61 @@ class TestValuationSummaryFor:
         # silently overwriting the other because they share a category.
         assert "intrinsic" in summary.triangulation.category_averages
         assert summary.triangulation.blended_fair_value_per_share is not None
+
+    def test_a_clean_valuation_reports_an_unblocked_sanity_result(self, db_session, monkeypatch):
+        """TASK 0.1's gate runs on every valuation, not only a failing
+        one — `summary.sanity` must be populated (not `None`) whenever a
+        blended fair value exists, even when nothing failed, so a caller
+        can show which rules were actually checked."""
+        _seed_security(db_session)
+        _seed_confirmed_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        summary = valuation_summary_for(
+            db_session, "COMB.N0000", archetype="bank", current_price=Decimal(12), as_of=AS_OF
+        )
+
+        assert summary.sanity is not None
+        assert summary.sanity.blocked is False
+        assert summary.price_ladder is not None
+
+    def test_sanity_gate_withholds_the_ladder_when_share_count_does_not_reconcile(
+        self, db_session, monkeypatch
+    ):
+        """The real, new independent cross-check (`FloatData.published_
+        market_cap` — see that field's own docstring): a share count this
+        valuation used that disagrees with the exchange's own published
+        market cap by more than 2% must withhold the ladder entirely,
+        even though a positive blended fair value was computed — exactly
+        TASK 0.1's "not a crash, but a confident wrong answer" failure
+        mode, now caught before display rather than after."""
+        _seed_security(db_session)
+        _seed_confirmed_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        # Published mcap implies price x shares should be ~1200 (12 x
+        # 100); this says the real market cap is 5000 — a mismatch far
+        # past the 2% tolerance, the same shape a voting/non-voting
+        # share-class mixup would produce.
+        db_session.add(
+            FloatData(
+                ticker="COMB.N0000", as_of=dt.date(2022, 1, 2),
+                shares_issued=100, published_market_cap=Decimal(5000),
+            )
+        )
+        db_session.commit()
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        summary = valuation_summary_for(
+            db_session, "COMB.N0000", archetype="bank", current_price=Decimal(12), as_of=AS_OF
+        )
+
+        # The fair value itself was still computed (triangulation doesn't
+        # know about sanity) — only the LADDER is withheld.
+        assert summary.triangulation.blended_fair_value_per_share is not None
+        assert summary.sanity is not None
+        assert summary.sanity.blocked is True
+        assert "share_count_reconciles" in summary.sanity.blocked_by
+        assert summary.price_ladder is None
+        assert "TASK 0.1" in summary.note
+        assert "share_count_reconciles" in summary.note

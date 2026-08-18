@@ -535,6 +535,28 @@ export function CompanyScreen({
                 <div style={{ marginTop: "var(--s2)" }}>
                   <PriceLadder ladder={valuation.price_ladder} />
                 </div>
+                {valuation.sanity && valuation.sanity.warned_by.length > 0 && (
+                  <p className="prose t-caption notice-caution" style={{ marginTop: "var(--s1)" }}>
+                    ⚠ {valuation.sanity.warn_reasons.join(" ")}
+                  </p>
+                )}
+              </div>
+            ) : valuation.sanity && valuation.sanity.blocked ? (
+              // TASK 0.1: a blended fair value existed but failed the
+              // plausibility gate — a DIFFERENT, more specific reason
+              // than "no anchors yet" below, and must say so rather than
+              // being folded into the same generic notice.
+              <div className="notice notice-caution">
+                <h3>Fair value withheld — plausibility check failed</h3>
+                <p className="prose t-body">
+                  A triangulated fair value was computed but did not pass TASK 0.1's plausibility
+                  gate, so it is not shown rather than risking a confident wrong answer (§1, law 4).
+                </p>
+                <ul className="prose t-body" style={{ marginTop: "var(--s1)" }}>
+                  {valuation.sanity.block_reasons.map((reason, i) => (
+                    <li key={i}>{reason}</li>
+                  ))}
+                </ul>
               </div>
             ) : (
               <div className="notice notice-neutral">

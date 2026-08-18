@@ -136,6 +136,14 @@ def opportunity_ranking_for(db: Session, as_of: dt.date | None = None) -> Opport
             warnings.append(f"No real live price found for {ticker!r} on or before {stamp}.")
         if summary.triangulation.blended_fair_value_per_share is None:
             warnings.append("No triangulated fair value computable from confirmed data yet.")
+        elif summary.sanity is not None and summary.sanity.blocked:
+            # TASK 0.1: a blended fair value existed but failed the
+            # plausibility gate — `ladder` is None for THIS reason, not
+            # "no anchors", and that must be visible or this candidate
+            # would show up in `excluded` with no stated reason at all.
+            warnings.append(
+                f"Fair value withheld by the plausibility gate: {', '.join(summary.sanity.block_reasons)}"
+            )
 
         candidate = OpportunityCandidate(
             ticker=ticker,

@@ -23,6 +23,7 @@ EXPECTED_JOBS = {
     "eod_snapshot": (15, 0),
     "nightly_reconciliation": (15, 5),
     "second_source_check": (15, 7),
+    "market_cap_reconciliation": (15, 9),
     "capture_market_internals": (15, 2),
     "corporate_actions_scan": (16, 0),
     "financial_statement_scan": (16, 30),

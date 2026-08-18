@@ -40,6 +40,22 @@ def _latest_close(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
     return row.close if row else None
 
 
+def published_market_cap_for(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
+    """CSE's OWN independently-published market cap on or before `as_of`
+    — see `app.models.float_data.FloatData.published_market_cap`'s own
+    docstring and `app.domain.sanity.SanityContext.mcap`'s docstring for
+    why TASK 0.1's plausibility gate needs this specific figure rather
+    than `market_cap_for` (which is computed locally from `price x
+    shares` and would be a tautological check against itself)."""
+    row = db.scalar(
+        select(FloatData)
+        .where(FloatData.ticker == ticker, FloatData.as_of <= as_of)
+        .order_by(FloatData.as_of.desc())
+        .limit(1)
+    )
+    return row.published_market_cap if row else None
+
+
 def market_cap_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Decimal | None:
     """This ticker's own real market cap (a disclosed full-shares-issued
     proxy for free-float market cap — see `app.domain.market_cap`'s own

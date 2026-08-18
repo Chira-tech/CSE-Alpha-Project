@@ -27,3 +27,15 @@ class FloatData(Base):
     free-float test treats NULL as "cannot evaluate", never as a pass."""
     top20_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     controlling_holder: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    published_market_cap: Mapped[Decimal | None] = mapped_column(Numeric(20, 2), nullable=True)
+    """CSE's own independently-published market capitalisation
+    (`companyInfoSummery.reqSymbolInfo.marketCap`) — fetched in the SAME
+    call as `shares_issued` (`app.ingestion.security_enrichment.
+    enrich_security`) but, until TASK 0.1's plausibility gate needed a
+    genuinely independent cross-check, silently discarded rather than
+    stored. See `app.domain.sanity.SanityContext.mcap`'s own docstring
+    for exactly what this does and does not catch, and why it must be
+    this exchange-published figure rather than `price x shares` computed
+    locally — comparing a number against itself would be a tautology,
+    not a check."""

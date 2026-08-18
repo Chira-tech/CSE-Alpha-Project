@@ -28,6 +28,7 @@ from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.company_price_history_loader import backfill_company_price_history
+from app.jobs.market_cap_reconciliation import run_nightly_market_cap_check
 from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
@@ -253,6 +254,22 @@ def _job_second_source_check() -> None:
         db.close()
 
 
+def _job_market_cap_reconciliation() -> None:
+    """TASK 0.1: the nightly universe-wide sweep alongside the live,
+    per-company `app.domain.sanity` check — see `app.jobs.market_cap_
+    reconciliation`'s own module docstring for why both exist."""
+    db = SessionLocal()
+    try:
+        tickers = _all_tickers(db)
+        today = dt.datetime.now(MARKET_TZ).date()
+        results = run_nightly_market_cap_check(db, tickers, today)
+        failures = [t for t, alert in results.items() if alert is not None]
+        if failures:
+            logger.warning("market-cap reconciliation raised alerts for: %s", failures)
+    finally:
+        db.close()
+
+
 def _job_corporate_actions_scan() -> None:
     """Not in the §52 table under this name, but implements "Corporate
     actions (splits, rights, bonus, dividends) — Event-driven — Scrape +
@@ -391,6 +408,12 @@ def build_scheduler() -> BackgroundScheduler:
         _job_second_source_check,
         _colombo_cron(15, 7),
         id="second_source_check",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_market_cap_reconciliation,
+        _colombo_cron(15, 9),
+        id="market_cap_reconciliation",
         replace_existing=True,
     )
     # §5: announcements are "event-driven" in principle; polled daily here

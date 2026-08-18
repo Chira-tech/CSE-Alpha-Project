@@ -104,6 +104,8 @@ from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
 from app.domain.provenance import can_enter_valuation
 from app.domain.ratios import LineItem, compute_all
 from app.domain.relative_valuation import JustifiedMultipleResult, justified_price_to_book
+from app.domain.sanity import SanityCheckResult, SanityContext, run_sanity_checks
+from app.domain.market_cap_view import published_market_cap_for
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
 from app.domain.ttm import trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
@@ -252,6 +254,21 @@ class LiveValuationInputs:
     growth_rate: Decimal
     book_value_per_share: Decimal | None
     shares_issued: int | None
+    total_equity: Decimal | None
+    """Confirmed `total_equity` for `period_end` — carried alongside
+    `book_value_per_share` (rather than making a caller re-derive it via
+    `book_value_per_share x shares_issued`, which would silently produce
+    a different number when `shares_issued` is `None`) specifically for
+    TASK 0.1's `app.domain.sanity.SanityContext.equity`."""
+
+    total_assets: Decimal | None
+    """Confirmed `total_assets` for the SAME `period_end` as `total_
+    equity` — see `SanityContext.total_assets`'s own docstring for why
+    both must come from one single period. `None` whenever `total_assets`
+    wasn't extracted for this company yet (real and common — see
+    `app.domain.sanity`'s own docstring for `units_consistent` simply
+    being skipped, not failed, in that case)."""
+
     excluded_unconfirmed_lines: tuple[str, ...]
     warnings: tuple[str, ...]
 
@@ -297,6 +314,7 @@ def _gather_inputs(
 
     book_value_per_share = None
     total_equity_item = items.get("total_equity")
+    total_assets_item = items.get("total_assets")
     shares = latest_shares_issued(db, ticker, as_of)
     if total_equity_item is None:
         warnings.append("total_equity not available from confirmed fundamentals.")
@@ -312,6 +330,8 @@ def _gather_inputs(
         growth_rate=growth_rate,
         book_value_per_share=book_value_per_share,
         shares_issued=shares,
+        total_equity=total_equity_item.value if total_equity_item is not None else None,
+        total_assets=total_assets_item.value if total_assets_item is not None else None,
         excluded_unconfirmed_lines=excluded,
         warnings=tuple(warnings),
     )
@@ -1098,7 +1118,24 @@ class CompanyValuationSummary:
 
     triangulation: TriangulationResult
     margin_of_safety: MarginOfSafetyResult
+    sanity: SanityCheckResult | None
+    """TASK 0.1's plausibility gate (`app.domain.sanity`), run against
+    `triangulation.blended_fair_value_per_share` — `None` only when there
+    was no blended fair value to even check (the gate has nothing to
+    gate on). When `sanity.blocked` is `True`, `price_ladder` below is
+    `None` even though a blended fair value exists — see `price_ladder`'s
+    own docstring for why that's a THIRD distinct reason a ladder can be
+    absent, alongside "no anchors at all" and "fair value not positive"."""
+
     price_ladder: PriceLadderResult | None
+    """`None` for one of three distinct, named reasons: no triangulated
+    fair value exists yet (`sanity` is also `None` in that case); a fair
+    value exists but isn't positive (`compute_price_ladder`'s own
+    guard); or a fair value exists, is positive, but FAILED TASK 0.1's
+    plausibility gate (`sanity.blocked is True`) — never silently
+    conflated with the other two, since the third case has a specific,
+    actionable reason (`sanity.block_reasons`) the first two don't."""
+
     note: str
 
 
@@ -1188,11 +1225,54 @@ def valuation_summary_for(
         data_completeness_pct=None,  # not computed at the per-company level anywhere yet
     )
 
+    sanity_result: SanityCheckResult | None = None
     ladder = None
     if triangulation.blended_fair_value_per_share is not None:
+        # A non-positive blended fair value is ALREADY fully, honestly
+        # handled by `compute_price_ladder`'s own pre-existing guard
+        # (zone=None, "fair_value must be positive" warning) — that is a
+        # distinct, older mechanism from TASK 0.1's gate below, and the
+        # two are not layered: `SANITY_RULES` (`fv_within_5x_price` in
+        # particular) is written for "is this POSITIVE number plausible
+        # relative to price," and running it against a negative fair
+        # value would short-circuit BEFORE `compute_price_ladder` ever
+        # ran, silently discarding that older, already-correct warning
+        # (a real regression caught by this project's own existing
+        # `test_a_negative_blended_fair_value_is_excluded_with_a_named_
+        # reason_not_a_fake_zone` when this was first wired one way).
         ladder = compute_price_ladder(
             triangulation.blended_fair_value_per_share, mos.total_pct, current_price
         )
+
+        if triangulation.blended_fair_value_per_share > 0 and current_price is not None:
+            # TASK 0.1: the plausibility gate. Only reached once a
+            # positive ladder was actually built — this is the case the
+            # gate exists for (COMB's real bug was a POSITIVE, "confident
+            # wrong answer", not a negative one). jpb/ri share the
+            # identical `_gather_inputs` call for this ticker/as_of, so
+            # `jpb.inputs` already carries every input the gate needs; no
+            # extra fundamentals query is issued here beyond the one new
+            # independent lookup (`published_market_cap_for`) the gate
+            # specifically requires.
+            published_mcap = published_market_cap_for(db, ticker, stamp)
+            sanity_ctx = SanityContext(
+                price=current_price,
+                bvps=jpb.inputs.book_value_per_share,
+                roe=jpb.inputs.roe,
+                mcap=published_mcap,
+                shares=jpb.inputs.shares_issued,
+                equity=jpb.inputs.total_equity,
+                total_assets=jpb.inputs.total_assets,
+            )
+            sanity_result = run_sanity_checks(triangulation.blended_fair_value_per_share, sanity_ctx)
+            if sanity_result.blocked:
+                # Withhold the ladder itself — but `sanity_result` (and
+                # therefore `sanity.block_reasons`) is still returned on
+                # the summary, which is where callers now get the reason
+                # from (see `note` below and every call site's own
+                # comment on why `price_ladder is None` no longer means
+                # only one thing).
+                ladder = None
 
     note = (
         f"{len(anchors)} of 9 §18-26 valuation anchors were live-computable for this "
@@ -1201,10 +1281,16 @@ def valuation_summary_for(
         "This is real math on real stored data, not a placeholder, but it is a partial "
         "triangulation, not the full 3-5-anchor blend §24 describes."
     )
+    if sanity_result is not None and sanity_result.blocked:
+        note += (
+            " TASK 0.1's plausibility gate withheld the fair value and price ladder "
+            f"despite a blended figure existing — failed: {', '.join(sanity_result.blocked_by)}."
+        )
 
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
         gordon_growth_ddm=ddm_view, hard_book=hard_book_view, regime=regime_view,
-        triangulation=triangulation, margin_of_safety=mos, price_ladder=ladder, note=note,
+        triangulation=triangulation, margin_of_safety=mos, sanity=sanity_result,
+        price_ladder=ladder, note=note,
     )

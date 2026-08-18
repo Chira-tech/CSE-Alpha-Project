@@ -142,6 +142,21 @@ def value_position(
             tuple(warnings)
             + summary.triangulation.warnings
             + (summary.price_ladder.warnings if summary.price_ladder is not None else ())
+            # TASK 0.1/2.2: a blended fair value existed but TASK 0.1's
+            # plausibility gate withheld it — `price_ladder` is None for
+            # this reason specifically (not "no anchors"), and that
+            # reason must reach this position's warnings, since neither
+            # `triangulation.warnings` nor (absent) `price_ladder.
+            # warnings` say anything about it otherwise. See TASK 2.2's
+            # own rule 1: "Never show an exit price derived from a
+            # number that failed sanity" — already true here structurally
+            # (price_ladder_zone/buy_below_price are both None), this
+            # just makes sure the reason is visible too.
+            + (
+                (f"Exit plan unavailable — fair value withheld: {', '.join(summary.sanity.block_reasons)}",)
+                if summary.sanity is not None and summary.sanity.blocked
+                else ()
+            )
         ),
     )
 

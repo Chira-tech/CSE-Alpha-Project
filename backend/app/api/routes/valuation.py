@@ -40,6 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.domain.valuation_quarantine_view import record_sanity_result
 from app.domain.valuation_view import CompanyValuationSummary, valuation_summary_for
 from app.models.prices import PriceDaily
 from app.models.securities import Security
@@ -86,6 +87,20 @@ class PriceLadderOut(BaseModel):
     current_zone: str | None
     zone_meaning: str | None
     gap_to_buy_below_pct: Decimal | None
+
+
+class SanityOut(BaseModel):
+    """TASK 0.1's plausibility gate (`app.domain.sanity`) — shown even
+    when nothing failed, so a caller can see which rules were actually
+    checked versus skipped for missing data (§1 law 4: never a black
+    box)."""
+
+    blocked: bool
+    blocked_by: list[str]
+    block_reasons: list[str]
+    warned_by: list[str]
+    warn_reasons: list[str]
+    skipped: list[str]
 
 
 class RoutingOut(BaseModel):
@@ -228,6 +243,7 @@ class CompanyValuationOut(BaseModel):
     regime: RegimeOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
+    sanity: SanityOut | None
     price_ladder: PriceLadderOut | None
     note: str
 
@@ -351,6 +367,18 @@ class CompanyValuationOut(BaseModel):
                 missing_components=list(mos.missing_components),
                 note=mos.note,
             ),
+            sanity=(
+                SanityOut(
+                    blocked=s.sanity.blocked,
+                    blocked_by=list(s.sanity.blocked_by),
+                    block_reasons=list(s.sanity.block_reasons),
+                    warned_by=list(s.sanity.warned_by),
+                    warn_reasons=list(s.sanity.warn_reasons),
+                    skipped=list(s.sanity.skipped),
+                )
+                if s.sanity is not None
+                else None
+            ),
             price_ladder=(
                 PriceLadderOut(
                     fair_value=s.price_ladder.fair_value,
@@ -385,4 +413,11 @@ def get_valuation(ticker: str, db: Session = Depends(get_db)) -> CompanyValuatio
     )
 
     summary = valuation_summary_for(db, ticker, security.archetype, latest_price)
+    if summary.sanity is not None:
+        # TASK 0.1: persist the quarantine record here, on the real
+        # single-company view a human actually looks at — see
+        # app.domain.valuation_quarantine_view's own module docstring
+        # for why this is idempotent and why it isn't ALSO called from
+        # every row of a multi-ticker screen.
+        record_sanity_result(db, ticker, summary.sanity)
     return CompanyValuationOut.from_summary(summary)

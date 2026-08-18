@@ -259,6 +259,18 @@ export interface PriceLadderOut {
   gap_to_buy_below_pct: string | null;
 }
 
+export interface SanityOut {
+  /** TASK 0.1's plausibility gate (backend `app.domain.sanity`) — present
+   * whenever a blended fair value existed to check, even when nothing
+   * failed, so a caller can show which rules actually ran. */
+  blocked: boolean;
+  blocked_by: string[];
+  block_reasons: string[];
+  warned_by: string[];
+  warn_reasons: string[];
+  skipped: string[];
+}
+
 export interface CompanyValuation {
   ticker: string;
   as_of: string;
@@ -275,6 +287,7 @@ export interface CompanyValuation {
   residual_income_warnings: string[];
   triangulation: ValuationAnchorCategory;
   margin_of_safety: MarginOfSafetyOut;
+  sanity: SanityOut | null;
   price_ladder: PriceLadderOut | null;
   note: string;
 }

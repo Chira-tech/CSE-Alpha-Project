@@ -114,7 +114,11 @@ def enrich_security(db: Session, ticker: str, info: CompanyInfoSummary, as_of: d
     # Shares issued is a point-in-time fact, so it gets a dated row rather
     # than being stamped onto the security record. public_float_pct stays
     # NULL — see the module docstring for why foreignPercentage is not a
-    # substitute for it.
+    # substitute for it. published_market_cap rides along in the same row
+    # — it's the exchange's own figure for this same symbol on this same
+    # day, not a separately-dated fact (see FloatData.published_market_cap's
+    # own docstring for why this is captured now: TASK 0.1's plausibility
+    # gate needs a genuinely independent market-cap cross-check).
     if symbol_info.quantityIssued:
         existing = db.scalar(
             select(FloatData).where(FloatData.ticker == ticker, FloatData.as_of == as_of)
@@ -128,6 +132,11 @@ def enrich_security(db: Session, ticker: str, info: CompanyInfoSummary, as_of: d
                     public_float_pct=None,
                     top20_pct=None,
                     controlling_holder=None,
+                    published_market_cap=(
+                        Decimal(str(symbol_info.marketCap))
+                        if symbol_info.marketCap is not None
+                        else None
+                    ),
                 )
             )
             wrote = True
