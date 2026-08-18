@@ -21,6 +21,7 @@ from app.domain.financial_statement_parsing import (
     extract_candidate_lines,
     match_canonical_label,
     normalize_label,
+    repair_character_doubling,
     split_label_and_values,
 )
 
@@ -315,6 +316,96 @@ Non-controlling interest 3,600,350 3,362,706 - -
 Total equity 33,549,127 32,237,888 27,846,846 26,955,777
 Total liabilities 14,832,175 13,673,759 11,718,702 10,970,223
 Total equity and liabilities 48,381,302 45,911,647 39,565,548 37,926,000
+"""
+
+# The FULL, real, RAW (un-repaired) text of page 4 of Nations Trust Bank
+# PLC's (NTB.N0000) real interim statement for the six months ended 30
+# June 2026, downloaded fresh (18 Aug 2026) from
+# https://cdn.cse.lk/cmt/upload_report_file/387_1786611868010.pdf via
+# `app.ingestion.financial_reports_archive_loader.fetch_report_archive`.
+# Captured directly from `pdfplumber`'s own `page.extract_text()` output —
+# NOT hand-edited — to preserve the real character-doubling artifact this
+# fixture exists to test: bold-rendered rows (the title, and every
+# subtotal row — Total Assets, Total Liabilities, Total Shareholders'
+# Equity, Total Equity and Liabilities, Contingent Liabilities and
+# Commitments) come out with every character glyph doubled, while
+# ordinary (non-bold) body rows on the SAME page — e.g. "Cash and Cash
+# Equivalents" two lines below the doubled title — are completely
+# unaffected. See `repair_character_doubling`'s own docstring in
+# app.domain.financial_statement_parsing for the full finding; this
+# fixture is what proved it, and what its regression test is built on.
+BALANCE_SHEET_TEXT_NTB_DOUBLED = """\
+NNAATTIIOONNSS TTRRUUSSTT BBAANNKK PPLLCC
+SSTTAATTEEMMEENNTT OOFF FFIINNAANNCCIIAALL PPOOSSIITTIIOONN
+BBaannkk GGrroouupp
+AAss aatt 3300..0066..22002266 3311..1122..22002255 CChhaannggee 3300..0066..22002266 3311..1122..22002255 CChhaannggee
+LLKKRR ''000000 LLKKRR ''000000 ((%%)) LLKKRR ''000000 LLKKRR ''000000 ((%%))
+((AAuuddiitteedd)) ((AAuuddiitteedd))
+AASSSSEETTSS
+Cash and Cash Equivalents 37,873,231 19,864,631 91 37,873,234 19,864,477 9 1
+Balances with Central Bank of Sri Lanka 7,156,843 2,045,786 250 7,156,843 2,045,786 2 50
+Placements with banks 2,052,451 1,437,818 4 3 2,052,451 1,437,818 4 3
+Reverse Repurchase Agreements 4,831,577 645,794 648 4,831,577 645,794 6 48
+Derivative Financial Instruments 5,793,695 613,468 844 5,793,695 613,468 8 44
+Financial Assets Recognised through Profit or Loss - Measured at Fair Value 2,472,028 11,589,905 ( 79) 2,472,028 11,589,905 ( 79)
+Financial Assets Recognised through Profit or Loss - Designated at Fair Value - - - - - -
+Financial Assets at Fair Value through Other Comprehensive Income 168,457,067 133,112,729 27 168,457,067 133,112,729 2 7
+Financial Assets at Amortised Cost - Debt Instruments 109,836,207 88,897,718 2 4 109,836,207 88,897,718 2 4
+Financial Assets at Amortised Cost - Loans and Advances 541,891,956 430,368,007 2 6 541,891,956 430,368,007 2 6
+Current Tax Asset 104,609 - 100 36,927 - 1 00
+Other Assets 5,730,461 2,412,826 137 5,801,929 2,444,550 1 37
+Investments in Subsidiaries 678,710 678,710 - - - -
+Investments in associates and joint ventures - - - - - -
+Property, Plant & Equipment 5,798,856 4,026,924 44 6,873,131 5,110,266 3 4
+Investment properties - - - - - -
+Right of Use (ROU) Assets 2,163,614 1,970,691 1 0 1,840,919 1,540,432 2 0
+Intangible Assets 2,296,075 1,782,628 29 2,296,342 1,782,965 2 9
+Provisional Goodwill 22,190,416 - 1 22,190,416 - 1
+Deferred Tax Assets 3,847,363 1,127,396 2 41 3,575,756 854,968 3 18
+TToottaall AAsssseettss 992233,,117755,,115599 770000,,557755,,003311 33 22 992222,,998800,,447788 770000,,330088,,888833 33 22
+LLIIAABBIILLIITTIIEESS
+Due to Banks 29,765,443 42,772,586 ( 30) 29,765,443 42,772,586 ( 30)
+Derivative Financial Instruments 888,282 37,822 2 ,249 888,282 37,822 2 ,249
+Financial Liabilities Recognised through Profit or Loss - Measured at Fair Value - - - - - -
+Financial Liabilities Recognised through Profit or Loss - Designated at Fair Value - - - - - -
+Financial Liabilities at Amortised Cost
+Due to Depositors 688,914,454 502,605,592 3 7 687,953,741 502,219,078 3 7
+Due to debt securities holders - Repurchase Agreements 32,744,826 23,479,164 3 9 32,376,296 20,909,241 5 5
+Due to Other Borrowers 27,878,020 10,005,840 1 79 27,528,640 9,552,599 1 88
+Debt Securities Issued 21,231,250 5,973,778 2 55 21,231,250 5,973,778 2 55
+Retirement Benefit Obligations 1,808,769 1,659,228 9 1,819,346 1,668,811 9
+Current Tax Liabilities - 5,568,268 ( 100) - 5,632,064 ( 100)
+Due to subsidiaries - - - - - -
+Other Liabilities 16,015,436 14,580,677 1 0 16,387,594 14,627,281 1 2
+TToottaall LLiiaabbiilliittiieess 881199,,224466,,448800 660066,,668822,,995555 33 55 881177,,995500,,559922 660033,,339933,,226600 33 66
+EEQQUUIITTYY
+Stated Capital 13,990,603 13,007,641 8 13,990,603 13,007,641 8
+Statutory Reserve Fund 4,554,407 4,554,407 - 4,554,407 4,554,407 -
+Retained Earnings 84,531,740 69,679,491 2 1 84,999,699 72,069,790 1 8
+OCI Reserve (262,992) 5,535,616 ( 105) (262,992) 5,535,616 ( 105)
+Revaluation Reserve 1,114,921 1,114,921 - 1,748,169 1,748,169 -
+TToottaall SShhaarreehhoollddeerrss'' EEqquuiittyy 110033,,992288,,667799 9933,,889922,,007766 11 11 110055,,002299,,888866 9966,,991155,,662233 88
+NNoonn--ccoonnttrroolllliinngg iinntteerreessttss -- -- -- -- -- --
+TToottaall EEqquuiittyy aanndd LLiiaabbiilliittiieess 992233,,117755,,115599 770000,,557755,,003311 33 22 992222,,998800,,447788 770000,,330088,,888833 33 22
+CCoonnttiinnggeenntt LLiiaabbiilliittiieess aanndd CCoommmmiittmmeennttss 665599,,002233,,551155 448866,,664466,,991144 33 55 665599,,002233,,551155 448866,,664466,,991144 33 55
+MMeemmoorraanndduumm IInnffoorrmmaattiioonn
+Number of Employees 2 ,752 2 ,444 2 ,771 2 ,462
+Number of Branches 9 6 9 0 9 6 9 0
+Number of Off-Site ATMs and CRMs 1 5 2 4 1 5 2 4
+Note: Amounts stated are net of impairment and depreciation.
+CCEERRTTIIFFIICCAATTIIOONN ::
+I certify that these financial statements comply with the requirements of the Companies Act No. 07 of 2007.
+Sgd
+Kushlani Allis
+Chief Financial Officer
+We, the undersigned being the Chairperson, Director and Executive Director/Chief Executive Officer of Nations Trust Bank PLC certify jointly that:
+(a) the above financial statements have been prepared in compliance with the format and definitions prescribed by the Central Bank of Sri Lanka;
+(b) the information contained in these financial statements has been extracted from the unaudited financial statements of the Bank and the Group, unless indicated as audited.
+Sgd Sgd Sgd
+Sherin Cader Coralie Pietersz Hemantha D Gunetilleke
+Chairperson Director Executive Director/Chief Executive Officer
+12 August 2026
+Colombo
 """
 
 
@@ -963,3 +1054,80 @@ class TestDetectUnitScale:
         actually seen (always one "Rs." per comparative column, at least
         two columns)."""
         assert detect_unit_scale("Amounts below Rs. 500,000 are immaterial.") is None
+
+
+class TestRepairCharacterDoubling:
+    """A REAL bug, found live (18 Aug 2026) against Nations Trust Bank
+    PLC's (NTB.N0000) real interim statement for the six months ended 30
+    June 2026: bold-rendered text on several real pages comes out of
+    pdfplumber's own `extract_text()` with every character glyph doubled
+    — see `repair_character_doubling`'s own module-level comment in
+    app.domain.financial_statement_parsing for the full finding. Left
+    unrepaired, page 4's own doubled title never matched
+    `_STATEMENT_PAGE_MARKERS` and its doubled "LKR '000" unit declaration
+    never matched `_UNIT_THOUSANDS_RE` either — the real balance sheet on
+    NTB's own newest quarter was silently skipped, 0 drafts."""
+
+    def test_ntbs_real_doubled_title_is_recovered(self):
+        repaired = repair_character_doubling(BALANCE_SHEET_TEXT_NTB_DOUBLED)
+        lines = repaired.splitlines()
+        assert lines[0] == "NATIONS TRUST BANK PLC"
+        assert lines[1] == "STATEMENT OF FINANCIAL POSITION"
+        assert "LKR '000 LKR '000" in repaired
+
+    def test_ntbs_real_doubled_page_is_now_recognised_as_a_thousands_scale(self):
+        repaired = repair_character_doubling(BALANCE_SHEET_TEXT_NTB_DOUBLED)
+        assert detect_unit_scale(repaired) == Decimal(1000)
+
+    def test_ntbs_real_doubled_subtotal_rows_recover_the_real_printed_figures(self):
+        """Every doubled subtotal row (bold on the real PDF) recovers its
+        real printed value exactly — not a coincidence: confirmed by
+        cross-checking against `check_accounting_identities` in
+        test_full_extraction below, the same technique that originally
+        caught the split-thousands and split-leading-digit bugs."""
+        repaired = repair_character_doubling(BALANCE_SHEET_TEXT_NTB_DOUBLED)
+        assert "Total Assets 923,175,159 700,575,031" in repaired
+        assert "Total Liabilities 819,246,480 606,682,955" in repaired
+        assert "Total Shareholders' Equity 103,928,679 93,892,076" in repaired
+        assert "Total Equity and Liabilities 923,175,159 700,575,031" in repaired
+
+    def test_ntbs_real_undoubled_body_rows_on_the_same_page_are_left_untouched(self):
+        """The same real page's own non-bold body rows were never doubled
+        in the first place — proof the repair operates per-token/per-row,
+        not as a blanket whole-page transform, which is exactly what lets
+        it avoid corrupting a genuinely normal page (see the
+        no-real-fixture-misfires tests below)."""
+        repaired = repair_character_doubling(BALANCE_SHEET_TEXT_NTB_DOUBLED)
+        assert "Cash and Cash Equivalents 37,873,231 19,864,631" in repaired
+        assert "Balances with Central Bank of Sri Lanka 7,156,843 2,045,786" in repaired
+
+    @pytest.mark.parametrize(
+        "real_text",
+        [
+            BALANCE_SHEET_TEXT,
+            INCOME_STATEMENT_TEXT,
+            CASH_FLOW_STATEMENT_TEXT,
+            INCOME_STATEMENT_TEXT_SWAD,
+            CASH_FLOW_STATEMENT_TEXT_SWAD,
+            BALANCE_SHEET_TEXT_SWAD,
+            BALANCE_SHEET_TEXT_AHPL,
+        ],
+    )
+    def test_does_not_misfire_on_real_non_doubled_filings(self, real_text):
+        """Every real, already-verified, genuinely NON-doubled filing
+        fixture in this file must round-trip completely untouched —
+        proof this repair is narrowly gated (per
+        `_page_looks_character_doubled`) rather than a blanket transform
+        that would risk corrupting a normal page's own real, genuinely
+        repeated-looking short values."""
+        assert repair_character_doubling(real_text) == real_text
+
+    @pytest.mark.parametrize("word", ["COMMITTEE", "OFFICE", "ANNOUNCEMENT", "NOMINATION", "ADDRESS"])
+    def test_a_real_word_with_naturally_doubled_letters_does_not_misfire_standalone(self, word):
+        """Real English words with doubled letters (COMMITTEE's MM/TT/EE,
+        OFFICE's FF) must not be mistaken for the doubling artifact even
+        when tested in isolation — none of them round-trip as a fully
+        doubled run (`_is_doubled_run`), because the artifact doubles
+        EVERY character, not just some."""
+        page = f"{word} REPORT\nSome ordinary body text about the {word.lower()} below.\n"
+        assert repair_character_doubling(page) == page

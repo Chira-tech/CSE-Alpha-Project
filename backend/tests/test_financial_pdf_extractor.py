@@ -20,6 +20,7 @@ import httpx
 import pytest
 import respx
 
+from app.domain.financial_statement_parsing import check_accounting_identities
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import (
     announcements_for_ticker,
@@ -39,6 +40,7 @@ from app.models.fundamentals import Fundamental
 from app.models.securities import Security
 from tests.test_financial_statement_parsing import (
     BALANCE_SHEET_TEXT,
+    BALANCE_SHEET_TEXT_NTB_DOUBLED,
     BALANCE_SHEET_TEXT_SWAD,
     CASH_FLOW_STATEMENT_TEXT,
     CASH_FLOW_STATEMENT_TEXT_SWAD,
@@ -504,6 +506,39 @@ def test_ingest_financial_statements_for_known_tickers_matches_and_ingests(db_se
     assert total > 0
     assert db_session.query(Fundamental).filter_by(ticker="AAF.N0000").count() == 0
     assert db_session.query(Fundamental).filter_by(ticker="JFP.N0000").count() == total
+
+
+def test_ntbs_real_character_doubled_balance_sheet_page_now_produces_drafts():
+    """A REAL bug, found live (18 Aug 2026): NTB.N0000's real interim
+    statement for the six months ended 30 June 2026 has its page 4 (the
+    real Statement of Financial Position) rendered with every bold-text
+    character glyph doubled — before `repair_character_doubling` existed,
+    this page's own doubled title never matched `_STATEMENT_PAGE_MARKERS`
+    and was silently skipped, 0 drafts for NTB's newest quarter. Using
+    the FULL, real, un-repaired page text captured directly from the real
+    downloaded PDF (BALANCE_SHEET_TEXT_NTB_DOUBLED) end-to-end through the
+    real page-selection + extraction pipeline, not a hand-simplified
+    example."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(BALANCE_SHEET_TEXT_NTB_DOUBLED)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    by_line = {line.statement_line: line.primary_value for _page, line in candidates if line.statement_line}
+    assert by_line["total_assets"] == Decimal("923175159000")  # LKR '000 -> real LKR
+    assert by_line["total_liabilities"] == Decimal("819246480000")
+    assert by_line["total_equity"] == Decimal("103928679000")
+    assert by_line["total_equity_and_liabilities"] == Decimal("923175159000")
+
+    # Independent arithmetic check on the recovered figures — the same
+    # check that would have caught a bad de-doubling immediately, exactly
+    # as it caught the original split-thousands bug.
+    identities = check_accounting_identities(
+        {k: v for k, v in by_line.items() if v is not None}
+    )
+    assert identities  # at least one identity was checkable
+    assert all(c.passed for c in identities)
 
 
 def test_build_fundamental_drafts_deduplicates_by_statement_line():

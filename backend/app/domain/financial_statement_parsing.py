@@ -128,6 +128,119 @@ def _repair_split_leading_digits(numeric_tokens: list[str]) -> list[str]:
         merged.append(candidate)
     return merged
 
+
+# A THIRD, DIFFERENT real pdfplumber artifact, found live (18 Aug 2026)
+# against Nations Trust Bank PLC's (NTB.N0000) real interim statement for
+# the six months ended 30 June 2026: bold-rendered text on several pages
+# comes out with every character glyph doubled, e.g. page 4's own title
+# literally extracts as
+#   "SSTTAATTEEMMEENNTT OOFF FFIINNAANNCCIIAALL PPOOSSIITTIIOONN"
+# instead of "STATEMENT OF FINANCIAL POSITION" — most likely a "faux
+# bold" rendering where the PDF draws the same glyph twice at a near-
+# identical position and pdfplumber's own text-reconstruction reads both
+# as separate characters. Confirmed by hand: indexing only the letter
+# run's own characters (`"SSTTAATTEEMMEENNTT"[0::2] == "STATEMENT"`)
+# recovers the real word exactly. Left unrepaired, this page's own title
+# never matches `_STATEMENT_PAGE_MARKERS`
+# (app.ingestion.financial_pdf_extractor) and its own "LKR '000" unit
+# declaration never matches `_UNIT_THOUSANDS_RE` above either (the
+# doubled "LLKKRR" does not contain the substring "lkr") — the whole page
+# was silently skipped, 0 drafts, despite carrying NTB's real newest-
+# quarter balance sheet.
+#
+# CONFIRMED NOT UNIFORM ACROSS THE PAGE, LET ALONE THE DOCUMENT. The same
+# real page's own body rows are NOT doubled — "Cash and Cash Equivalents
+# 37,873,231 19,864,631" reads perfectly normally right next to a doubled
+# "TToottaall AAsssseettss" subtotal row two lines below it — and the very next
+# real statement page in the same PDF (page 6, "STATEMENT OF CASH FLOWS")
+# is not doubled at all. This matches a bold/non-bold rendering split
+# (titles and subtotal rows are typically bold on these statements, body
+# rows are not), which means detection CANNOT be a single whole-page or
+# whole-document yes/no decision — it has to work per RUN (per
+# whitespace-delimited token), exactly like `_repair_split_leading_digits`
+# above already works per-token rather than per-line.
+#
+# THE PER-TOKEN TEST ITSELF IS DELIBERATELY STRICT, TO AVOID A REAL FALSE-
+# POSITIVE RISK: a genuinely doubled token has EVERY character glyph
+# repeated, i.e. `token[2i] == token[2i+1]` for every position — the same
+# "de-duplicate then re-double reproduces the original exactly" round-trip
+# described by the real finding above. A coincidentally-repeated-looking
+# real token (e.g. a real "COMMITTEE" or "OFFICE" heading elsewhere in a
+# normal, non-buggy annual report) almost never satisfies this for its
+# FULL length — verified against every real fixture already in
+# test_financial_statement_parsing.py (BALANCE_SHEET_TEXT,
+# BALANCE_SHEET_TEXT_SWAD, BALANCE_SHEET_TEXT_AHPL and the two real income/
+# cash-flow statement texts): none of them contain a single token this
+# test misfires on, and neither does "COMMITTEE"/"OFFICE"/"ANNOUNCEMENT"/
+# "NOMINATION" tested standalone. `_MIN_DOUBLED_RUN_LEN` additionally
+# requires at least 4 characters (i.e. a real de-doubled length of at
+# least 2), specifically to rule out a real, short, coincidentally-
+# repeated-digit token (a percentage like "22" meaning literally 22%, not
+# a doubled "2") from being misread as doubled in isolation.
+#
+# A PER-TOKEN TEST ALONE IS STILL NOT ENOUGH, THOUGH — applying it to
+# EVERY token on EVERY page, unconditionally, would still risk quietly
+# halving a genuine short coincidentally-doubled value on a normal,
+# non-buggy filing (e.g. a real unformatted 4-digit count like "5500").
+# So this is additionally GATED per page: the transform only runs at all
+# when the page's own text contains a line with at least two INDEPENDENT
+# long (>=8 character) tokens that both pass the strict round-trip test —
+# in practice, this is the page's own multi-word statement title, which
+# is always present and always long on a real primary statement page, and
+# is a signal a short coincidental value could not plausibly produce by
+# chance. A normal page's title is never doubled, so the gate never fires
+# there, and every token on it — however coincidentally "repeated" it
+# might look in isolation — is left completely untouched.
+_MIN_DOUBLED_RUN_LEN = 4
+
+
+def _is_doubled_run(token: str) -> bool:
+    """True only if `token` round-trips exactly as a doubled run: every
+    character glyph repeated back-to-back, the whole way through. See the
+    module comment above this constant for why this has to be this strict
+    to avoid misreading a real, short, coincidentally-repeated value."""
+    if len(token) < _MIN_DOUBLED_RUN_LEN or len(token) % 2 != 0:
+        return False
+    return all(token[i] == token[i + 1] for i in range(0, len(token), 2))
+
+
+def _page_looks_character_doubled(page_text: str) -> bool:
+    """The page-level gate — see the module comment above
+    `_MIN_DOUBLED_RUN_LEN` for why a per-token test alone isn't a safe
+    enough signal on its own."""
+    for line in page_text.splitlines():
+        long_doubled_words = [
+            word for word in line.split() if len(word) >= 8 and _is_doubled_run(word)
+        ]
+        if len(long_doubled_words) >= 2:
+            return True
+    return False
+
+
+def repair_character_doubling(page_text: str) -> str:
+    """Real, narrowly-scoped fix for the NTB.N0000 character-doubling
+    artifact described above. A no-op (`page_text` returned byte-
+    identical) unless `_page_looks_character_doubled` finds strong
+    evidence THIS page is affected; when it does, every individual token
+    that itself round-trips as a doubled run is de-doubled (via
+    `token[0::2]`, keeping only its own alternating characters), and every
+    token that doesn't (a normal, non-doubled word or a value split by an
+    unrelated pdfplumber spacing artifact) is left exactly as printed.
+    Rejoins each line's tokens with a single space, matching what every
+    downstream consumer (`_is_primary_statement_page`, `detect_unit_scale`,
+    `extract_candidate_lines`, all of which already normalise internal
+    whitespace via `.split()`/`\\s+`) already assumes."""
+    if not _page_looks_character_doubled(page_text):
+        return page_text
+    repaired_lines = []
+    for line in page_text.splitlines():
+        tokens = line.split()
+        repaired_lines.append(
+            " ".join(token[0::2] if _is_doubled_run(token) else token for token in tokens)
+        )
+    return "\n".join(repaired_lines)
+
+
 # CSE comparative statements consistently print exactly this many value
 # columns (Group this-year, Group last-year, Company this-year, Company
 # last-year — verified on J.F. Packaging PLC, whose own column header
@@ -153,7 +266,18 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "total_assets": ("total assets",),
     "total_current_assets": ("total current assets",),
     "total_non_current_assets": ("total non-current assets", "total non current assets"),
-    "total_equity": ("total equity", "total shareholders funds", "total shareholders' funds"),
+    "total_equity": (
+        "total equity",
+        "total shareholders funds",
+        "total shareholders' funds",
+        # Nations Trust Bank PLC's real interim statement for the six
+        # months ended 30 June 2026 — verified after fixing the real
+        # character-doubling extraction artifact on its own balance-sheet
+        # page (see `repair_character_doubling`'s docstring): the
+        # de-doubled label reads "Total Shareholders' Equity", a real
+        # third wording distinct from both variants above.
+        "total shareholders' equity",
+    ),
     "total_liabilities": ("total liabilities",),
     "total_current_liabilities": ("total current liabilities",),
     "total_non_current_liabilities": ("total non-current liabilities", "total non current liabilities"),

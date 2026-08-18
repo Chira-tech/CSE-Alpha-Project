@@ -69,6 +69,7 @@ from app.domain.financial_statement_parsing import (
     derive_additional_line_items,
     detect_unit_scale,
     extract_candidate_lines,
+    repair_character_doubling,
 )
 from app.ingestion.cse_client import CseClient
 from app.ingestion.schemas import FinancialAnnouncementResponse, FinancialAnnouncementRow
@@ -209,6 +210,13 @@ def extract_financial_statement_candidates(
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page_number, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
+            # A real, narrowly-scoped repair for NTB.N0000's real bold-
+            # text character-doubling artifact — see app.domain.
+            # financial_statement_parsing.repair_character_doubling's own
+            # docstring for the full finding. A no-op on every page that
+            # doesn't show strong evidence of the bug (i.e. every page of
+            # every other real filing checked so far).
+            text = repair_character_doubling(text)
             lower = text.lower()
             if not _is_primary_statement_page(lower):
                 continue
