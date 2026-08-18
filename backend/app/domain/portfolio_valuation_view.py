@@ -138,7 +138,11 @@ def value_position(
         buy_below_price=summary.price_ladder.buy_below_price if summary.price_ladder else None,
         margin_of_safety_pct=summary.margin_of_safety.total_pct,
         dispersion_pct=summary.triangulation.dispersion_pct,
-        warnings=tuple(warnings) + summary.triangulation.warnings,
+        warnings=(
+            tuple(warnings)
+            + summary.triangulation.warnings
+            + (summary.price_ladder.warnings if summary.price_ladder is not None else ())
+        ),
     )
 
 

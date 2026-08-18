@@ -5,9 +5,14 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
+from app.domain import valuation_view
+from app.domain.cost_of_equity import CostOfEquityResult
 from app.domain.portfolio_import_parsing import ParsedPortfolio, ParsedPosition
 from app.domain.portfolio_import_view import store_portfolio_snapshot
 from app.domain.portfolio_valuation_view import value_portfolio
+from app.models.enums import ProvenanceTier
+from app.models.float_data import FloatData
+from app.models.fundamentals import Fundamental
 from app.models.prices import PriceDaily
 from app.models.securities import Security
 
@@ -83,3 +88,58 @@ class TestValuePortfolio:
         snapshot = store_portfolio_snapshot(db_session, _parsed("NOPRICE.N0000"), source_filename="p.xlsx")
         result = value_portfolio(db_session, snapshot, AS_OF)
         assert result.total_cost == Decimal("20000.0")
+
+    def test_a_negative_blended_fair_value_carries_its_real_warning_not_silence(self, db_session, monkeypatch):
+        """Real bug, found live (18 Aug 2026) browser-testing the
+        Portfolio screen against the real dev DB: CBNK.N0000's real
+        confirmed figures blend to a negative fair value, and
+        `app.domain.price_ladder.compute_price_ladder` already refuses
+        to build a zone from it — but `value_position` only ever copied
+        `summary.triangulation.warnings` into the position's own
+        `warnings`, never `summary.price_ladder.warnings`, so the real,
+        already-computed "fair_value must be positive" explanation
+        silently never reached the position at all. The Opportunities
+        screen (a different call site reading the same `valuation_
+        summary_for` output) already surfaced this correctly, which is
+        how the gap was found — comparing what the two screens showed
+        for the same real ticker."""
+        db_session.add(Security(ticker="NEG.N0000", name="Negative PLC", archetype="bank"))
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="NEG.N0000", period_end=dt.date(2021, 12, 31), period_type="annual",
+                    first_available_date=dt.date(2022, 3, 7), version=1, statement_line="total_equity",
+                    value=Decimal(1000), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="NEG.N0000", period_end=dt.date(2021, 12, 31), period_type="annual",
+                    first_available_date=dt.date(2022, 3, 7), version=1, statement_line="net_income",
+                    value=Decimal(-500), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+            ]
+        )
+        db_session.add(FloatData(ticker="NEG.N0000", as_of=dt.date(2022, 1, 1), shares_issued=100))
+        db_session.add(
+            PriceDaily(
+                ticker="NEG.N0000", date=AS_OF, close=Decimal(12), adj_factor=Decimal(1),
+                fetched_at=dt.datetime.now(dt.timezone.utc),
+            )
+        )
+        db_session.commit()
+
+        def _fake_ke(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None):
+            return CostOfEquityResult(
+                ke=Decimal("0.15"), risk_free_rate=Decimal("0.12"), beta=Decimal("1.0"),
+                erp_effective=Decimal("0.07"), beta_times_erp=Decimal("0.07"), size_premium=None,
+                illiquidity_premium=None, implied_erp_cross_check=None, is_lower_bound=True,
+                missing_components=(), note="stub",
+            )
+
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke)
+
+        snapshot = store_portfolio_snapshot(db_session, _parsed("NEG.N0000"), source_filename="p.xlsx")
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        pos = result.positions[0]
+
+        assert pos.price_ladder_zone is None
+        assert any("fair_value must be positive" in w for w in pos.warnings)

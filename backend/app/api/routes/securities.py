@@ -212,18 +212,27 @@ class SecurityDetail(BaseModel):
 # Kept in one place so the company file and any future screen tell the
 # user the same story about what this system can't do yet.
 _NOT_YET_BUILT = [
-    "Fair value and buy-below price (Phase 3 — the model router (§16) now runs and names which "
-    "methods apply, and cost of equity (§17.2) is now computed, but the DCF/DDM/residual-income/"
-    "SOTP math itself, §18-24, is not built)",
-    "Composite score (Phase 2 — §38; needs the full ratio set plus sector-relative percentiles)",
+    "Composite score (Phase 6 — §38; needs the full ratio set plus sector-relative percentiles, "
+    "Carhart certification and the timing battery)",
     "Coverage tier (Phase 2 — §11; the gate logic exists but needs liquidity history and free float)",
     "Sector-relative percentiles (Phase 2 — §12; trend DIRECTION now runs per company (§13), but "
     "ranking a ratio against its sector needs a full-universe computation not yet built)",
     "Earnings integrity veto (§14 — Beneish M-Score, Sloan accrual ratio, related-party revenue, "
     "auditor tier and director dealings all need statement lines this system does not yet extract)",
-    "Macro regime and sector fit (Phase 5 — macro engine, §29-33)",
+    "Per-ticker macro sector fit (Phase 5 — the regime read itself (§29-33) and the sector-wide "
+    "sensitivity matrix (§33) are both live now (see the Macro screen), but a per-COMPANY macro "
+    "sensitivity score — the `sector_fit` field §45's decision record already has a column "
+    "for — isn't computed yet, since §33's matrix estimates a sector as a whole, not one ticker)",
     "Research note (Phase 7 — AI research writer, §44)",
 ]
+# Removed 18 Aug 2026: "Fair value and buy-below price" and a blanket
+# "Macro regime ... not built" both used to be here — found stale, live,
+# browser-testing this exact page against real data: justified P/B and
+# residual income (§20.2/§19.3) have been wired up as real triangulation
+# anchors since much earlier this session, and the price ladder (§25-26)
+# right above this list on the same page already shows a real, computed
+# fair value and buy-below price for any company with enough confirmed
+# data — this list was directly contradicting its own page.
 
 
 @router.get("", response_model=list[SecurityListItem])
