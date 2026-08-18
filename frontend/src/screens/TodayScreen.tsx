@@ -1,31 +1,33 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getDataHealth, getMarketOverview, getSpread } from "../api";
+import { ApiRequestError, getDataHealth, getMarketOverview, getPortfolioHoldingsValued, getSpread } from "../api";
 import { Delta } from "../components/Delta";
 import { SpreadHero } from "../components/SpreadHero";
 import { EmptyState, ErrorState, PartialNotice, SkeletonCard } from "../components/states";
-import { formatIndexValue, formatInteger } from "../format";
-import type { DataHealth, MarketOverview, Spread } from "../types";
+import { directionOf, formatIndexValue, formatInteger, formatPrice, UNAVAILABLE } from "../format";
+import type { DataHealth, MarketOverview, Spread, ValuedPortfolio } from "../types";
 
 /**
  * UI & Experience Specification §8 — Screen 1, "Today". Four questions in
  * descending order of importance.
  *
- * Two of the four (WHERE AM I? — portfolio; WHAT IS ON THE BOARD? — the
- * ranked list) need engines that don't exist yet, and are shown as
- * explicit gaps rather than empty cards, per §17's placeholder
- * prohibition.
+ * WHAT IS ON THE BOARD? (§4) still needs engines that don't exist yet,
+ * and is shown as an explicit gap rather than an empty card, per §17's
+ * placeholder prohibition. WHERE AM I? (§3) now reads the same real
+ * holdings valuation the Portfolio screen shows — a one-line summary
+ * here, the full breakdown there.
  *
  * §7.2's governing constraint on this screen: it "must be fully readable
  * in under two minutes and must usually conclude with 'nothing to do'."
  * Section 2 below is written to reach that conclusion plainly when
  * there's genuinely nothing pending.
  */
-export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "review") => void }) {
+export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "portfolio" | "review") => void }) {
   const [market, setMarket] = useState<MarketOverview | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
   const [health, setHealth] = useState<DataHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [spread, setSpread] = useState<Spread | null>(null);
+  const [portfolio, setPortfolio] = useState<ValuedPortfolio | null | undefined>(undefined);
 
   useEffect(() => {
     getMarketOverview()
@@ -39,6 +41,9 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "re
     getSpread()
       .then(setSpread)
       .catch(() => setSpread(null));
+    getPortfolioHoldingsValued()
+      .then(setPortfolio)
+      .catch(() => setPortfolio(null));
   }, []);
 
   const attention: string[] = [];
@@ -165,19 +170,62 @@ export function TodayScreen({ onOpenScreen }: { onOpenScreen: (id: "macro" | "re
         )}
       </section>
 
-      {/* ---- 3 and 4: not built ------------------------------------- */}
       <section aria-labelledby="where-heading" className="stack-tight">
         <h2 id="where-heading">3 · Where am I?</h2>
-        <div className="notice notice-neutral">
-          <h3>Portfolio tracking is not built yet — Phase 8</h3>
-          <p className="prose t-body">
-            Holdings, thesis status, factor exposure against target and distance to each exit trigger
-            live here (§41–42). It depends on the decision record having captured frozen model state
-            at purchase, which in turn depends on there being a model to freeze.
-          </p>
-        </div>
+        {portfolio === null ? (
+          <div className="notice notice-neutral">
+            <h3>No portfolio uploaded yet</h3>
+            <p className="prose t-body">
+              Upload a real CDS/broker holdings export to see your current positions valued against
+              this system's own fair-value engine.
+            </p>
+            <div style={{ marginTop: "var(--s4)" }}>
+              <button onClick={() => onOpenScreen("portfolio")}>Go to Portfolio</button>
+            </div>
+          </div>
+        ) : portfolio === undefined ? (
+          <SkeletonCard lines={2} />
+        ) : (
+          <div className="card">
+            <div style={{ display: "flex", gap: "var(--s6)", flexWrap: "wrap", alignItems: "baseline" }}>
+              <div>
+                <span className="t-label">Cost</span>
+                <div className="t-data">{formatPrice(portfolio.total_cost)}</div>
+              </div>
+              <div>
+                <span className="t-label">Live value</span>
+                <div className="t-data">
+                  {portfolio.total_live_market_value !== null
+                    ? formatPrice(portfolio.total_live_market_value)
+                    : UNAVAILABLE}
+                </div>
+              </div>
+              {portfolio.total_live_market_value !== null &&
+                (() => {
+                  const gain = Number(portfolio.total_live_market_value) - Number(portfolio.total_cost);
+                  const gainPct = (gain / Number(portfolio.total_cost)) * 100;
+                  return (
+                    <div>
+                      <span className="t-label">Unrealised P&amp;L</span>
+                      <div className={`t-data delta delta-${directionOf(gain)}`}>
+                        <Delta percentage={gainPct} />
+                      </div>
+                    </div>
+                  );
+                })()}
+              <div>
+                <span className="t-label">Positions</span>
+                <div className="t-data">{portfolio.positions.length}</div>
+              </div>
+            </div>
+            <div style={{ marginTop: "var(--s4)" }}>
+              <button onClick={() => onOpenScreen("portfolio")}>Open Portfolio</button>
+            </div>
+          </div>
+        )}
       </section>
 
+      {/* ---- 4: not built --------------------------------------------- */}
       <section aria-labelledby="board-heading" className="stack-tight">
         <h2 id="board-heading">4 · What is on the board?</h2>
         <div className="notice notice-neutral">

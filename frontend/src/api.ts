@@ -6,9 +6,11 @@ import type {
   Fundamental,
   IndexHistory,
   MarketOverview,
+  PortfolioSnapshotDetail,
   SectorSensitivity,
   SecurityDetail,
   SecurityListItem,
+  ValuedPortfolio,
 } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -131,4 +133,34 @@ export function getSpread() {
 
 export function getSectorSensitivity() {
   return request<SectorSensitivity>("/market/sector-sensitivity");
+}
+
+// --- Portfolio --------------------------------------------------------
+
+export function getPortfolioHoldingsValued() {
+  return request<ValuedPortfolio | null>("/portfolio/holdings/valued");
+}
+
+/**
+ * Multipart upload, deliberately not routed through `request()` above:
+ * that helper always sets `Content-Type: application/json`, which would
+ * corrupt a multipart body — the browser must set its own
+ * `Content-Type` (with the multipart boundary) when the body is a
+ * `FormData`, so no Content-Type header is set here at all.
+ */
+export async function uploadPortfolio(file: File): Promise<PortfolioSnapshotDetail> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${BASE_URL}/portfolio/upload`, { method: "POST", body: form });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // response body wasn't JSON — fall back to statusText
+    }
+    throw new ApiRequestError(detail, response.status);
+  }
+  return response.json() as Promise<PortfolioSnapshotDetail>;
 }

@@ -326,6 +326,64 @@ export interface Spread {
   history: SpreadPoint[];
 }
 
+export interface PortfolioPosition {
+  ticker: string;
+  quantity: string;
+  avg_price: string;
+  total_cost: string;
+  traded_price: string | null;
+  market_value: string | null;
+  unrealized_gain_loss: string | null;
+}
+
+export interface PortfolioSnapshotSummary {
+  id: number;
+  uploaded_at: string;
+  source_filename: string;
+  position_count: number;
+  stated_total_cost: string | null;
+  stated_total_market_value: string | null;
+  identity_check_passed: boolean;
+  identity_check_note: string;
+}
+
+export interface PortfolioSnapshotDetail extends PortfolioSnapshotSummary {
+  positions: PortfolioPosition[];
+  /** Real held tickers this system's `securities` table doesn't
+   * currently carry — named, never silently dropped. */
+  unrecognized_tickers: string[];
+}
+
+export type PriceLadderZone = "strong_accumulate" | "accumulate" | "fair" | "trim" | "exit";
+
+export interface ValuedPosition {
+  ticker: string;
+  quantity: string;
+  avg_price: string;
+  total_cost: string;
+  snapshot_traded_price: string | null;
+  snapshot_market_value: string | null;
+  snapshot_unrealized_gain_loss: string | null;
+  live_current_price: string | null;
+  live_market_value: string | null;
+  live_unrealized_gain_loss: string | null;
+  blended_fair_value_per_share: string | null;
+  price_ladder_zone: PriceLadderZone | null;
+  buy_below_price: string | null;
+  margin_of_safety_pct: string | null;
+  dispersion_pct: string | null;
+  warnings: string[];
+}
+
+export interface ValuedPortfolio {
+  snapshot_id: number;
+  as_of: string;
+  positions: ValuedPosition[];
+  total_cost: string;
+  total_live_market_value: string | null;
+  positions_missing_a_live_price: string[];
+}
+
 export interface SensitivityEstimate {
   shock_name: string;
   coefficient: string;

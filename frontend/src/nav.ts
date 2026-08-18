@@ -71,9 +71,9 @@ export const NAV_ITEMS: NavItem[] = [
     id: "portfolio",
     label: "Portfolio",
     blurb: "What I own, and whether the reasons still hold",
-    awaitingPhase: "Phase 8",
+    awaitingPhase: null,
     willContain:
-      "Your holdings with thesis status above P&L (deliberately — P&L is what happened, thesis status is what to do), distance to each of the five exit triggers, portfolio-level factor exposure against target, and the thesis-drift verdict per position (§41–42). It needs the decision record (§45) to have been capturing frozen model state first.",
+      "Built: upload a real CDS/broker holdings export and see your current positions run through this system's own real valuation engine — live price, fair value, price-ladder zone and buy-below, per holding. Still awaiting Phase 8 (§41–42): thesis status above P&L (deliberately — P&L is what happened, thesis status is what to do), distance to each of the five exit triggers, portfolio-level factor exposure against target, and the thesis-drift verdict per position. Those need the decision record (§45) capturing frozen model state at purchase, which doesn't exist yet.",
     group: "primary",
   },
   {
