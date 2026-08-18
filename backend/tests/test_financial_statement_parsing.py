@@ -878,6 +878,27 @@ class TestDetectUnitScale:
         )
         assert detect_unit_scale(real_header_with_unicode_quote) == Decimal(1000)
 
+    def test_ntbs_real_lkr_000_header_is_a_thousands_scale(self):
+        """A REAL, SEPARATE currency-prefix variant found live (18 Aug
+        2026): Nations Trust Bank PLC's real interim statement for the
+        six months ended 30 June 2026 declares its units as "LKR '000",
+        never "Rs." at all, on its real Statement of Cash Flows page.
+        Found via a dedicated diagnostic download of NTB.N0000's own real
+        filing after the "rs"-only pattern refused every one of its real
+        primary-statement pages and produced 0 drafts across two separate
+        backfill runs, even though a real, well-formed unit declaration
+        WAS present — just spelled with a different currency
+        abbreviation than every previously-seen real filing."""
+        ntb_header = (
+            "NATIONS TRUST BANK PLC\n"
+            "STATEMENT OF CASH FLOWS\n"
+            "Bank Group\n"
+            "Six Months Ended 30 June Six Months Ended 30 June\n"
+            "2026 2025 2026 2025\n"
+            "LKR '000 LKR '000 LKR '000 LKR '000\n"
+        )
+        assert detect_unit_scale(ntb_header) == Decimal(1000)
+
     def test_swadeshis_real_rs_header_is_a_full_value_scale(self):
         """Swadeshi Industrial Works PLC's real statements are genuinely
         NOT in thousands — Revenue of 4,649,049,764 is a real ~4.6bn LKR

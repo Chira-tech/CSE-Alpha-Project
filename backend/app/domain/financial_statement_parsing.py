@@ -409,7 +409,19 @@ def match_canonical_label(label: str) -> str | None:
 # extractable statement/summary pages (including the real primary
 # balance sheet on page 142) from that one filing alone — caught by a
 # dedicated diagnostic run, not by re-reading the regex in the abstract.
-_UNIT_THOUSANDS_RE = re.compile(r"rs\.?\s*['’]?000s?\b")
+#
+# THE CURRENCY PREFIX ITSELF ISN'T ALWAYS "RS." EITHER. Nations Trust
+# Bank PLC's real interim statement for the six months ended 30 June
+# 2026 declares its units as "LKR '000" on its real Statement of Cash
+# Flows page — never "Rs." at all. This is a genuine, verified fourth
+# wording variant, not a guess: the original "rs"-only pattern refused
+# every one of NTB.N0000's real primary-statement pages (0 drafts
+# produced across two separate backfill runs) even though a real,
+# well-formed unit declaration WAS present on the page, just spelled
+# with a different currency abbreviation. Found live via a dedicated
+# diagnostic download of NTB.N0000's own real filing, the same method
+# used for the two gaps documented above.
+_UNIT_THOUSANDS_RE = re.compile(r"(?:rs\.?|lkr)\s*['’]?000s?\b")
 _UNIT_FULL_VALUE_RE = re.compile(r"(?:\brs\.\s*){2,}")
 
 
