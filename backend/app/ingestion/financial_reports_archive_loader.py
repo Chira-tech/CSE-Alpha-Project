@@ -137,7 +137,31 @@ def ingest_archived_report(
     2018-and-earlier COMB.N0000 filing) is caught and counted, not raised
     — the catalogue listing a file does not mean the file is retrievable,
     and one unavailable filing must not abort the rest of a company's
-    archive."""
+    archive.
+
+    A GENUINE, UNFIXABLE REAL LIMITATION, NAMED PRECISELY RATHER THAN
+    WORKED AROUND: Panasian Power PLC's (PAP.N0000) real interim
+    statement for the quarter ended 31 March 2026 (id 51459, https://
+    cdn.cse.lk/cmt/upload_report_file/1040_1779964134895.pdf) downloads
+    successfully (200, ~4.4MB) but `pdfplumber`'s own `extract_text()`
+    returns an empty string on every one of its 15 pages — confirmed by
+    inspecting every page individually, not inferred from one failure.
+    This is a genuinely scanned PDF with no embedded text layer at all
+    (its file size, ~30x the size of PAP's own next-quarter filing for
+    the same company covering the same statements, is consistent with
+    embedded page-image scans rather than born-digital text). No amount
+    of extraction-logic fixing can recover text that was never encoded in
+    the file; the only way to read this filing at all would be OCR, which
+    is out of scope for this pipeline. `extract_financial_statement_
+    candidates` already handles this correctly with zero special-casing —
+    every page's `_is_primary_statement_page("")` is trivially False, so
+    it's naturally skipped exactly like any other non-statement page,
+    producing 0 drafts, not a crash and not a fabricated figure. PAP's
+    OTHER real quarterly filing (30 June 2026, same company, same
+    statement shapes) has a real text layer and extracts correctly — see
+    test_paps_real_bare_lkr_balance_sheet_now_produces_drafts in test_
+    financial_pdf_extractor.py — confirming this is specific to this one
+    scanned file, not a defect in this loader."""
     period_end = _epoch_ms_to_date(report.manualDate)
     first_available_date = resolve_first_available_date(report)
     if period_end is None or first_available_date is None:

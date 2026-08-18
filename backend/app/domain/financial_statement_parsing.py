@@ -114,7 +114,39 @@ def _repair_split_leading_digits(numeric_tokens: list[str]) -> list[str]:
     yet; if one turns up, this heuristic needs a stronger signal than
     token shape alone (e.g. cross-checking against `check_accounting_
     identities`, which is what actually caught this bug in the first
-    place)."""
+    place).
+
+    A SECOND, CONFIRMED REAL LIMITATION (found 18 Aug 2026, Panasian
+    Power PLC / PAP.N0000's real interim statement for the quarter ended
+    30 June 2026, NOT fixed here): this repair requires EVERY column on
+    the line to be split the same way, uniformly — but PAP's own real
+    "Inventories" row splits only 2 of its 4 real value columns this way
+    ("Inventories 3 17,353,093 1 39,446,076 1 ,472,811 1 ,267,145" — the
+    last two columns were already fully repaired by `_repair_split_
+    thousands` above, since THEIR stray space happens to land right
+    before a comma, while the first two columns' stray space lands one
+    character earlier). Cross-checked against the real page's own current-
+    assets subtotal (the four real components sum to it exactly): the
+    true first column is 317,353,093, not the 17,353,093 this function
+    currently returns (its non-uniform pairs make it bail out entirely,
+    and the leading "3" is then wrongly dropped by the excess-note-
+    reference logic below, which cannot tell it apart from a genuine
+    note reference). A right-to-left greedy per-column reconstruction
+    would fix this row, but was deliberately NOT implemented: tracing it
+    through by hand shows it reintroduces the EXACT J.F. Packaging false-
+    positive above (a genuine trailing note-reference "5" immediately
+    before a real, complete, unsplit final value becomes syntactically
+    indistinguishable from "5" being that value's own split leading
+    digit) the moment the row's split/unsplit columns are mixed rather
+    than uniform — i.e. the two known real filings this module has
+    evidence for actively conflict with each other. This affects `inven-
+    tories` on this one specific real row and nothing checked by
+    `check_accounting_identities` (every total/subtotal line on PAP's
+    real balance sheet is either fully split or fully unsplit, never
+    mixed) — see test_extract_candidate_lines_finds_every_canonical_
+    item_on_paps_real_balance_sheet's own comment. Left as a named, real,
+    disclosed gap rather than a forced fix that risks corrupting the
+    WLTH/JFP cases already verified above."""
     if len(numeric_tokens) < 2 or len(numeric_tokens) % 2 != 0:
         return numeric_tokens
     merged: list[str] = []
@@ -599,8 +631,26 @@ def match_canonical_label(label: str) -> str | None:
 # with a different currency abbreviation. Found live via a dedicated
 # diagnostic download of NTB.N0000's own real filing, the same method
 # used for the two gaps documented above.
+#
+# A FIFTH REAL WORDING, AND A GENUINELY NEW SHAPE: full-value (not
+# thousands) statements that ALSO use "LKR" rather than "Rs." — found
+# live (18 Aug 2026) against Panasian Power PLC's (PAP.N0000) real
+# interim statement for the quarter ended 30 June 2026. Its own real
+# Statement of Financial Position column header reads plain "LKR LKR LKR
+# LKR" — no "'000" suffix at all, and its own printed Total Assets
+# (9,828,732,284) is only plausible as a genuine full-LKR figure (read as
+# thousands, it would be a nonsensical ~9.8 TRILLION LKR for a small
+# hydro/solar power company). Before this fix, `_UNIT_THOUSANDS_RE`
+# correctly refused to match (no "'000"/"000" suffix present) but
+# `_UNIT_FULL_VALUE_RE` ALSO refused, because it only recognised a
+# repeated "Rs." — this page's own genuine, real, repeated per-column
+# unit declaration used a currency prefix that pattern had never seen,
+# and the page was silently skipped, 0 drafts, for the exact same "found
+# a marker, refused a scale" reason NTB's doubled page was skipped before
+# `repair_character_doubling` — a completely independent real gap that
+# happened to produce the same symptom.
 _UNIT_THOUSANDS_RE = re.compile(r"(?:rs\.?|lkr)\s*['’]?000s?\b")
-_UNIT_FULL_VALUE_RE = re.compile(r"(?:\brs\.\s*){2,}")
+_UNIT_FULL_VALUE_RE = re.compile(r"(?:\b(?:rs\.|lkr)\s*){2,}")
 
 
 def detect_unit_scale(page_text: str) -> Decimal | None:

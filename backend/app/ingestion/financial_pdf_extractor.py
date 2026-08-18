@@ -90,6 +90,17 @@ _STATEMENT_PAGE_MARKERS = (
     "statement of profit or loss",
     "income statement",
     "statement of cash flow",  # verified: J.F. Packaging PLC's FY2025/26 header, singular "flow"
+    # Panasian Power PLC's (PAP.N0000) real interim statement for the
+    # quarter ended 30 June 2026 titles its income statement page
+    # "STATEMENT OF COMPREHENSIVE INCOME" — no "profit or loss" wording
+    # at all, a genuinely different real title from every filing checked
+    # so far (J.F. Packaging PLC's own equivalent page is titled
+    # "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME",
+    # matching the marker above already). Verified this phrase appears
+    # on exactly one real page of PAP's own filing (the genuine income
+    # statement) and nowhere else in it, so adding it does not risk
+    # pulling in an unrelated note/schedule page for this filing.
+    "statement of comprehensive income",
 )
 
 # A real, verified false-positive: J.F. Packaging PLC's Note 25

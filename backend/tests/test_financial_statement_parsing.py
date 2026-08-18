@@ -409,6 +409,89 @@ Colombo
 """
 
 
+# Real text from page 1 (the actual Statement of Financial Position) of
+# Panasian Power PLC's (PAP.N0000) real interim statement for the quarter
+# ended 30 June 2026, downloaded fresh (18 Aug 2026) from
+# https://cdn.cse.lk/cmt/upload_report_file/1040_1786442603758.pdf.
+# Sought out specifically because both of PAP.N0000's two most recent
+# quarterly filings produced 0 drafts. Two real, independent gaps found
+# on this one page: its own real unit declaration is a bare, repeated
+# "LKR LKR LKR LKR" — no "'000" suffix — which `detect_unit_scale`
+# refused before this fix (neither the thousands pattern, which needs a
+# "'000" suffix, nor the full-value pattern, which only recognised a
+# repeated "Rs.", matched a bare repeated "LKR"); and every one of PAP's
+# own printed values already carries the exact same split-thousands
+# space artifact ("6 ,861,409,400" instead of "6,861,409,400") already
+# fixed for J.F. Packaging PLC's own real interim statement, kept exactly
+# as printed rather than cleaned up, since `_repair_split_thousands`
+# needs to prove it still fires correctly here too.
+BALANCE_SHEET_TEXT_PAP = """\
+PANASIAN POWER PLC
+INTERIM CONDENSED FINANCIAL STATEMENTS - QUARTER ENDED 30 JUNE 2026
+PROVISIONAL FINANCIAL STATEMENTS
+STATEMENT OF FINANCIAL POSITION
+Group Company
+As at 30 June 2026 As at 31 March 2026 As at 30 June 2026 As at 31 March 2026
+ASSETS
+Unaudited Audited Unaudited Audited
+LKR LKR LKR LKR
+Non - Current Assets
+Property, plant and equipment 6 ,861,409,400 6 ,927,768,540 1 03,140,713 1 04,896,835
+Capital work in progress 9 9,646,295 8 3,059,907 2 4,059,332 2 2,884,896
+Right of use assets 7 9,440,582 8 3,263,928 2 5,310,665 2 8,461,457
+Intangible assets 6 8,354,680 6 9,279,487 2 ,160,711 1 ,720,879
+Investment in subsidiaries - - 1 ,427,377,715 1 ,427,377,715
+Investment in preference shares - - 2 3,000,000 2 3,000,000
+Investment in equity accounted investees 1 4,921,727 1 4,586,054 - -
+Deferred tax assets 1 ,044,130,868 1 ,124,818,417 - -
+8 ,167,903,552 8 ,302,776,333 1 ,605,049,136 1 ,608,341,782
+Current Assets
+Inventories 3 17,353,093 1 39,446,076 1 ,472,811 1 ,267,145
+Trade and other receivables 8 76,481,667 8 23,614,765 6 1,039,874 4 4,952,748
+Amount due from related parties 7 48,127 6 46,280 8 7,689,462 5 7,791,461
+Income tax receivables 6 ,449,177 6 ,449,177 - -
+Financial assets at fair value through profit or loss 1 ,604,640 1 68,380,097 3 80,546 3 0,320,958
+Other financial asset 7 3,905,706 5 7,755,715 - -
+Cash and cash equivalents 3 84,286,322 1 62,105,530 2 8,609,139 4 3,033,783
+1 ,660,828,732 1 ,358,397,640 1 79,191,832 1 77,366,095
+TOTAL ASSETS 9,828,732,284 9 ,661,173,973 1,784,240,968 1 ,785,707,877
+EQUITY AND LIABILITIES
+Equity
+Stated capital 1 ,030,000,000 1 ,030,000,000 1 ,030,000,000 1 ,030,000,000
+Retained earnings 1 ,224,148,208 1 ,136,974,494 4 68,932,838 4 75,303,102
+Equity attributable to equity holders of the company 2 ,254,148,208 2 ,166,974,494 1 ,498,932,838 1 ,505,303,102
+Non controlling interest 8 73,126,859 8 08,673,078 - -
+Total Equity 3 ,127,275,067 2 ,975,647,572 1 ,498,932,838 1 ,505,303,102
+Non-Current Liabilities
+Retirement benefit obligations 2 1,142,435 1 9,987,008 1 7,275,324 1 6,425,654
+Lease liabilities 7 5,654,323 7 8,685,138 1 7,495,039 2 2,194,299
+Interest bearing loans and borrowings 4 ,570,259,968 4 ,819,421,657 - -
+Deferred tax liabilities 2 14,939,207 2 24,593,816 5 ,819,692 9 ,430,067
+4 ,881,995,933 5 ,142,687,619 4 0,590,055 4 8,050,020
+Current Liabilities
+Lease liabilities 1 7,548,820 1 6,691,578 1 7,500,049 1 6,644,189
+Interest bearing loans and borrowings 1 ,235,775,952 1 ,119,926,170 2 2,813,897 3 4,221,746
+Amount due to related parties - - 1 01,822,989 1 23,098,554
+Trade and other payables 3 97,237,417 2 47,249,393 3 4,838,726 4 8,316,358
+Provisions 1 6,859,908 5 7,554,334 - -
+Income tax payable 8 6,949,035 8 9,992,525 9 ,600,253 8 ,228,788
+Bank overdraft 6 5,090,152 1 1,424,782 5 8,142,161 1 ,845,120
+1 ,819,461,284 1 ,542,838,782 2 44,718,075 2 32,354,755
+Total Liabilities 6 ,701,457,217 6 ,685,526,401 2 85,308,130 2 80,404,775
+TOTAL EQUITY AND LIABILITIES 9,828,732,284 9 ,661,173,973 1,784,240,968 1 ,785,707,877
+Net asset per share 3 .61 3 .47 2 .40 2 .41
+(1) 0 0 0
+These financial statements are in compliance with the requirements of the Companies Act. No 7 of 2007.
+Ms. Lakmali Egodawaththa
+Finance Manager
+The Board of Directors is responsible for the preparation and presentation of these Financial Statements.
+Signed for and on behalf of the Board by,
+Mr.L.Silva Mr. P. Poddiwala
+Chairman CEO / Executive Director
+11-Aug-2026
+"""
+
+
 @pytest.mark.parametrize(
     ("line", "expected_label", "expected_statement_line", "expected_primary"),
     [
@@ -508,6 +591,36 @@ def test_extract_candidate_lines_finds_every_canonical_balance_sheet_item():
     assert by_statement_line["trade_payables"] == Decimal("434334")
     assert by_statement_line["amounts_due_to_related_parties_trade"] == Decimal("8740")
     assert by_statement_line["amounts_due_to_related_parties_non_trade"] == Decimal("3372")
+
+
+def test_extract_candidate_lines_finds_every_canonical_item_on_paps_real_balance_sheet():
+    """Panasian Power PLC's real balance sheet, split-thousands artifact
+    and all ("6 ,861,409,400" etc, exactly as pdfplumber printed it) —
+    `_repair_split_thousands` must still recover every real figure
+    correctly on this genuinely different real filing, not just J.F.
+    Packaging's."""
+    lines = extract_candidate_lines(BALANCE_SHEET_TEXT_PAP)
+    by_statement_line = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+
+    assert by_statement_line["total_assets"] == Decimal("9828732284")
+    assert by_statement_line["total_equity"] == Decimal("3127275067")
+    assert by_statement_line["total_liabilities"] == Decimal("6701457217")
+    assert by_statement_line["total_equity_and_liabilities"] == Decimal("9828732284")
+    assert by_statement_line["total_assets"] == by_statement_line["total_equity_and_liabilities"]
+    # NOTE: "inventories" is deliberately NOT asserted here — see
+    # `_repair_split_leading_digits`'s own docstring for why this one
+    # specific real row (a MIXED pattern: only 2 of its 4 columns are
+    # actually split) falls outside that repair's deliberately narrow,
+    # safe scope, and is a real, documented, unfixed-for-now limitation
+    # rather than a silently-wrong assertion here.
+    assert by_statement_line["trade_receivables"] == Decimal("876481667")
+    assert by_statement_line["trade_payables"] == Decimal("397237417")
+    # "Interest bearing loans and borrowings" prints twice — once under
+    # Non-current Liabilities, once under Current — the same real
+    # maturity-split presentation already verified on Swadeshi and J.F.
+    # Packaging's own filings.
+    debt_lines = [l.primary_value for l in lines if l.statement_line == "total_interest_bearing_debt"]
+    assert sorted(debt_lines) == [Decimal("1235775952"), Decimal("4570259968")]
 
 
 def test_extract_candidate_lines_finds_both_occurrences_of_jfps_split_debt_line():
@@ -1042,6 +1155,20 @@ class TestDetectUnitScale:
         this real, already-verified filing."""
         assert detect_unit_scale(BALANCE_SHEET_TEXT_SWAD) == Decimal(1)
         assert detect_unit_scale(INCOME_STATEMENT_TEXT_SWAD) == Decimal(1)
+
+    def test_paps_real_bare_lkr_header_is_a_full_value_scale(self):
+        """A REAL, SEPARATE gap found live (18 Aug 2026): Panasian Power
+        PLC's (PAP.N0000) real interim statement declares its units as a
+        bare, repeated "LKR LKR LKR LKR" — no "'000" suffix, and not
+        "Rs." either. Before this fix, neither pattern matched: the
+        thousands pattern correctly refused (no "'000"/"000" suffix
+        present), but the full-value pattern ALSO refused, because it
+        only recognised a repeated "Rs." — the whole page was silently
+        skipped, 0 drafts, despite its own Total Assets (9,828,732,284)
+        only being plausible as a genuine full-LKR figure (read as
+        thousands it would be a nonsensical ~9.8 trillion LKR for a small
+        hydro/solar power company)."""
+        assert detect_unit_scale(BALANCE_SHEET_TEXT_PAP) == Decimal(1)
 
     def test_no_recognisable_unit_declaration_refuses_rather_than_guesses(self):
         assert detect_unit_scale("Total Assets 3,807,110 3,722,727 3,559,834 3,453,018") is None

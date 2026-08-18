@@ -41,6 +41,7 @@ from app.models.securities import Security
 from tests.test_financial_statement_parsing import (
     BALANCE_SHEET_TEXT,
     BALANCE_SHEET_TEXT_NTB_DOUBLED,
+    BALANCE_SHEET_TEXT_PAP,
     BALANCE_SHEET_TEXT_SWAD,
     CASH_FLOW_STATEMENT_TEXT,
     CASH_FLOW_STATEMENT_TEXT_SWAD,
@@ -539,6 +540,82 @@ def test_ntbs_real_character_doubled_balance_sheet_page_now_produces_drafts():
     )
     assert identities  # at least one identity was checkable
     assert all(c.passed for c in identities)
+
+
+def test_paps_real_bare_lkr_balance_sheet_now_produces_drafts():
+    """A REAL bug, found live (18 Aug 2026): Panasian Power PLC's
+    (PAP.N0000) real interim statement for the quarter ended 30 June 2026
+    produced 0 drafts. Its real Statement of Financial Position page (a
+    genuine primary-statement-marker match) declared its units as a bare
+    "LKR LKR LKR LKR" — no "'000" suffix — which `detect_unit_scale`
+    refused to recognise as either a thousands or a full-value scale
+    before this fix, so the page was skipped entirely despite being
+    otherwise fully extractable. Using the FULL, real, un-simplified page
+    text captured directly from the real downloaded PDF
+    (BALANCE_SHEET_TEXT_PAP), including its own real split-thousands
+    space artifacts, end-to-end through the real pipeline."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(BALANCE_SHEET_TEXT_PAP)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    by_line = {line.statement_line: line.primary_value for _page, line in candidates if line.statement_line}
+    # PAP's real statement declares bare "LKR" (full value, scale=1) —
+    # unlike every "Rs.'000"/"LKR '000" filing seen so far, these are NOT
+    # scaled ×1000.
+    assert by_line["total_assets"] == Decimal("9828732284")
+    assert by_line["total_equity"] == Decimal("3127275067")
+    assert by_line["total_liabilities"] == Decimal("6701457217")
+    assert by_line["total_equity_and_liabilities"] == Decimal("9828732284")
+
+    identities = check_accounting_identities({k: v for k, v in by_line.items() if v is not None})
+    assert identities
+    assert all(c.passed for c in identities)
+
+
+def test_a_genuinely_scanned_pdf_with_no_text_layer_produces_zero_drafts_not_a_crash():
+    """A genuine, real, unfixable limitation — NOT a bug: Panasian Power
+    PLC's (PAP.N0000) real interim statement for the quarter ended 31
+    March 2026 downloads successfully but `pdfplumber.extract_text()`
+    returns an empty string on every one of its 15 real pages (a scanned
+    PDF with no embedded text layer at all — see
+    app.ingestion.financial_reports_archive_loader.ingest_archived_
+    report's own docstring for the full finding). No extraction-logic fix
+    can recover text that was never encoded in the file; OCR is out of
+    scope. This must produce 0 drafts cleanly, never a crash and never a
+    fabricated figure."""
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage("") for _ in range(15)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+    assert candidates == []
+
+
+def test_paps_real_statement_of_comprehensive_income_title_is_recognised():
+    """PAP's income statement is titled "STATEMENT OF COMPREHENSIVE
+    INCOME" — no "profit or loss" wording at all, a real, genuinely
+    different title from every filing checked so far (J.F. Packaging's
+    own equivalent page already matches the existing "statement of
+    profit or loss" marker)."""
+    pap_income_statement_excerpt = (
+        "PANASIAN POWER PLC\n"
+        "INTERIM CONDENSED FINANCIAL STATEMENTS - QUARTER ENDED 30 JUNE 2026\n"
+        "PROVISIONAL FINANCIAL STATEMENTS\n"
+        "STATEMENT OF COMPREHENSIVE INCOME\n"
+        "Group Company\n"
+        "LKR LKR LKR LKR\n"
+        "Total comprehensive income for the period 151,627,495 72,111,211 (6,370,264) 1,955,469\n"
+    )
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(pap_income_statement_excerpt)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    by_line = {line.statement_line: line.primary_value for _page, line in candidates if line.statement_line}
+    assert by_line["total_comprehensive_income"] == Decimal("151627495")
 
 
 def test_build_fundamental_drafts_deduplicates_by_statement_line():
