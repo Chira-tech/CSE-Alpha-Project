@@ -23,7 +23,14 @@ in here. What this module does provide, verified against a real filing:
      app.domain.financial_statement_parsing over the statement pages only
      (identified by header text, not the whole ~160-page document — notes
      pages reuse words like "Total" for sub-schedules and would otherwise
-     produce false matches).
+     produce false matches), and scales every value to real LKR via
+     app.domain.financial_statement_parsing.detect_unit_scale — a REAL
+     bug, found live (18 Aug 2026) against COMB.N0000's real filing: this
+     function used to store every value exactly as printed, off by 1000x
+     on any "Rs.'000"-declared statement (see that function's own
+     docstring for the full finding and why a blanket "always multiply by
+     1000" fix would itself have been wrong for at least one already-
+     verified real filing).
   4. `build_fundamental_drafts` — turns candidates into draft
      `Fundamental` rows, provenance_tier=AI_ASSISTED, confirmed_by=None
      always. See app.api.routes.fundamentals for the confirm workflow.
@@ -38,6 +45,7 @@ in here. What this module does provide, verified against a real filing:
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import io
 import logging
@@ -59,6 +67,7 @@ from app.domain.financial_statement_parsing import (
     ExtractedLine,
     check_accounting_identities,
     derive_additional_line_items,
+    detect_unit_scale,
     extract_candidate_lines,
 )
 from app.ingestion.cse_client import CseClient
@@ -168,12 +177,29 @@ def download_pdf(url: str, *, user_agent: str, timeout: float = 60.0) -> bytes:
     return response.content
 
 
+def _scale_extracted_line(line: ExtractedLine, scale: Decimal) -> ExtractedLine:
+    """Every value column scaled uniformly — see `app.domain.financial_
+    statement_parsing.detect_unit_scale`'s own docstring for why this is
+    a page-wide multiplier, not applied per-line, and its documented
+    "not applicable to per-share lines" caveat."""
+    return dataclasses.replace(
+        line, values=tuple(v * scale if v is not None else None for v in line.values)
+    )
+
+
 def extract_financial_statement_candidates(
     pdf_bytes: bytes,
 ) -> list[tuple[int, ExtractedLine]]:
     """Returns (page_number, ExtractedLine) pairs for every canonical
-    line item found on a statement page. page_number is 0-indexed,
-    matching pdfplumber's own indexing, and is stored as-is in
+    line item found on a statement page, scaled to real LKR (see `app.
+    domain.financial_statement_parsing.detect_unit_scale` — a REAL bug,
+    found live against COMB.N0000's real filing: every value used to be
+    stored exactly as printed, off by 1000x on any "Rs.'000"-declared
+    statement, which is most of them). A statement page whose own unit
+    declaration can't be found at all is skipped entirely — refusing to
+    guess a scale rather than risk a second, silent 1000x-style error on
+    a filing shape not yet seen. page_number is 0-indexed, matching
+    pdfplumber's own indexing, and is stored as-is in
     Fundamental.source_page so a reviewer's page reference matches what
     their PDF viewer would show when combined with the usual +1 offset
     for human-readable page numbers — see the confirm-queue UI, not yet
@@ -186,9 +212,18 @@ def extract_financial_statement_candidates(
             lower = text.lower()
             if not _is_primary_statement_page(lower):
                 continue
+            scale = detect_unit_scale(text)
+            if scale is None:
+                logger.warning(
+                    "page %d looks like a primary statement page but no unit declaration "
+                    "(e.g. \"Rs.'000\" or \"Rs.\") could be found on it — skipping rather "
+                    "than guessing the scale every value on it should be multiplied by",
+                    page_number,
+                )
+                continue
             for line in extract_candidate_lines(text):
                 if line.statement_line is not None and line.primary_value is not None:
-                    results.append((page_number, line))
+                    results.append((page_number, _scale_extracted_line(line, scale)))
     return results
 
 

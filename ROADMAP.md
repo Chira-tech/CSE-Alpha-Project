@@ -1005,6 +1005,80 @@ runs the FULL routing decision end to end for the first time.
         the capstone view + its own API endpoint). Full suite: 883
         passed, no regressions.
 
+### REAL BUG FIXED: every AI-extracted fundamental was off by 1000x on most filings
+
+Found live (18 Aug 2026), while confirming the first real fundamentals
+through the confirm queue to demonstrate the price ladder end to end —
+not a theoretical review, a real number that looked wrong (a fair value
+of 0.09 against a 205.75 share price) led directly to the diagnosis.
+
+- [x] **`app.domain.financial_statement_parsing.detect_unit_scale`,
+      wired into `app.ingestion.financial_pdf_extractor.extract_
+      financial_statement_candidates`.** Every value this extractor ever
+      produced was stored EXACTLY AS PRINTED, with no unit-scale
+      conversion at all. Confirmed by downloading COMB.N0000's real
+      30.06.2026 interim statement PDF directly and reading its own
+      balance-sheet page: the column header literally reads "Rs.'000
+      Rs.'000 % Rs.'000 Rs.'000", and the stored `total_equity` figure
+      (363,888,905) was exactly 1000x too small — the true value is LKR
+      363,888,905,000 (≈364 billion), the only figure in the right order
+      of magnitude for Sri Lanka's largest private bank by assets. Every
+      downstream fair value computed from an unscaled figure was wrong by
+      the same 1000x — this is precisely why the four fundamentals rows
+      confirmed minutes earlier produced a 0.09 fair value against a
+      205.75 real share price.
+      - **NOT a blanket "always multiply by 1000" fix — that would
+        itself have been wrong.** This project's own existing test
+        fixtures already contained real, independently-verified
+        counter-evidence: Swadeshi Industrial Works PLC's real FY2025/26
+        statements declare "Rs. Rs. Rs. Rs." as their column header —
+        genuinely FULL Rupee values, no scaling at all (Revenue of
+        4,649,049,764 is a real ~4.6bn LKR figure; interpreted as
+        thousands it would be an impossible 4.6 trillion). `detect_unit_
+        scale` therefore DETECTS the real declaration rather than
+        assuming one, recognising three independently-verified real
+        thousands-wordings (J.F. Packaging PLC's "Rs.000", Asian Hotels &
+        Properties PLC's "In Rs.'000s", COMB's "Rs.'000") and one real
+        full-value wording (Swadeshi's "Rs. Rs. Rs. Rs.", required to
+        repeat at least twice consecutively so a single incidental "Rs."
+        in body text can't false-trigger it).
+      - **A statement page whose unit declaration can't be found at all
+        is skipped entirely, not defaulted to either scale** — the same
+        "refuse rather than guess" rule `classify_period_type` and
+        `resolve_first_available_date` already apply to their own
+        can't-tell cases, applied here for the first time to a case where
+        guessing wrong is invisible: a uniform 1000x scale error passes
+        every one of `check_accounting_identities`' own checks (both
+        sides of `assets = equity + liabilities` are wrong by the same
+        factor), so detection has to be the first line of defence, not a
+        fallback that identity-checking would catch anyway.
+      - **A real, disclosed, currently-inert caveat**: a page-wide scale
+        is correct for balance-sheet/income-statement totals but NOT for
+        a per-share line like EPS (real filings print EPS in actual
+        Rupees even on a "Rs.'000" page) — no canonical key currently
+        maps EPS, so this isn't live yet, but is named in `detect_unit_
+        scale`'s own docstring so a future contributor adding one
+        doesn't apply page-wide scaling to it by default.
+      - **The dev database's own already-confirmed rows were corrected,
+        not left wrong.** Four COMB.N0000 fundamentals had already been
+        promoted to `Reported` through the real confirm-queue API
+        (`POST /fundamentals/{id}/confirm`) minutes before this bug was
+        found — all 179 of that ticker's rows (draft and confirmed) were
+        deleted and the real backfill re-run end to end against the
+        fixed extractor, rather than hand-patching the wrong numbers in
+        place.
+      - 7 new tests: `TestDetectUnitScale` in `test_financial_statement_
+        parsing.py` (all four real wordings above, a real page with no
+        declared unit, and the "lone incidental Rs." false-positive
+        guard), plus a new regression test in `test_financial_pdf_
+        extractor.py` confirming a statement-shaped page with no
+        detectable unit produces zero candidates rather than an
+        unscaled guess. 4 pre-existing tests (J.F. Packaging-based value
+        assertions) updated to their correct ×1000 real-LKR figures;
+        Swadeshi-based assertions were already correct and untouched —
+        direct proof the fix doesn't scale what shouldn't be scaled.
+        Full suite: 890 passed, no regressions.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —

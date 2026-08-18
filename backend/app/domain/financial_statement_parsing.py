@@ -359,6 +359,85 @@ def match_canonical_label(label: str) -> str | None:
     return _LABEL_TO_STATEMENT_LINE.get(normalize_label(label))
 
 
+# REAL BUG, FOUND LIVE (18 Aug 2026): every value this module ever
+# extracted was stored exactly as printed, with no unit-scale conversion
+# at all. `normalize_label` above already recognised a "(Rs.'000)"-style
+# annotation — but only to STRIP it as label noise, never to capture it
+# and scale the VALUE. Confirmed by downloading COMB.N0000's real
+# 30.06.2026 interim statement PDF directly and reading its own balance-
+# sheet page: the column header literally reads "Rs.'000 Rs.'000 % Rs.'000
+# Rs.'000", and the stored `total_equity` figure (363,888,905) is exactly
+# 1000x too small to be COMB's real total equity — the true value is
+# LKR 363,888,905,000 (≈364 billion), the only figure in the right order
+# of magnitude for Sri Lanka's largest private bank by assets. Every
+# downstream fair value computed from an unscaled figure was wrong by the
+# same 1000x.
+#
+# NOT EVERY CSE FILING IS IN THOUSANDS, THOUGH — a real, already-verified
+# counter-example already lived in this project's own test fixtures
+# before this fix: Swadeshi Industrial Works PLC's real FY2025/26
+# statements print "Rs. Rs. Rs. Rs." as their column header (see
+# BALANCE_SHEET_TEXT_SWAD/INCOME_STATEMENT_TEXT_SWAD in test_financial_
+# statement_parsing.py) — genuinely FULL Rupee values, no scaling at all
+# (Revenue of 4,649,049,764 is a real ~4.6bn LKR annual figure for that
+# company; interpreted as thousands it would be an impossible 4.6
+# TRILLION). A single "always multiply by 1000" fix would have been
+# WRONG for this real, already-known case — this is why detection, not a
+# blanket assumption, is required.
+#
+# Three real, verified thousands-declaration wordings feed
+# `_UNIT_THOUSANDS_RE`: J.F. Packaging PLC's "Rs.000" (no apostrophe),
+# Asian Hotels & Properties PLC's "In Rs.'000s" (apostrophe + trailing
+# "s"), and Commercial Bank of Ceylon PLC's "Rs.'000" (apostrophe, no
+# trailing "s") — real evidence from three independently-verified real
+# filings, not one pattern generalised from a single example.
+# `_UNIT_FULL_VALUE_RE` requires "Rs." to repeat at least twice
+# consecutively (matching Swadeshi's real "Rs. Rs. Rs. Rs." header
+# exactly) rather than matching on a single stray "Rs." anywhere on the
+# page, which could appear incidentally in unrelated body text.
+_UNIT_THOUSANDS_RE = re.compile(r"rs\.?\s*'?000s?\b")
+_UNIT_FULL_VALUE_RE = re.compile(r"(?:\brs\.\s*){2,}")
+
+
+def detect_unit_scale(page_text: str) -> Decimal | None:
+    """The multiplier every value extracted from this page must be
+    multiplied by to reach real LKR — `Decimal(1000)` for a confirmed
+    "Rs.'000"-style declaration, `Decimal(1)` for a confirmed "Rs."
+    (full-value, no scaling) declaration.
+
+    `None` — never a guessed default — when NEITHER pattern is found
+    anywhere on the page. §5's own extraction pipeline has already shown
+    real filings use genuinely different units (see the module-level
+    comment above); silently assuming either 1 or 1000 for an
+    undetected case would produce exactly the "plausible wrong number"
+    failure mode `check_accounting_identities` exists to catch for
+    arithmetic errors — but a uniform 1000x scale error passes every one
+    of those identity checks (both sides of `assets = equity +
+    liabilities` are wrong by the same factor), so detection has to be
+    the first line of defence here, not a fallback. The caller (`app.
+    ingestion.financial_pdf_extractor.extract_financial_statement_
+    candidates`) skips a page entirely when this returns `None`, the
+    same "refuse rather than guess" rule `classify_period_type` and
+    `resolve_first_available_date` already apply to their own
+    can't-tell cases.
+
+    NOT APPLICABLE TO PER-SHARE LINES. A page-wide scale is correct for
+    balance-sheet/income-statement totals, but NOT for a per-share figure
+    like EPS (real filings print EPS in actual Rupees even on a page
+    whose other lines are in thousands — verified on J.F. Packaging
+    PLC's own real statement: "Diluted EPS (Rs.) ... 1.37"). No canonical
+    key in `CANONICAL_LABELS` currently maps EPS, so this doesn't yet
+    create a real double-scaling risk — but it would the moment one did,
+    and that key would need to be excluded from page-wide scaling rather
+    than assumed to follow it."""
+    lower = page_text.lower()
+    if _UNIT_THOUSANDS_RE.search(lower):
+        return Decimal(1000)
+    if _UNIT_FULL_VALUE_RE.search(lower):
+        return Decimal(1)
+    return None
+
+
 def _parse_value_token(token: str) -> Decimal | None:
     if token == _NIL:
         return None

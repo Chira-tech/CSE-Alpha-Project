@@ -175,6 +175,29 @@ def test_extract_financial_statement_candidates_only_reads_statement_pages():
     assert page_numbers_used == {1, 3, 4}
 
 
+def test_a_statement_page_with_no_detectable_unit_declaration_is_skipped_entirely():
+    """A REAL bug fix's own regression test: a page that otherwise looks
+    exactly like a real statement page (right marker text, right label/
+    value shape) but whose unit declaration ("Rs.'000"/"Rs.", etc.) got
+    lost — a genuinely possible pdfplumber extraction artifact, since
+    header rows and body rows aren't visually distinguished in the raw
+    text stream — must be refused entirely rather than silently treated
+    as full-value (which is exactly the 1000x error this fix exists to
+    prevent, just moved to a different trigger)."""
+    page_with_no_unit_declared = (
+        "STATEMENT OF FINANCIAL POSITION\n"
+        "Group Company\n"
+        "As at 31st March 2026 2025 2026 2025\n"
+        "Total Assets 3,807,110 3,722,727 3,559,834 3,453,018\n"
+    )
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(page_with_no_unit_declared)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+    assert candidates == []
+
+
 def test_a_notes_page_whose_own_subheading_names_a_primary_statement_is_still_excluded():
     """A REAL bug, caught against the real downloaded PDF, not a
     fixture: J.F. Packaging PLC's real Note 25 ("Financial Instruments")
@@ -223,8 +246,12 @@ def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():
     )
 
     by_line = {d.statement_line: d for d in drafts}
-    assert by_line["total_assets"].value == Decimal("3807110")
-    assert by_line["net_income"].value == Decimal("189908")
+    # JFP's real statement declares "Rs.000" — every value scaled ×1000
+    # to real LKR (see app.domain.financial_statement_parsing.
+    # detect_unit_scale). 3,807,110 and 189,908 are the raw printed
+    # figures; the true LKR values are 1000x larger.
+    assert by_line["total_assets"].value == Decimal("3807110000")
+    assert by_line["net_income"].value == Decimal("189908000")
 
     for draft in drafts:
         assert draft.provenance_tier is ProvenanceTier.AI_ASSISTED
@@ -338,8 +365,10 @@ def test_build_derived_fundamental_drafts_never_overwrites_an_already_printed_li
     draft = derived_drafts[0]
     assert draft.statement_line == "change_in_net_working_capital"
     # 681,378 - 493,497 = 187,881 — matches the 5 real component lines'
-    # own hand-summed total exactly (see test_financial_statement_parsing.py)
-    assert draft.value == Decimal("187881")
+    # own hand-summed total exactly (see test_financial_statement_parsing.py).
+    # JFP's real statement declares "Rs.000", so the derived draft is
+    # also scaled ×1000 to real LKR, same as every directly-extracted line.
+    assert draft.value == Decimal("187881000")
 
 
 def test_full_extraction_and_derivation_pass_on_jfps_real_balance_sheet_and_cash_flow():
@@ -368,15 +397,17 @@ def test_full_extraction_and_derivation_pass_on_jfps_real_balance_sheet_and_cash
     )
 
     by_line = {d.statement_line: d for d in direct}
-    assert by_line["total_interest_bearing_debt"].value == Decimal("1348019")  # 352,950 + 995,069
+    # JFP's real statement declares "Rs.000" — every value scaled ×1000
+    # to real LKR; raw printed figures were 352,950 + 995,069 = 1,348,019.
+    assert by_line["total_interest_bearing_debt"].value == Decimal("1348019000")
     # capex is deliberately NOT here — J.F. Packaging's real capex label
     # wraps across two physical lines on its cash-flow statement, still
     # unsolved (see this project's own documented limitation).
     assert "capital_expenditure" not in by_line
 
     derived_by_line = {d.statement_line: d for d in derived}
-    assert derived_by_line["net_working_capital"].value == Decimal("1647203")
-    assert derived_by_line["change_in_net_working_capital"].value == Decimal("187881")
+    assert derived_by_line["net_working_capital"].value == Decimal("1647203000")
+    assert derived_by_line["change_in_net_working_capital"].value == Decimal("187881000")
 
 
 @respx.mock
@@ -401,7 +432,8 @@ def test_ingest_financial_statement_end_to_end(db_session):
     stored = db_session.query(Fundamental).filter_by(ticker="JFP.N0000").all()
     assert len(stored) == inserted
     total_assets = next(f for f in stored if f.statement_line == "total_assets")
-    assert total_assets.value == Decimal("3807110")
+    # JFP's real statement declares "Rs.000" — scaled ×1000 to real LKR.
+    assert total_assets.value == Decimal("3807110000")
     assert total_assets.period_end == dt.date(2026, 3, 31)  # from manualDate
     assert total_assets.first_available_date == dt.date(2026, 8, 14)  # from authorizedDate
     assert total_assets.period_type == "annual"

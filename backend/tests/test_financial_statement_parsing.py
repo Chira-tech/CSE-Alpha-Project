@@ -17,6 +17,7 @@ import pytest
 from app.domain.financial_statement_parsing import (
     check_accounting_identities,
     derive_additional_line_items,
+    detect_unit_scale,
     extract_candidate_lines,
     match_canonical_label,
     normalize_label,
@@ -825,3 +826,57 @@ def test_identities_catch_the_split_thousands_corruption_independently():
 def test_identities_skip_what_cannot_be_checked_rather_than_failing():
     checks = check_accounting_identities({"total_assets": Decimal("100")})
     assert checks == []
+
+
+class TestDetectUnitScale:
+    """A REAL bug, found live (18 Aug 2026): every value this module ever
+    extracted was stored exactly as printed, with no unit-scale
+    conversion — off by 1000x on any "Rs.'000"-declared statement,
+    confirmed against COMB.N0000's real 30.06.2026 interim filing (its
+    own balance-sheet page literally reads "Rs.'000 Rs.'000 % Rs.'000
+    Rs.'000"). See `detect_unit_scale`'s own module-level comment for the
+    full finding. Every case below is a REAL, independently-verified
+    filing's own real header text, not an invented example — three
+    distinct real thousands-wordings and one real full-value wording,
+    covering the actual variety already known to exist across CSE
+    filings before assuming a single pattern generalises."""
+
+    def test_jfps_real_rs_000_header_is_a_thousands_scale(self):
+        assert detect_unit_scale(BALANCE_SHEET_TEXT) == Decimal(1000)
+
+    def test_ahpls_real_in_rs_000s_header_is_a_thousands_scale(self):
+        assert detect_unit_scale(BALANCE_SHEET_TEXT_AHPL) == Decimal(1000)
+
+    def test_combs_real_rs_apostrophe_000_header_is_a_thousands_scale(self):
+        """Verified 18 Aug 2026 by downloading COMB.N0000's real
+        30.06.2026 interim PDF directly and reading page 8's own column
+        header text."""
+        comb_header = (
+            "STATEMENT OF FINANCIAL POSITION\n"
+            "Group Bank\n"
+            "As at 30.06.2026 31.12.2025 Change 30.06.2026 31.12.2025 Change\n"
+            "(Audited) (Audited) (Audited)\n"
+            "Rs.'000 Rs.'000 % Rs.'000 Rs.'000\n"
+        )
+        assert detect_unit_scale(comb_header) == Decimal(1000)
+
+    def test_swadeshis_real_rs_header_is_a_full_value_scale(self):
+        """Swadeshi Industrial Works PLC's real statements are genuinely
+        NOT in thousands — Revenue of 4,649,049,764 is a real ~4.6bn LKR
+        figure; interpreted as thousands it would be an impossible 4.6
+        trillion. A blanket "always 1000" fix would have been wrong for
+        this real, already-verified filing."""
+        assert detect_unit_scale(BALANCE_SHEET_TEXT_SWAD) == Decimal(1)
+        assert detect_unit_scale(INCOME_STATEMENT_TEXT_SWAD) == Decimal(1)
+
+    def test_no_recognisable_unit_declaration_refuses_rather_than_guesses(self):
+        assert detect_unit_scale("Total Assets 3,807,110 3,722,727 3,559,834 3,453,018") is None
+
+    def test_a_lone_incidental_rs_does_not_falsely_signal_full_value(self):
+        """A single "Rs." mentioned once in body text (e.g. a threshold
+        in a note) must not be mistaken for a genuine repeated per-column
+        header declaration — `_UNIT_FULL_VALUE_RE` requires at least two
+        consecutive occurrences, matching every real full-value header
+        actually seen (always one "Rs." per comparative column, at least
+        two columns)."""
+        assert detect_unit_scale("Amounts below Rs. 500,000 are immaterial.") is None
