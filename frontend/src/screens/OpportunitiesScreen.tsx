@@ -158,7 +158,7 @@ function CandidateRow({ c }: { c: OpportunityCandidate }) {
         {c.blended_fair_value_per_share !== null ? formatPrice(c.blended_fair_value_per_share) : UNAVAILABLE}
       </td>
       <td>
-        <ZoneChip zone={c.price_ladder_zone} />
+        <ZoneChip zone={c.price_ladder_zone} why={c.warnings.join(" ") || undefined} />
       </td>
       <td className="right num">{c.buy_below_price !== null ? formatPrice(c.buy_below_price) : UNAVAILABLE}</td>
       <td className="right">

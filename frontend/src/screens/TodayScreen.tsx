@@ -293,7 +293,7 @@ export function TodayScreen({
                       </th>
                       <td className="right num">{c.current_price !== null ? formatPrice(c.current_price) : UNAVAILABLE}</td>
                       <td>
-                        <ZoneChip zone={c.price_ladder_zone} />
+                        <ZoneChip zone={c.price_ladder_zone} why={c.warnings.join(" ") || undefined} />
                       </td>
                       <td className="right">
                         {c.gap_to_buy_below_pct !== null ? (

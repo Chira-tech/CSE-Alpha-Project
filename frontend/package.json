@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "check:zone-fallback": "node scripts/check-no-zone-fallback.mjs",
+    "lint": "tsc --noEmit && npm run check:zone-fallback"
   },
   "dependencies": {
     "react": "^18.3.1",

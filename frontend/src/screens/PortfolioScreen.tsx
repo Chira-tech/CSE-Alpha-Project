@@ -243,19 +243,21 @@ function PositionRow({ p }: { p: ValuedPosition }) {
         )}
       </td>
       <td className="right num">
-        {/* `price_ladder_zone === null` covers BOTH "no fair value at
-            all" and "a real but non-positive fair value" (`compute_
-            price_ladder` refuses to build zones from the latter, see
-            its own warnings) — in either case the raw per-share figure
-            isn't meaningful to show as a price, so both columns fall
-            back to the same honest "unavailable" the zone itself
-            already shows, rather than a confusing negative number. */}
+        {/* `price_ladder_zone === null` covers THREE distinct cases: "no
+            fair value at all", "a real but non-positive fair value"
+            (`compute_price_ladder` refuses to build zones from the
+            latter), and, since TASK 0.1, "a real positive fair value
+            that failed the plausibility gate" (`app.domain.sanity`) —
+            in every case the raw per-share figure isn't meaningful to
+            show as a price, so both columns fall back to the same
+            honest "unavailable" the zone itself already shows, rather
+            than a confusing negative or implausible number. */}
         {p.price_ladder_zone !== null && p.blended_fair_value_per_share !== null
           ? formatPrice(p.blended_fair_value_per_share)
           : UNAVAILABLE}
       </td>
       <td>
-        <ZoneChip zone={p.price_ladder_zone} />
+        <ZoneChip zone={p.price_ladder_zone} why={p.warnings.join(" ") || undefined} />
       </td>
       <td className="right num">
         {p.price_ladder_zone !== null && p.buy_below_price !== null ? formatPrice(p.buy_below_price) : UNAVAILABLE}
