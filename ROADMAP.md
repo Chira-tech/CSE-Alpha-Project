@@ -2476,6 +2476,115 @@ snapshot.
         the stale-history case, and the missing-Ke case. Full suite: 688
         passed.
 
+### A real P0 correctness bug, found by the product owner, not by a test
+
+- [x] **TTM annualisation of cumulative interim net income** —
+      `app.domain.ttm`. Found live (18 Aug 2026) via the product owner's
+      own review, recorded in `docs/CLAUDE_CODE_BRIEF.md`: COMB.N0000 —
+      LKR 205.75, a large liquid bank trading normally — showed a
+      triangulated fair value of LKR 93.06 and an "Exit" zone, i.e. this
+      system was recommending selling a healthy bank for less than half
+      what it traded at. Root cause, verified against COMB's own real
+      filed numbers: CSE quarterly interim statements report net income
+      CUMULATIVE SINCE THE FISCAL YEAR START, not as a standalone
+      quarter — `return_on_equity` was using that raw cumulative figure
+      directly as a full year, understating ROE by roughly half (9.73%
+      computed vs. 17.92% real). With Ke ≈ 17% for a bank, that is the
+      exact difference between a false SELL and a legitimate accumulate.
+      - `trailing_twelve_months()` computes `last_fiscal_year_value +
+        this_period − same_period_last_year`, the standard exact formula
+        for cumulative-since-year-start reporting, verified by hand
+        against COMB's real numbers (65,195,124,000 TTM net income).
+      - **A second, deeper real finding while wiring this in**: zero
+        `Fundamental` rows anywhere in this database have ever had
+        `period_type == "annual"` — every real annual-report PDF this
+        session attempted has exceeded this environment's own
+        background-processing ceiling before finishing, a
+        previously-documented, separate constraint. The naive
+        `period_type == "annual"` lookup this fix first tried silently
+        returned `None` for every real ticker, dropping `net_income`
+        from the valuation entirely rather than fixing it. Replaced with
+        a data-driven fallback: a ticker's own real quarterly series is
+        monotonically non-decreasing within a fiscal year and resets
+        down at the next one — verified against COMB's full real
+        2019-2026 history, every real fiscal-year-end correctly
+        identified this way without needing `period_type` or the
+        (unpopulated) `Security.fiscal_year_end` field at all. Never
+        falls back to the raw un-annualised figure when a real
+        component is missing (`None`, named, same as everywhere else in
+        this system).
+      - Live-verified: COMB.N0000 now shows fair value LKR 253.87, zone
+        `strong_accumulate`, ROE 17.92%. NTB.N0000 (one confirmed
+        period, no real prior-year comparator) now honestly shows fair
+        value/ROE as unavailable instead of the "Fair" verdict it showed
+        before, built on the same unannualised-ROE bug.
+
+### TASK 0.1/0.2 — a real-time plausibility gate, defense in depth on top of the TTM fix
+
+- [x] **`app.domain.sanity`'s `SANITY_RULES` gate**, run on every
+      valuation before a price ladder is ever built — a backstop against
+      the NEXT implausible-fair-value bug, not a substitute for the TTM
+      fix above. Block rules (`fv_within_5x_price`, `bvps_positive`,
+      `share_count_reconciles`, `roe_plausible`, `units_consistent`)
+      withhold the ladder entirely; the warn rule (`fv_within_2x_price`)
+      publishes with a caution. A rule whose required input is missing
+      is recorded as `skipped`, never silently treated as passed.
+      Verified honestly both ways against COMB's real numbers: the
+      corrected post-TTM-fix figures pass every rule cleanly; the real
+      PRE-fix figures (93.06 vs 205.75) only trip the warn rule, not any
+      block rule — a disclosed limit of this gate alone, stated directly
+      in its own module docstring rather than glossed over.
+      - **A real small gap closed while building the independent
+        market-cap cross-check**: `companyInfoSummery.reqSymbolInfo.
+        marketCap` — CSE's own published market cap — was already being
+        fetched by `app.ingestion.security_enrichment` in the same call
+        as `shares_issued`, but silently discarded. Now stored
+        (`FloatData.published_market_cap`, migration 0016) and used as
+        the genuinely independent figure `share_count_reconciles`
+        needs — comparing price × shares against itself would be a
+        tautology, not a check.
+      - **Reuses the existing `DataAlert`/quarantine mechanism**
+        (`app.domain.valuation_quarantine_view`, alert_type
+        `"valuation_sanity_block"`) rather than a new parallel table —
+        this system already had a real, tested quarantine pattern for
+        exactly this shape of problem (`app.jobs.reconciliation`,
+        `app.jobs.second_source_reconciliation`). Idempotent and
+        self-healing: a live, on-demand read doesn't flood the table
+        with duplicates, and a later passing recheck auto-resolves an
+        open alert without a human needing to notice.
+      - **A real nightly universe-wide sweep** (`app.jobs.market_cap_
+        reconciliation`, scheduled 15:09 Colombo) alongside the live
+        per-company gate, per TASK 0.1's own separate ask — a real drift
+        on a ticker nobody happens to view still surfaces.
+      - **Not duplicated, verified already real before building
+        anything new**: voting/non-voting share-class handling
+        (`Security.instrument_type`/`issuer_code`, already real —
+        verified COMB's actual bug was NOT a share-class mixup); per-line
+        statement units normalisation (`detect_unit_scale`, already real
+        at ingestion time).
+      - **TASK 0.2**: a null zone now renders as its own literal, "Not
+        yet valued", with a `why` tooltip from the real per-row warning
+        text — distinct from the generic "Data unavailable" sentinel
+        every other missing figure uses, since "the zone is what a
+        person actually reads" (the brief's own words). A new CI grep
+        guard (`frontend/scripts/check-no-zone-fallback.mjs`, wired into
+        `npm run lint`) scans every `.ts`/`.tsx` file for a nullish-
+        coalescing or `||` fallback applied directly to a named
+        valuation field — verified it actually catches the real pattern
+        and doesn't false-positive on the codebase as it stands.
+      - Backend: 1089 passed (was 1061 before this pair of tasks).
+        Frontend: `tsc` + `vite build` + the new lint guard all clean.
+
+**P1.1 (the manual "Run Capture" job control §5's brief also asks for)
+is IN PROGRESS, not yet complete** — `app.jobs.registry`, `app.models.
+job_run.JobRun` (migration 0017) and `app.jobs.runner` (enqueue,
+concurrency guard, 15-minute manual cooldown, per-ticker progress
+reporting reusing this session's own corporate-actions resumability
+work, cooperative cancel) are written and import cleanly, but are not
+yet wired into `app.api.routes.jobs`, the scheduler's own poll loop, or
+the sidebar UI, and have no test coverage yet. Named honestly as
+unfinished rather than folded into the completed list above.
+
 ## Explicitly deferred to later phases
 
 The earnings integrity veto (§14 — needs CFO, related-party revenue,
