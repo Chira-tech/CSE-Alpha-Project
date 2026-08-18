@@ -13,3 +13,4 @@ from app.models.macro import MacroSeries  # noqa: F401
 from app.models.data_quality import DataAlert  # noqa: F401
 from app.models.registry import IssuerRegistry  # noqa: F401
 from app.models.national_projects import NationalProject, NationalProjectTickerImpact  # noqa: F401
+from app.models.portfolio import PortfolioSnapshot, PortfolioPosition  # noqa: F401

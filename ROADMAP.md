@@ -1450,6 +1450,80 @@ precise and mean nothing.
         `size_premium`); the mandatory Dimson (1979) lead/lag beta
         correction; and §36's Carhart certification regression.
 
+### Real portfolio import — the narrow, real slice of §41 ahead of its own Phase 8
+
+User-requested (18 Aug 2026), out of build-sequence order: the user
+supplied a real CDS/broker portfolio export and asked to be able to
+upload it so this system knows what they actually hold. §41's own full
+"Portfolio engine" (transaction-level P&L, thesis-drift, exit-trigger
+distance) is genuinely Phase 8 per §54 — this is deliberately scoped to
+the much narrower, real, immediately useful slice: real current holdings
+from a real file, nothing this system can't honestly derive from ONE
+snapshot.
+
+- [x] **Real portfolio-snapshot upload is live** — `app.domain.
+      portfolio_import_parsing` (pure) + `app.ingestion.portfolio_
+      import` (openpyxl, a new real dependency) + `app.domain.
+      portfolio_import_view`, on `POST /portfolio/upload`, `GET
+      /portfolio/holdings` (latest snapshot), `GET /portfolio/
+      snapshots`/`GET /portfolio/snapshots/{id}` (full upload history).
+      This system's first real file-upload endpoint (`python-multipart`,
+      also a new real dependency FastAPI itself needs for it).
+      - **Verified against the user's own real uploaded file, not just
+        a hand-typed fixture** — a real CDS equity-holdings export, 9
+        real positions, parsed end to end and stored into the real dev
+        database: all 9 real tickers already recognised against this
+        system's own `securities` table (zero named as unrecognised),
+        and the file's own internal Total-row arithmetic cross-check
+        passes.
+      - **A real bug, found by that exact live run, not a synthetic
+        test**: `.xlsx` numeric cells are IEEE-754 doubles internally,
+        not exact decimals — openpyxl read one real market-value cell
+        back as `76748.2` and another as `76748.2000000000003`, both
+        genuinely the same "76,748.20" a human sees in Excel. An exact-
+        equality Total-row cross-check flagged the user's own real,
+        internally-correct file as a false MISMATCH. Fixed with a
+        disclosed `_IDENTITY_TOLERANCE = Decimal("1.00")` — well below
+        any real mis-parsed row (wrong by orders of magnitude more) and
+        well above any real float-noise accumulation on a realistic
+        portfolio.
+      - **Every upload is a new, permanent snapshot, never an
+        overwrite** — the same Design Law 2 point-in-time discipline
+        this whole system already applies everywhere else, not a fresh
+        convention invented for this feature. A user's holdings change
+        every time they trade; overwriting the prior snapshot in place
+        would throw away the only real history §42's own future thesis-
+        drift monitor would eventually need.
+      - **No account/NIC identifier is ever extracted, stored, or
+        committed to this repository.** The real file's own title row
+        carries the account holder's genuine NIC number and CDS account
+        code — real personal data with no bearing on which stocks are
+        held. The parser only ever reads the header row and the
+        position rows between it and "Total"; the real test fixture
+        committed to this repo (`tests/test_portfolio_import_parsing.
+        py`) replaces the real file's own title row with a generic
+        placeholder before being checked in, and a dedicated test
+        asserts no such text ever appears in parsed output.
+      - **`PortfolioPosition.ticker` is deliberately not a foreign key**
+        to `securities` — a real held position (a delisted name, a
+        board-suffix mismatch) must never be silently dropped just
+        because this system's own universe doesn't recognise it yet;
+        `unrecognized_tickers` names any such gap instead.
+      - Real Alembic migration (0012), verified against a real SQLite
+        file, not just the in-memory test database.
+      - 21 new tests (`test_portfolio_import_parsing.py`'s validation
+        against the real file's own real rows, the real float-noise
+        case, and a real corrupted-row mismatch catch; `test_portfolio_
+        import_view.py`; `test_portfolio_api.py`'s real multipart
+        upload round-trip). Full suite: 990 passed, no regressions.
+      - **Named precisely what this is NOT yet**: no transaction log (a
+        snapshot has no buy/sell dates, only current quantity and
+        average cost — "holding period," "realised P&L," and thesis-
+        drift all need one), no diffing between snapshots to infer
+        trades, no portfolio-level Carhart regression or exposure
+        control (§41's own "true factor exposure versus target"). All
+        real, separate, genuinely unbuilt Phase 8 work.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —

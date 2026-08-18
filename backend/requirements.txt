@@ -30,6 +30,15 @@ scipy>=1.13
 # 1's named stationarity tests faithfully rather than skip one.
 arch>=7.0
 
+# Reads a real user-uploaded .xlsx CDS/broker portfolio export
+# (app.ingestion.portfolio_import) — the standard, real library for
+# this, not a hand-rolled zip/XML reader.
+openpyxl>=3.1
+# FastAPI's own real requirement for UploadFile/multipart form parsing
+# (app.api.routes.portfolio's file-upload endpoint, the first in this
+# system) — not imported directly, but genuinely required at runtime.
+python-multipart>=0.0.12
+
 # dev / test
 pytest>=8.3
 pytest-asyncio>=0.24

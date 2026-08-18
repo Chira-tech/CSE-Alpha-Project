@@ -12,6 +12,7 @@ from app.api.routes import (
     health,
     market,
     national_projects,
+    portfolio,
     securities,
     valuation,
 )
@@ -48,3 +49,4 @@ app.include_router(fundamentals.router)
 app.include_router(data_health.router)
 app.include_router(valuation.router)
 app.include_router(national_projects.router)
+app.include_router(portfolio.router)
