@@ -47,6 +47,7 @@ from app.domain.macro_view import (
     spread_history,
 )
 from app.domain.ardl_cointegration_view import ardl_bounds_test_for
+from app.domain.causality_analysis_view import impulse_response_fevd_for, toda_yamamoto_for
 from app.domain.estimator_selection_view import select_and_fit_estimator
 from app.domain.johansen_vecm_view import johansen_vecm_for
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
@@ -643,6 +644,152 @@ def estimator_selection(
         johansen_vecm=johansen_out,
         ardl_bounds_test=ardl_out,
         var_differences=var_out,
+    )
+
+
+class ImpulseResponseFevdResultOut(BaseModel):
+    dependent_name: str
+    independent_name: str
+    estimator: str
+    periods: int
+    irf_dependent_to_independent_shock: list[Decimal]
+    irf_independent_to_dependent_shock: list[Decimal]
+    fevd_dependent_explained_by_independent: list[Decimal]
+    fevd_independent_explained_by_dependent: list[Decimal]
+    observation_count: int
+    note: str
+
+
+class ImpulseResponseFevdOut(BaseModel):
+    """§30 step 3's impulse response / FEVD, live, computed from
+    whichever real estimator §30 step 2's own selection landed on for
+    this pair — see `app.domain.causality_analysis_view`'s own
+    docstring. `result` is `None` when step 2's selection didn't reach a
+    VAR-shaped fit (ARDL, or insufficient data) or too little real
+    aligned data exists; `estimator_used` names which branch was
+    actually used, or is `None` alongside `result`."""
+
+    dependent_series_id: str
+    independent_series_id: str
+    as_of: dt.date
+    aligned_observation_count: int
+    estimator_used: str | None
+    result: ImpulseResponseFevdResultOut | None
+    warnings: list[str]
+
+
+@router.get("/impulse-response-fevd", response_model=ImpulseResponseFevdOut)
+def impulse_response_fevd(
+    dependent_series_id: str,
+    independent_series_id: str,
+    periods: int = 10,
+    db: Session = Depends(get_db),
+) -> ImpulseResponseFevdOut:
+    view = impulse_response_fevd_for(db, dependent_series_id, independent_series_id, periods=periods)
+    result_out = None
+    if view.result is not None:
+        r = view.result
+        result_out = ImpulseResponseFevdResultOut(
+            dependent_name=r.dependent_name,
+            independent_name=r.independent_name,
+            estimator=r.estimator,
+            periods=r.periods,
+            irf_dependent_to_independent_shock=list(r.irf_dependent_to_independent_shock),
+            irf_independent_to_dependent_shock=list(r.irf_independent_to_dependent_shock),
+            fevd_dependent_explained_by_independent=list(r.fevd_dependent_explained_by_independent),
+            fevd_independent_explained_by_dependent=list(r.fevd_independent_explained_by_dependent),
+            observation_count=r.observation_count,
+            note=r.note,
+        )
+    return ImpulseResponseFevdOut(
+        dependent_series_id=view.dependent_series_id,
+        independent_series_id=view.independent_series_id,
+        as_of=view.as_of,
+        aligned_observation_count=view.aligned_observation_count,
+        estimator_used=view.estimator_used,
+        result=result_out,
+        warnings=list(view.warnings),
+    )
+
+
+class GrangerCausalityResultOut(BaseModel):
+    causing_name: str
+    caused_name: str
+    wald_statistic: Decimal
+    degrees_of_freedom: int
+    p_value: Decimal
+    significant: bool
+
+
+class TodaYamamotoResultOut(BaseModel):
+    dependent_name: str
+    independent_name: str
+    lags: int
+    integration_order_augmentation: int
+    total_fitted_lags: int
+    independent_causes_dependent: GrangerCausalityResultOut
+    dependent_causes_independent: GrangerCausalityResultOut
+    observation_count: int
+    note: str
+
+
+class TodaYamamotoOut(BaseModel):
+    """§30 step 3's Toda-Yamamoto causality test, live — valid
+    regardless of the pair's cointegration status (see `app.domain.
+    causality_analysis`'s own docstring), so this runs independently of
+    whatever §30 step 2 selected. `result` is `None` when either
+    series' own real stationarity consensus is unknown or ambiguous
+    (refusing to guess the augmentation) or too little real aligned
+    data exists."""
+
+    dependent_series_id: str
+    independent_series_id: str
+    as_of: dt.date
+    aligned_observation_count: int
+    dependent_consensus: str | None
+    independent_consensus: str | None
+    result: TodaYamamotoResultOut | None
+    warnings: list[str]
+
+
+@router.get("/toda-yamamoto", response_model=TodaYamamotoOut)
+def toda_yamamoto(
+    dependent_series_id: str,
+    independent_series_id: str,
+    db: Session = Depends(get_db),
+) -> TodaYamamotoOut:
+    view = toda_yamamoto_for(db, dependent_series_id, independent_series_id)
+    result_out = None
+    if view.result is not None:
+        r = view.result
+
+        def _causality_out(c) -> GrangerCausalityResultOut:
+            return GrangerCausalityResultOut(
+                causing_name=c.causing_name, caused_name=c.caused_name,
+                wald_statistic=c.wald_statistic, degrees_of_freedom=c.degrees_of_freedom,
+                p_value=c.p_value, significant=c.significant,
+            )
+
+        result_out = TodaYamamotoResultOut(
+            dependent_name=r.dependent_name,
+            independent_name=r.independent_name,
+            lags=r.lags,
+            integration_order_augmentation=r.integration_order_augmentation,
+            total_fitted_lags=r.total_fitted_lags,
+            independent_causes_dependent=_causality_out(r.independent_causes_dependent),
+            dependent_causes_independent=_causality_out(r.dependent_causes_independent),
+            observation_count=r.observation_count,
+            note=r.note,
+        )
+    return TodaYamamotoOut(
+        dependent_series_id=view.dependent_series_id,
+        independent_series_id=view.independent_series_id,
+        as_of=view.as_of,
+        aligned_observation_count=view.aligned_observation_count,
+        dependent_consensus=view.dependent_consensus,
+        independent_consensus=view.independent_consensus,
+        result=result_out,
+        warnings=list(view.warnings),
     )
 
 

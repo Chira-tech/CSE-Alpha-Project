@@ -73,7 +73,17 @@ def select_and_fit_estimator(
 
     if choice == "johansen_vecm":
         vecm_view = johansen_vecm_for(db, dependent_series_id, independent_series_id, stamp)
-        if vecm_view.result is not None and vecm_view.result.johansen.conclusion == "cointegrated":
+        # REAL BUG, FOUND LIVE: `johansen.conclusion == "cointegrated"` only
+        # means the trace test rejected rank 0 — for a two-variable system
+        # that's also true at rank 2 (both series individually stationary,
+        # not a real cointegrating relationship), a case `app.domain.
+        # johansen_vecm.fit_vecm` itself already correctly refuses to fit
+        # (leaves alpha/beta as None). Checking `conclusion` alone reported
+        # `estimator_used="johansen_vecm"` for a pair with NO actual fitted
+        # VECM behind it. `alpha_dependent is not None` is the real signal
+        # that a usable fit exists, matching what `fit_vecm` itself decided
+        # rather than re-deriving a looser check here.
+        if vecm_view.result is not None and vecm_view.result.alpha_dependent is not None:
             return EstimatorSelectionResult(
                 dependent_series_id=dependent_series_id, independent_series_id=independent_series_id,
                 as_of=stamp, dependent_consensus=dep_consensus, independent_consensus=indep_consensus,
@@ -82,8 +92,9 @@ def select_and_fit_estimator(
             )
         var_view = var_in_differences_for(db, dependent_series_id, independent_series_id, stamp)
         fallback_reason = (
-            reason + " The Johansen test itself found no real cointegrating relationship, so "
-            "falling back to a VAR in first differences per §30 step 2's own \"no cointegration\" branch."
+            reason + " The Johansen test itself found no real, usable cointegrating relationship "
+            "to fit a VECM against, so falling back to a VAR in first differences per §30 step 2's "
+            "own \"no cointegration\" branch."
         )
         return EstimatorSelectionResult(
             dependent_series_id=dependent_series_id, independent_series_id=independent_series_id,

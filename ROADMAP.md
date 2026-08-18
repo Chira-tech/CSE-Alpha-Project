@@ -1106,7 +1106,81 @@ of 0.09 against a 205.75 share price) led directly to the diagnosis.
       rate). 1 new regression test (`test_combs_2019_annual_report_
       uses_a_unicode_right_quote_not_ascii_apostrophe`). Full suite: 891
       passed, no regressions. The COMB.N0000 backfill was re-run again
-      against this second fix to repopulate the dev database correctly.
+      against this second fix to repopulate the dev database correctly
+      (the full 16-annual/59-quarterly archive sweep hits this session's
+      own background-task ceiling on COMB's largest annual reports —
+      genuinely long-running real work, not a hang — so 28 real
+      quarterly filings, 2020-2026, were restored; the annual reports
+      remain a named, separately-scoped gap, not silently dropped).
+
+### §30 step 3 — impulse response, FEVD, and Toda-Yamamoto causality: §30's method chain now complete except the event study
+
+- [x] **§30 step 3 is live** — `app.domain.causality_analysis` (pure) +
+      `app.domain.causality_analysis_view`, exposed on new `GET /market/
+      impulse-response-fevd` and `GET /market/toda-yamamoto`. The
+      genuinely last unbuilt piece of §30's six-step chain besides step 5
+      (the event study) — everything else (a real fitted VECM or VAR-in-
+      differences from step 2, each series' own real stationarity read)
+      was already built.
+      - **Impulse response/FEVD reuses whichever estimator step 2's own
+        selection landed on** — never a separately-made decision.
+        Restricted to the two branches that produce a genuine VAR-shaped
+        fitted model (`"johansen_vecm"`, `"var_differences"`); a pair
+        step 2 routed to ARDL bounds testing gets no impulse response
+        from this module at all, a disclosed scope boundary.
+      - **FEVD has no native VECM implementation in `statsmodels`**
+        (`VECMResults.irf().fevd_table()` raises `NotImplementedError`,
+        unlike `VARResults.fevd()`) — computed instead from the
+        orthogonalized IRF via the standard textbook formula and
+        VALIDATED against `VARResults.fevd()`'s own native output on the
+        VAR-differences branch (where both exist), matching to 8 decimal
+        places, before trusting the same formula for the VECM branch.
+      - **Toda-Yamamoto (1995), the actual method** — fits a VAR in
+        LEVELS with `lags + integration_order` lags (real dummy lags
+        sized to each series' own real stationarity consensus, reusing
+        `app.domain.stationarity`'s own vocabulary), then Wald-tests only
+        the first `lags` real coefficients, excluding the dummy lags —
+        the construction that makes the test valid regardless of
+        cointegration status, unlike ordinary Granger causality. The
+        Wald-test construction (extracting the right coefficient/
+        covariance sub-matrix from `VARResults.cov_params()`'s own
+        MultiIndex) was validated directly against a known one-directional
+        causal DGP: the true causal direction rejects the null at p≈0,
+        the reverse (genuinely non-causal) direction does not.
+      - **A real bug in THIS module's own first draft, caught by its own
+        view-layer test**: the VECM branch of `impulse_response_and_fevd`
+        originally re-fit Johansen's rank test with this module's own
+        `lags` default (2) instead of `app.domain.johansen_vecm`'s own
+        convention (`k_ar_diff=1`) — a different lag depth changes what
+        `select_coint_rank` concludes on IDENTICAL data. Fixed by
+        importing the constant directly rather than silently redefining
+        it.
+      - **A SECOND, deeper real bug found while chasing the first one —
+        in already-committed `app.domain.estimator_selection_view`, not
+        this new module.** Its own check for "did the Johansen branch
+        produce a usable VECM" was `johansen.conclusion == "cointegrated"`
+        — true whenever the trace test rejects rank 0, which for a two-
+        variable system is ALSO true at rank 2 (both series individually
+        stationary, not a real cointegrating relationship — a case `app.
+        domain.johansen_vecm.fit_vecm` itself already correctly refuses
+        to fit). The estimator-selection capstone was reporting
+        `estimator_used="johansen_vecm"` for pairs with no actual fitted
+        VECM behind it. Fixed to check `alpha_dependent is not None` —
+        matching what `fit_vecm` itself already decided, not a looser
+        re-derived check. Three already-committed, already-passing tests
+        had been silently relying on the masked bug (their own synthetic
+        seed happened to give rank 2 through the real DB-rounded round-
+        trip, though the SAME seed gives rank 1 in `test_johansen_vecm.
+        py`'s own unrounded in-memory construction — real floating-point
+        sensitivity near Johansen's own rank-selection boundary, not a
+        bug in either test). Re-seeded to a value checked to reliably
+        give rank 1 through the actual real pipeline, with the reasoning
+        recorded in the test file rather than silently swapped.
+      - 20 new tests (`test_causality_analysis.py`'s validation against
+        a known one-directional causal DGP and known cointegrated/
+        independent pairs; `test_causality_analysis_view.py`;
+        `test_market_causality_api.py`). Full suite: 911 passed, no
+        regressions.
 
 ## Not done yet — next in Phase 1
 
@@ -2049,14 +2123,14 @@ of safety, the price ladder — §17-26) are no longer in this list — see
 above. **Macro/ARDL (§29-34) is also no longer a single untouched
 block** — §31's regime classifier, §33's sector sensitivity matrix,
 §34's national project register, §30 step 1's stationarity/break testing,
-and now ALL of §30 step 2 (all three named estimators — ARDL bounds
-testing, Johansen/VECM, VAR-in-differences — plus the estimator-selection
-capstone that actually routes between them using each series' own real
-stationarity read) are live (see those entries above); only step 3
-(impulse response/FEVD/Toda-Yamamoto causality — needs a fitted
-cointegration model from whichever step-2 branch actually applies) and
-step 5 (the event study) remain genuinely unbuilt within Part G, named
-precisely rather than left as one vague "macro/ARDL" line item. Building
+ALL of §30 step 2 (all three named estimators — ARDL bounds testing,
+Johansen/VECM, VAR-in-differences — plus the estimator-selection capstone
+that actually routes between them using each series' own real
+stationarity read), and now step 3 (impulse response, FEVD, and Toda-
+Yamamoto causality) are all live (see those entries above); only step 5
+(the event study) remains genuinely unbuilt within Part G — §30's own
+six-step method chain is complete but for that one step, named precisely
+rather than left as one vague "macro/ARDL" line item. Building
 the still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the

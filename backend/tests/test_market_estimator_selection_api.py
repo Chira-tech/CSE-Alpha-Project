@@ -37,7 +37,10 @@ def test_no_data_returns_200_with_insufficient_data(client):
 
 
 def test_known_cointegrated_i1_pair_selects_johansen_vecm(client, db_session):
-    rng = random.Random(42)
+    # Seed 1, not 42 — checked directly to reliably give Johansen rank 1
+    # through this real DB round-trip (see test_estimator_selection_view.py
+    # for the full reasoning; seed 42 gives rank 2 here).
+    rng = random.Random(1)
     base = dt.date(2025, 1, 1)
     n = 300
     x_total = 0.0
