@@ -1269,6 +1269,97 @@ of 0.09 against a 205.75 share price) led directly to the diagnosis.
         skip-reason coverage; `test_market_event_study_api.py`). Full
         suite: 928 passed, no regressions.
 
+### Phase 6, first piece — real Amihud illiquidity, unblocking two pre-existing gaps
+
+Per §54's own build-sequence table (checked directly, see the phase-
+label correction above): Phase 6 is "Factor library, Carhart
+certification, timing engine, full fusion, complete decision card" —
+genuinely untouched until this entry. §35's own factor library is large
+(five CSE-native factors, a mandatory Dimson lead/lag correction, 3-year
+weekly / 5-year monthly rolling windows this system's real price history
+doesn't remotely reach yet) — this entry is deliberately scoped to one
+real, closeable, high-leverage piece rather than a first pass at all of
+it, matching this whole project's own "never fake a method with a
+plausible number" discipline: building 156-week rolling factor
+regressions against ~1 year of real data would produce numbers that look
+precise and mean nothing.
+
+- [x] **Real Amihud (2002) illiquidity is live** — `app.domain.
+      liquidity` (pure) + `app.domain.liquidity_view` (wired to real
+      `prices_daily` turnover history), exposed on new `GET /market/
+      liquidity?ticker=...`. Chosen as the entry point because it was
+      already a real, explicitly-named, "confirmed blocked" gap in
+      THREE already-built modules — `app.domain.cost_of_equity`'s own
+      illiquidity_premium, `app.domain.margin_of_safety`'s own liquidity
+      component, and Gate 1's own `amihud_illiquidity_percentile` input
+      — not a fresh feature, a real debt this project already knew it
+      owed itself, now paid.
+      - **Turnover computed as `close × volume`, not read from
+        `PriceDaily.turnover` directly** — checked live: that column is
+        populated for only 284 of 66,516 real rows (only the live
+        `capture-market`/`bootstrap` snapshot path sets it; the ~1-year
+        `company_price_history_loader` backfill that actually gives this
+        module real depth never did). A disclosed, standard proxy (the
+        day's closing price times its real share volume), not an exact
+        VWAP-weighted figure this system's real data doesn't have.
+      - **Adjusted returns, raw turnover — deliberately paired, not
+        inconsistent.** The return series reuses `app.domain.price_
+        returns.ticker_adjusted_returns` (so a corporate action doesn't
+        masquerade as a genuine price-impact event); turnover stays raw
+        `close × volume` on the same dates (the actual rupee value that
+        changed hands that day — a total-return adjustment factor has no
+        bearing on that).
+      - **One shared interpolation rule, not two independently invented
+        ones.** `app.domain.margin_of_safety.liquidity_component`
+        already had its own "top quartile of the liquidity ranking → 0,
+        bottom quartile → the stated cap, linear between the 25th/75th
+        percentile boundaries" formula (§25's own two anchor points,
+        interpolated by an explicit, disclosed choice). Extracted into
+        `app.domain.liquidity.liquidity_percentile_band`, generalised to
+        an arbitrary cap, so §17.2's own illiquidity_premium ("0 to
+        ~3.0%, mapped from the Amihud percentile") reuses the exact same
+        shape with its own 3% cap. `margin_of_safety.liquidity_
+        component` itself now calls this shared function instead of
+        carrying a private copy — refactored, not duplicated, 19
+        pre-existing MoS tests still pass unchanged.
+      - **Two real, previously-blocked gaps closed, not just a new
+        module added**: `cost_of_equity_view.cost_of_equity_for` now
+        supplies a real `illiquidity_premium` (was always `None`); `
+        valuation_view.valuation_summary_for`'s own margin-of-safety call
+        now supplies a real `liquidity_percentile` (was hardcoded
+        `None` with a comment citing "still blocked (ROADMAP Gate 1)").
+        Verified live against COMB.N0000: liquidity percentile 99.29
+        (correctly near the top — a large, actively-traded bank),
+        illiquidity_premium correctly 0 (above the top-quartile
+        threshold). `size_premium` remains correctly blocked and named
+        — still needs free-float market cap, which still needs
+        `FloatData.public_float_pct`, which this system still doesn't
+        have a real source for.
+      - **Also fixed, found while in this file**: `app.domain.margin_
+        of_safety.regime_component`'s own docstring still said "§29-33's
+        regime classifier (Phase 5, not built)" — stale since the
+        regime-linkage work earlier this session; corrected to point at
+        the real, live wiring.
+      - **This is also §35's own real LIQ factor input**, not a separate
+        computation that happens to share a name — the tercile sort by
+        Amihud §35.1 itself specifies uses exactly this ranking. The LIQ
+        factor's own long/short PORTFOLIO RETURN construction on top of
+        this ranking is real, separate, larger work, not built here.
+      - 21 new tests (`test_liquidity.py`'s hand-worked ratio/percentile/
+        interpolation checks and a real "thin stock ranks more illiquid
+        than a heavily-traded one" proof; `test_liquidity_view.py`'s
+        real database round-trip; `test_market_liquidity_api.py`). Full
+        suite: 949 passed, no regressions.
+      - **Named precisely what's still unbuilt within §35/§36**: MKT-RF
+        (needs free-float-weighted universe returns — same free-float
+        gap as `size_premium`), SMB/HML/HML_hard (need the real 2×3
+        Fama-French portfolio-sort infrastructure plus multi-year
+        audited book-to-market history), MOM (needs monthly-rebalanced
+        portfolio-sort infrastructure), the mandatory Dimson (1979)
+        lead/lag beta correction (§35.2), and §36's Carhart certification
+        regression are all real, separate, genuinely unbuilt pieces —
+        not folded into a false claim that "the factor library" exists.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —
@@ -2202,9 +2293,9 @@ The earnings integrity veto (§14 — needs CFO, related-party revenue,
 auditor and director-dealings data this system does not extract), §27
 execution reality (needs a live order-book feed, 15-minute cadence — not
 part of Phase 3's own gate per Master Spec §54's build-sequence table),
-the scheduler/always-on service/decision capture (Phase 4), the factor
-library/scoring/full fusion (Phase 6), and the AI research writer
-(Phase 7) — all per §54's own real build-sequence table, checked
+the scheduler/always-on service/decision capture (Phase 4), and the AI
+research writer (Phase 7) — all per §54's own real build-sequence table,
+checked
 directly against the PDF (earlier entries in this file called the macro
 engine "Phase 4"; §54 actually numbers it Phase 5, corrected above where
 first noticed). Fundamental ratios (§12), trend detection (§13), the
@@ -2228,7 +2319,14 @@ away. §34's own possible future variable-set expansion (reserves, M2b,
 private credit, trade balance, tourist arrivals — noted in §29's own
 entry as not available from the daily CBSL PDF) is likewise a real,
 separate, disclosed gap, not part of "macro/ARDL" as a line item
-anymore. Building the still-deferred items against
+anymore. **Phase 6 (the factor library) is also no longer entirely
+untouched** — real Amihud illiquidity (§35's own LIQ factor input,
+and the pre-existing "confirmed blocked" gap in Ke's illiquidity
+premium and MoS's liquidity component) is live; MKT-RF, SMB, HML/
+HML_hard, MOM, the mandatory Dimson correction, and §36's Carhart
+certification regression remain genuinely unbuilt, named precisely in
+that entry rather than folded into a false "factor library done" claim.
+Building the still-deferred items against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the
 spec's failure-mode register (Part N) warns about.

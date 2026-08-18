@@ -7,18 +7,21 @@ single number standing alone. Pure function: every component is supplied
 by the caller, so this module has no I/O and no opinion about where
 Rf_LKR or beta came from.
 
-TWO OF THE FOUR TERMS ARE NOT YET COMPUTABLE, AND Ke SAYS SO RATHER THAN
-SILENTLY TREATING THEM AS ZERO. `size_premium` needs free-float market
-cap deciles (free float isn't ingested — the same Gate 2 gap this project
-has documented since early in Phase 1). `illiquidity_premium` needs the
-Amihud percentile (needs real turnover history, confirmed blocked this
-session — see ROADMAP.md's Gate 1 investigation). Both premiums are
-non-negative by construction ("0 to ~2.5%", "0 to ~3.0%"), so treating a
-missing one as 0 is not a neutral placeholder — it can only ever
-UNDERSTATE Ke, never overstate it. `is_lower_bound` says so explicitly,
-and `missing_components` names exactly what would need to exist to close
-the gap, the same NOT_YET_COMPUTABLE discipline `app.domain.ratios`
-already applies to individual ratios.
+ONE OF THE TWO REMAINING TERMS IS NOW COMPUTABLE; ONE STILL ISN'T, AND Ke
+SAYS SO RATHER THAN SILENTLY TREATING EITHER AS ZERO. `size_premium`
+still needs free-float market cap deciles (free float isn't ingested —
+the same Gate 2 gap this project has documented since early in Phase 1).
+`illiquidity_premium` is real and live as of 18 Aug 2026 — `app.domain.
+liquidity.illiquidity_premium_from_percentile`, fed a real Amihud
+percentile computed from real per-company turnover history via `app.
+domain.liquidity_view` (a genuine `PriceDaily.volume`-based ~1-year
+backfill this system didn't have when this module was first written).
+Both premiums are non-negative by construction ("0 to ~2.5%", "0 to
+~3.0%"), so a still-missing `size_premium` continues to only ever
+UNDERSTATE Ke, never overstate it, exactly as before. `is_lower_bound`
+says so explicitly, and `missing_components` names exactly what would
+need to exist to close the remaining gap, the same NOT_YET_COMPUTABLE
+discipline `app.domain.ratios` already applies to individual ratios.
 
 ERP_EFFECTIVE IS A POLICY PARAMETER, NOT SOMETHING COMPUTED. §17.1: "the
 implied ERP is reverse-engineered from current ASPI earnings yield as a

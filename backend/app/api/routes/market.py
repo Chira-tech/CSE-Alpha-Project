@@ -51,6 +51,8 @@ from app.domain.causality_analysis_view import impulse_response_fevd_for, toda_y
 from app.domain.estimator_selection_view import select_and_fit_estimator
 from app.domain.event_study_view import event_study_for
 from app.domain.johansen_vecm_view import johansen_vecm_for
+from app.domain.liquidity import illiquidity_premium_from_percentile, percentile_rank
+from app.domain.liquidity_view import universe_amihud_ratios
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.domain.stationarity_view import stationarity_for_series
 from app.domain.var_differences_view import var_in_differences_for
@@ -886,6 +888,39 @@ def event_study(
         ticker=view.ticker, event_type=view.event_type, as_of=view.as_of,
         trading_day_count=view.trading_day_count,
         events=events_out, aggregate=aggregate_out, warnings=list(view.warnings),
+    )
+
+
+class LiquidityOut(BaseModel):
+    """Real Amihud (2002) illiquidity for one real ticker, ranked
+    against every other real ticker with enough real price history to
+    rank against — the input §17.2's Ke illiquidity premium and §25's
+    margin-of-safety liquidity component have both used since 18 Aug
+    2026 (see `app.domain.liquidity`'s own docstring), and the real
+    ranking criterion §35's own LIQ factor will sort on. `amihud_ratio`
+    and `liquidity_percentile` are both `None` together when this ticker
+    doesn't have enough real trading history to compute a real ratio —
+    never defaulted to a value that would look like a real reading."""
+
+    ticker: str
+    as_of: dt.date
+    universe_size: int
+    amihud_ratio: Decimal | None
+    liquidity_percentile: Decimal | None
+    """0-100, HIGHER = MORE liquid."""
+
+    implied_ke_illiquidity_premium: Decimal | None
+
+
+@router.get("/liquidity", response_model=LiquidityOut)
+def liquidity(ticker: str, db: Session = Depends(get_db)) -> LiquidityOut:
+    stamp = dt.date.today()
+    ratios = universe_amihud_ratios(db, stamp)
+    percentile = percentile_rank(ratios).get(ticker)
+    return LiquidityOut(
+        ticker=ticker, as_of=stamp, universe_size=len(ratios),
+        amihud_ratio=ratios.get(ticker), liquidity_percentile=percentile,
+        implied_ke_illiquidity_premium=illiquidity_premium_from_percentile(percentile),
     )
 
 

@@ -63,14 +63,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from app.domain.liquidity import liquidity_percentile_band
+
 BASE_MOS_PCT = Decimal("0.10")
 
 DISPERSION_MULTIPLIER = Decimal("0.5")
 DISPERSION_CAP = Decimal("0.15")
 
 LIQUIDITY_CAP = Decimal("0.10")
-LIQUIDITY_TOP_QUARTILE = Decimal(75)
-LIQUIDITY_BOTTOM_QUARTILE = Decimal(25)
 
 REGIME_MOS_PCT: dict[str, Decimal] = {
     "risk_on": Decimal("0.00"),
@@ -108,23 +108,23 @@ def dispersion_component(dispersion_pct: Decimal | None) -> Decimal | None:
 def liquidity_component(liquidity_percentile: Decimal | None) -> Decimal | None:
     """`liquidity_percentile` is 0-100, HIGHER = MORE liquid (the top
     quartile of a liquidity ranking, not of the Amihud illiquidity ratio
-    itself, which runs the opposite direction — see module docstring for
-    the interpolation rule between the two stated anchor points)."""
-    if liquidity_percentile is None:
-        return None
-    if liquidity_percentile >= LIQUIDITY_TOP_QUARTILE:
-        return Decimal(0)
-    if liquidity_percentile <= LIQUIDITY_BOTTOM_QUARTILE:
-        return LIQUIDITY_CAP
-    span = LIQUIDITY_TOP_QUARTILE - LIQUIDITY_BOTTOM_QUARTILE
-    fraction_toward_illiquid = (LIQUIDITY_TOP_QUARTILE - liquidity_percentile) / span
-    return fraction_toward_illiquid * LIQUIDITY_CAP
+    itself, which runs the opposite direction). The interpolation rule
+    itself now lives in `app.domain.liquidity.liquidity_percentile_band`
+    — extracted once `app.domain.cost_of_equity`'s own illiquidity_
+    premium (§17.2: "0 to ~3.0%, mapped from the Amihud percentile")
+    needed the exact same shape with a different cap, rather than
+    re-deriving it a second time."""
+    return liquidity_percentile_band(liquidity_percentile, LIQUIDITY_CAP)
 
 
 def regime_component(regime: str | None) -> Decimal | None:
     """`regime` is one of `"risk_on"`, `"transition"`, `"risk_off"` —
-    §29-33's regime classifier (Phase 5, not built), so this is `None`
-    until that exists, same as every other Phase-5-dependent input here."""
+    §29-33's regime classifier (§31, Phase 5 — live since 18 Aug 2026,
+    wired into `GET /valuation/{ticker}` via `app.domain.macro_engine_
+    view.regime_for`, see ROADMAP.md's "§31 regime classifier" entry).
+    Still `None` here only when the regime read itself is unavailable
+    (e.g. genuinely insufficient real market data), not because this
+    component is unbuilt."""
     if regime is None:
         return None
     return REGIME_MOS_PCT.get(regime)

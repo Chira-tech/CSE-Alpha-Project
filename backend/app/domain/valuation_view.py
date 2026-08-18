@@ -94,6 +94,7 @@ from app.domain.dividend_residual_income import (
     compute_residual_income,
     gordon_growth_value,
 )
+from app.domain.liquidity_view import liquidity_percentile_for
 from app.domain.macro_engine_view import RegimeView, regime_for
 from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
@@ -1092,7 +1093,7 @@ def valuation_summary_for(
 
     mos = compute_margin_of_safety(
         dispersion_pct=triangulation.dispersion_pct,
-        liquidity_percentile=None,  # Amihud percentile — needs turnover history, still blocked (ROADMAP Gate 1)
+        liquidity_percentile=liquidity_percentile_for(db, ticker, stamp),  # real Amihud percentile, live 18 Aug 2026
         regime=regime_label,  # §29-33's regime read, live — see regime_for's own docstring
         integrity_score=None,  # no continuous integrity score exists anywhere in this system, by design — see margin_of_safety.py
         data_completeness_pct=None,  # not computed at the per-company level anywhere yet

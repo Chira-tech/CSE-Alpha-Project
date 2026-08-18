@@ -24,6 +24,8 @@ from app.domain.cost_of_equity import (
     compute_cost_of_equity,
     regime_erp_adjustment,
 )
+from app.domain.liquidity import illiquidity_premium_from_percentile
+from app.domain.liquidity_view import liquidity_percentile_for
 from app.domain.macro import SERIES_ASPI
 from app.domain.macro_view import current_spread, risk_free_observation
 from app.models.macro import MacroSeries
@@ -82,6 +84,7 @@ def cost_of_equity_for(
     beta_result = beta_for(db, ticker, stamp)
     rf_observation = risk_free_observation(db, stamp)
     spread = current_spread(db, stamp)
+    liquidity_percentile = liquidity_percentile_for(db, ticker, stamp)
 
     return compute_cost_of_equity(
         CostOfEquityInputs(
@@ -89,5 +92,6 @@ def cost_of_equity_for(
             beta=beta_result.blume_adjusted_beta,
             erp_effective=settings.erp_effective_pct + regime_erp_adjustment(regime),
             implied_erp_cross_check=spread.spread if spread is not None else None,
+            illiquidity_premium=illiquidity_premium_from_percentile(liquidity_percentile),
         )
     )
