@@ -15,41 +15,49 @@ order. There is no BUY button anywhere in this product.
 
 ## Status
 
-Build follows the phased sequence in Master Spec §54. Phases 1-3's
-engines are built (data spine, fundamentals/trend/routing, and now the
-full valuation math — DCF through the price ladder); Phase 4 (scheduler
-hardening, alerting, decision capture UI) has not started.
+Build follows the phased sequence in Master Spec §54. There is a
+**runnable web app** — see Quick start below — with 8 of the UI
+specification's 9 real screens built and wired to live data: Today,
+Opportunities, Companies (+ company file), Portfolio, Macro, Journal,
+Data health and the Confirm queue. Only Lab (§48-50's backtest engine,
+Phase 8) is still a named, unbuilt gap.
 
-There is a **runnable web app** — see Quick start below. It shows real CSE
-data (live index levels, all 283 listed lines from 264 issuers, prices, the review
-queues, data health). It deliberately does **not** show fair values,
-scores or buy prices: the Phase 3 valuation engines exist now and are
-unit-tested against hand-worked reference cases (`backend/app/domain/
-dcf.py` through `price_ladder.py`), but nothing wires them to a real
-company's live data or renders them in the UI yet — see ROADMAP.md's
-Phase 3 section for exactly which two models (residual income, justified
-P/B) are already wireable and which are still blocked on unextracted
-data (DCF, DDM, SOTP, asset-based). Until that wiring and a screener/
-valuation UI exist, the company file lists the gap explicitly rather than
-rendering a placeholder number, which the UI specification forbids
-outright.
+Real, live, end-to-end today: the full valuation math (§17-26 — cost of
+equity, DCF, DDM, residual income, relative valuation, triangulation,
+margin of safety, the price ladder) runs against real companies with
+human-confirmed fundamentals, not just hand-worked test fixtures; a real
+uploaded CDS/broker portfolio gets valued against that same engine; the
+macro engine (§29-34 — ARDL/Johansen cointegration, causality, an event
+study, the §33 sector sensitivity matrix, the §29 hero spread) runs on
+real CBSL/CSE series; and §45's decision record freezes that real state
+— fair value, price ladder, margin-of-safety breakdown, the live price
+— at the moment a real decision is made.
+
+What every one of those screens still names honestly as missing: the
+§38 composite score, §36 Carhart certification and §37 timing battery
+don't exist yet, so Opportunities ranks by a real but narrower proxy
+(gap to buy-below price) rather than §40's full risk-adjusted-return
+metric, and the regime classifier's own real read hasn't been validated
+against a real historical Sri Lankan regime — this system's own macro
+series aren't deep enough yet. Nothing is ever shown as a guess in
+place of one of these; each screen states the gap directly.
 
 | Phase | Deliverable | Status |
 |---|---|---|
-| 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | 🔨 in progress |
-| 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine + trend detection (§13) + model router (§15/§16) built; a first sortable screener column (ROE, on Companies) built and wired to real data; integrity veto (§14) blocked on unextracted data (no CFO/audit-opinion/related-party source exists — not closeable by more code) |
-| 3 | Valuation engine, price ladder, margin-of-safety engine | ✅ math built and tested (§17-26: cost of equity, DCF, DDM, residual income, relative valuation, SOTP, asset-based, scenarios, triangulation, margin of safety, price ladder); not yet wired to live per-company data end-to-end or exposed in the UI |
-| 4 | Scheduler, always-on service, alerting, decision capture | not started |
-| 5 | Macro engine (ARDL, regime classifier, sector sensitivity) | not started |
-| 6 | Factor library, Carhart certification, timing engine, fusion | not started |
+| 1 | PIT data spine, cse.lk ingestion, corporate actions, reconciliation, coverage tiers, provenance model | ✅ built; coverage-tier gates (§11) still unwired — need free float and deeper turnover history neither ingested yet |
+| 2 | Fundamental engine, trend detection, sector routing, integrity veto, screener UI | 🔨 ratio engine, trend detection (§13), model router (§15/§16) and a real sortable screener column built; the automated integrity veto (§14) blocked on unextracted data (no Beneish/audit-opinion/related-party source exists) |
+| 3 | Valuation engine, price ladder, margin-of-safety engine | ✅ built, tested, and wired end-to-end to real per-company data and the UI (Company file, Portfolio, Opportunities, Journal) |
+| 4 | Scheduler, always-on service, alerting, decision capture | 🔨 decision capture (§45) built as the real Journal screen; the always-on scheduler/alerting half is not started |
+| 5 | Macro engine (ARDL, regime classifier, sector sensitivity) | 🔨 built and live (Macro screen, real CBSL/CSE series); the regime classifier itself isn't yet validated against a real historical Sri Lankan regime |
+| 6 | Factor library, Carhart certification, timing engine, fusion | 🔨 factor library pieces built (Amihud illiquidity, the 2×3 size/style sort, HML_hard); Carhart certification, the timing engine and §39's fusion not started |
 | 7 | AI research writer + agent Tier A | not started |
-| 8 | Portfolio, thesis-drift monitor, backtest lab, monitoring | not started |
+| 8 | Portfolio, thesis-drift monitor, backtest lab, monitoring | 🔨 a real, narrower slice of the portfolio engine built (real holdings from an uploaded snapshot, valued live) — the full transaction log, realised P&L, thesis-drift monitor and backtest lab (Lab screen) are not started |
 | 9 | Agent Tier B/C | not started |
 
-See `ROADMAP.md` for the detailed phase-1 task list and `PARAMETERS.md` for
-the open-parameter decisions (Master Spec Part O) that were defaulted so the
-build could start — **review these**, they materially change thresholds
-downstream.
+See `ROADMAP.md` for the detailed, chronological build log and
+`PARAMETERS.md` for the open-parameter decisions (Master Spec Part O)
+that were defaulted so the build could start — **review these**, they
+materially change thresholds downstream.
 
 ## Repository layout
 
@@ -68,9 +76,9 @@ backend/            Python service: ingestion, domain logic, API, jobs
     api/              FastAPI routes
   alembic/            DB migrations
   tests/
-frontend/            React + TypeScript confirm-queue tool (see frontend/README.md) —
-                      NOT the Phase 2+ product frontend, just enough UI to review and
-                      approve the ingestion drafts Phase 1 produces
+frontend/            React + TypeScript product frontend (see frontend/README.md) —
+                      Today, Opportunities, Companies, Portfolio, Macro, Journal,
+                      Data health and the Confirm queue; only Lab isn't built yet
 ```
 
 ## Quick start — run it and look at it
@@ -101,9 +109,18 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**. You'll get four screens: Market (live ASPI
-and sector indices), Companies (all 283 listed lines, searchable, click
-through to a company file), Review queue, and Data health.
+Open **http://localhost:5173**. Eight real screens: Today (the daily
+brief — index level, hero spread, what needs confirming, your real
+portfolio summary, the top of the real Opportunities board), Opportunities
+(ranked by real gap to buy-below price), Companies (all 284 listed lines,
+searchable, click through to a company file with a real fair value once
+it has confirmed fundamentals), Portfolio (upload a real CDS/broker
+holdings export, valued live), Macro (the real §29 hero spread and §33
+sector sensitivity matrix), Journal (record a real decision, with this
+system's own fair value/price ladder/margin-of-safety frozen at that
+moment), Data health, and the Confirm queue. Lab (§48-50's backtest
+engine) is the one screen still a named, unbuilt gap rather than a real
+destination.
 
 ### A note on SQLite vs PostgreSQL
 
@@ -169,15 +186,21 @@ GET /valuation/{ticker}
 ```
 
 Runs the full Phase 3 pipeline for one company: archetype routing, the
-two valuation models that don't need still-unextracted data (justified
-P/B and residual income, §20.2/§19.3), triangulation, margin of safety,
-and the price ladder. Open `http://localhost:8000/docs` and try it
-against a ticker with a confirmed fundamentals period — most tickers
-don't have one yet (§8: an AI-assisted extraction must be human-
-confirmed before it can enter a valuation), and the endpoint says so
-explicitly rather than guessing. See `app/domain/valuation_view.py` and
-ROADMAP.md's Phase 3 section for exactly which of §18-26's nine models
-this is and isn't wired to live data.
+three anchors this system can compute live (justified P/B, residual
+income, and the full multi-year FCFF DCF — §20.2/§19.3/§18), triangulation,
+margin of safety, and the price ladder. Easiest to see through the UI
+itself now — any Companies row leads to a company file that renders all
+of this — but the raw endpoint is still there: open
+`http://localhost:8000/docs` and try it against a ticker with a
+confirmed fundamentals period. Most of the universe still doesn't have
+one (§8: an AI-assisted extraction must be human-confirmed before it can
+enter a valuation) — nine real tickers do today (whichever the Confirm
+queue's own fundamentals tab has been worked through for), and the
+endpoint names the gap explicitly for everything else rather than
+guessing. See `app/domain/valuation_view.py` for exactly which of
+§18-26's nine models this is and isn't wired to live data, and DDM/SOTP/
+asset-based's own real, disclosed reasons for staying informational-only
+or unbuilt.
 
 ### Macro data (the hero spread)
 
