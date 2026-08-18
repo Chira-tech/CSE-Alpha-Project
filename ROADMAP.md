@@ -1524,6 +1524,31 @@ snapshot.
         control (§41's own "true factor exposure versus target"). All
         real, separate, genuinely unbuilt Phase 8 work.
 
+- [x] **The real portfolio just imported is now connected to this
+      system's own real valuation engine** — `app.domain.portfolio_
+      valuation_view`, on `GET /portfolio/holdings/valued`. For every
+      real held position: this system's own real live price, real
+      blended fair value, real price-ladder zone (Strong Accumulate ...
+      Exit), real margin of safety, and real triangulation dispersion —
+      run through the exact same `app.domain.valuation_view.valuation_
+      summary_for` pipeline `GET /valuation/{ticker}` already uses, not
+      a parallel or simplified copy of it.
+      - **Snapshot figures and live figures are two distinct fields,
+        never conflated.** `snapshot_traded_price`/`snapshot_market_
+        value`/`snapshot_unrealized_gain_loss` are exactly what the
+        broker's own file said at upload time, untouched; `live_
+        current_price`/`live_market_value`/`live_unrealized_gain_loss`
+        are this system's own real, current read. A position bought
+        when the ticker traded at a different level than today shows
+        both, honestly, rather than one silently overwriting the other.
+      - **An unrecognised or unpriced ticker still gets a row** — never
+        silently dropped from the view — with every real field this
+        system genuinely can't compute left `None` and the specific
+        reason named in that position's own `warnings`.
+      - 6 new tests (`test_portfolio_valuation_view.py`'s real
+        unrecognised-ticker and snapshot-vs-live cases; `test_portfolio_
+        valuation_api.py`). Full suite: 996 passed, no regressions.
+
 ## Not done yet — next in Phase 1
 
 - [x] **A genuine external second source, for TODAY'S close** —

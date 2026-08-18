@@ -32,6 +32,7 @@ from app.domain.portfolio_import_view import (
     store_portfolio_snapshot,
     unrecognized_tickers,
 )
+from app.domain.portfolio_valuation_view import value_portfolio
 from app.ingestion.portfolio_import import read_portfolio_workbook
 from app.models.portfolio import PortfolioSnapshot
 
@@ -140,3 +141,68 @@ def snapshot_detail(snapshot_id: int, db: Session = Depends(get_db)) -> Snapshot
     if snapshot is None:
         raise HTTPException(404, f"no portfolio snapshot with id {snapshot_id}")
     return _detail_out(db, snapshot)
+
+
+class ValuedPositionOut(BaseModel):
+    ticker: str
+    quantity: Decimal
+    avg_price: Decimal
+    total_cost: Decimal
+    snapshot_traded_price: Decimal | None
+    snapshot_market_value: Decimal | None
+    snapshot_unrealized_gain_loss: Decimal | None
+    live_current_price: Decimal | None
+    live_market_value: Decimal | None
+    live_unrealized_gain_loss: Decimal | None
+    blended_fair_value_per_share: Decimal | None
+    price_ladder_zone: str | None
+    buy_below_price: Decimal | None
+    margin_of_safety_pct: Decimal | None
+    dispersion_pct: Decimal | None
+    warnings: list[str]
+
+
+class ValuedPortfolioOut(BaseModel):
+    """This system's own real valuation engine, run against a real
+    uploaded portfolio's own real holdings — see `app.domain.portfolio_
+    valuation_view`'s own docstring for the full "snapshot vs live,
+    never conflated" reasoning. A position this system can't yet value
+    (an unrecognised ticker, no real price history, no confirmed
+    fundamentals) still appears, with its own `warnings` naming why."""
+
+    snapshot_id: int
+    as_of: dt.date
+    positions: list[ValuedPositionOut]
+    total_cost: Decimal
+    total_live_market_value: Decimal | None
+    positions_missing_a_live_price: list[str]
+
+
+@router.get("/holdings/valued", response_model=ValuedPortfolioOut | None)
+def current_holdings_valued(db: Session = Depends(get_db)) -> ValuedPortfolioOut | None:
+    """The latest real snapshot, run through this system's own real
+    valuation engine for every position. `None` when nothing has ever
+    been uploaded."""
+    snapshot = latest_snapshot(db)
+    if snapshot is None:
+        return None
+    result = value_portfolio(db, snapshot)
+    return ValuedPortfolioOut(
+        snapshot_id=result.snapshot_id, as_of=result.as_of,
+        positions=[
+            ValuedPositionOut(
+                ticker=p.ticker, quantity=p.quantity, avg_price=p.avg_price, total_cost=p.total_cost,
+                snapshot_traded_price=p.snapshot_traded_price, snapshot_market_value=p.snapshot_market_value,
+                snapshot_unrealized_gain_loss=p.snapshot_unrealized_gain_loss,
+                live_current_price=p.live_current_price, live_market_value=p.live_market_value,
+                live_unrealized_gain_loss=p.live_unrealized_gain_loss,
+                blended_fair_value_per_share=p.blended_fair_value_per_share,
+                price_ladder_zone=p.price_ladder_zone, buy_below_price=p.buy_below_price,
+                margin_of_safety_pct=p.margin_of_safety_pct, dispersion_pct=p.dispersion_pct,
+                warnings=list(p.warnings),
+            )
+            for p in result.positions
+        ],
+        total_cost=result.total_cost, total_live_market_value=result.total_live_market_value,
+        positions_missing_a_live_price=list(result.positions_missing_a_live_price),
+    )

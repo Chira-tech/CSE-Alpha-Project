@@ -1,0 +1,85 @@
+"""app.domain.portfolio_valuation_view — connecting a real uploaded
+portfolio snapshot to this system's own real valuation engine."""
+from __future__ import annotations
+
+import datetime as dt
+from decimal import Decimal
+
+from app.domain.portfolio_import_parsing import ParsedPortfolio, ParsedPosition
+from app.domain.portfolio_import_view import store_portfolio_snapshot
+from app.domain.portfolio_valuation_view import value_portfolio
+from app.models.prices import PriceDaily
+from app.models.securities import Security
+
+AS_OF = dt.date(2026, 8, 18)
+
+
+def _parsed(ticker: str, avg_price=Decimal("20.0"), quantity=Decimal("1000")):
+    total_cost = avg_price * quantity
+    return ParsedPortfolio(
+        positions=(
+            ParsedPosition(
+                ticker=ticker, quantity=quantity, avg_price=avg_price, total_cost=total_cost,
+                traded_price=avg_price, market_value=total_cost, unrealized_gain_loss=Decimal(0),
+            ),
+        ),
+        stated_total_cost=total_cost, stated_total_market_value=total_cost,
+        identity_check_passed=True, identity_check_note="ok",
+    )
+
+
+class TestValuePortfolio:
+    def test_a_ticker_not_in_securities_still_gets_a_row_with_named_warnings(self, db_session):
+        snapshot = store_portfolio_snapshot(db_session, _parsed("DELISTED.X0000"), source_filename="p.xlsx")
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        assert len(result.positions) == 1
+        pos = result.positions[0]
+        assert pos.ticker == "DELISTED.X0000"
+        assert pos.live_current_price is None
+        assert pos.blended_fair_value_per_share is None
+        assert any("not in this system's own securities table" in w for w in pos.warnings)
+        assert result.positions_missing_a_live_price == ("DELISTED.X0000",)
+        assert result.total_live_market_value is None
+
+    def test_a_known_ticker_with_no_real_price_history_is_named_not_silently_none(self, db_session):
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000"), source_filename="p.xlsx")
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        pos = result.positions[0]
+        assert pos.live_current_price is None
+        assert any("No real live price found" in w for w in pos.warnings)
+
+    def test_snapshot_and_live_figures_are_never_conflated(self, db_session):
+        """A real held position bought at 20.0, now trading at 25.0 —
+        the snapshot's own figures (as the broker reported them) and
+        this system's own live figures must both be present, distinct,
+        and correctly computed from the real quantity/price."""
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add(PriceDaily(ticker="JKH.N0000", date=AS_OF, close=Decimal("25.0"), adj_factor=Decimal("1"), fetched_at=now))
+        db_session.commit()
+
+        snapshot = store_portfolio_snapshot(
+            db_session, _parsed("JKH.N0000", avg_price=Decimal("20.0"), quantity=Decimal("1000")),
+            source_filename="p.xlsx",
+        )
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        pos = result.positions[0]
+
+        # Snapshot figures: unchanged from the broker's own real report.
+        assert pos.snapshot_traded_price == Decimal("20.0")
+        assert pos.snapshot_market_value == Decimal("20000.0")
+
+        # Live figures: this system's own real, current computation.
+        assert pos.live_current_price == Decimal("25.0")
+        assert pos.live_market_value == Decimal("25000.0")
+        assert pos.live_unrealized_gain_loss == Decimal("5000.0")  # 25000 - 20000 total cost
+
+        assert result.total_live_market_value == Decimal("25000.0")
+        assert result.positions_missing_a_live_price == ()
+
+    def test_total_cost_always_sums_real_positions_regardless_of_pricing_gaps(self, db_session):
+        snapshot = store_portfolio_snapshot(db_session, _parsed("NOPRICE.N0000"), source_filename="p.xlsx")
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        assert result.total_cost == Decimal("20000.0")
