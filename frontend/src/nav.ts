@@ -89,9 +89,9 @@ export const NAV_ITEMS: NavItem[] = [
     id: "journal",
     label: "Journal",
     blurb: "Every decision I made and how it turned out",
-    awaitingPhase: "Phase 4",
+    awaitingPhase: null,
     willContain:
-      "Every signal, decision and override, logged with the reasoning as written at the time and the full model state frozen alongside — including the override analysis comparing returns where you went against the composite versus with it. The spec calls this the highest-value screen in the product over a three-year horizon, and it ships early (§45) precisely because every decision made without a recorded rationale is a data point that cannot be recovered later.",
+      "Built: record a real decision — action, reasoning, conviction, \"what would prove me wrong\" — with this system's own real fair value, price ladder and margin-of-safety breakdown frozen at that exact moment, and record a real exit outcome (gross and net return, after §2.1's real transaction cost) against it. Still awaiting later phases: the override analysis (needs the §38 composite score to compare against), and the automatic thesis-drift evaluation of each falsification condition (§42) — both real, named gaps, not silently omitted.",
     group: "primary",
   },
   {

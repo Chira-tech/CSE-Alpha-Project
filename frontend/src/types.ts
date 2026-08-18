@@ -384,6 +384,59 @@ export interface ValuedPortfolio {
   positions_missing_a_live_price: string[];
 }
 
+export type DecisionAction = "buy" | "watchlist" | "pass" | "partial" | "sell" | "trim";
+
+export interface Outcome {
+  id: number;
+  exit_date: string;
+  exit_price: string;
+  exit_trigger: string;
+  gross_return: string;
+  net_return: string;
+  holding_days: number;
+  max_adverse_excursion: string | null;
+  max_favourable_excursion: string | null;
+  attribution_json: Record<string, unknown> | null;
+}
+
+export interface Decision {
+  id: number;
+  ticker: string;
+  timestamp: string;
+  config_hash: string | null;
+  action: DecisionAction;
+  size_pct: string | null;
+  limit_price: string | null;
+  conviction_1_5: number | null;
+  reasoning_text: string;
+  falsification_text: string | null;
+  fundamental_score: string | null;
+  pillar_scores_json: Record<string, unknown> | null;
+  integrity_flags_json: Record<string, unknown> | null;
+  fv_by_method_json: Record<string, string> | null;
+  fv_blended: string | null;
+  dispersion: string | null;
+  mos_components_json: Record<string, unknown> | null;
+  buy_below: string | null;
+  fair_value: string | null;
+  trim_above: string | null;
+  timing_score: string | null;
+  timing_branch: string | null;
+  timing_signals_json: Record<string, unknown> | null;
+  macro_regime: string | null;
+  macro_prob: string | null;
+  sector_fit: string | null;
+  alpha: string | null;
+  alpha_tstat: string | null;
+  betas_json: Record<string, unknown> | null;
+  residual_vol: string | null;
+  market_price_at_decision: string | null;
+  data_completeness_pct: string | null;
+  agreement_score: string | null;
+  override_flag: boolean | null;
+  outcome: Outcome | null;
+}
+
 export interface OpportunityCandidate {
   ticker: string;
   name: string;

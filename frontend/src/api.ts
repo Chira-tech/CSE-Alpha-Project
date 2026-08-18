@@ -3,6 +3,8 @@ import type {
   CompanyValuation,
   CorporateAction,
   DataHealth,
+  Decision,
+  DecisionAction,
   Fundamental,
   IndexHistory,
   MarketOverview,
@@ -140,6 +142,34 @@ export function getSectorSensitivity() {
 
 export function getOpportunityRanking() {
   return request<OpportunityRanking>("/opportunities");
+}
+
+// --- Decisions (§45 journal) ---------------------------------------------
+
+export function listDecisions() {
+  return request<Decision[]>("/decisions");
+}
+
+export function createDecision(body: {
+  ticker: string;
+  action: DecisionAction;
+  reasoning_text: string;
+  size_pct?: string;
+  limit_price?: string;
+  conviction_1_5?: number;
+  falsification_text?: string;
+}) {
+  return request<Decision>("/decisions", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function recordOutcome(
+  decisionId: number,
+  body: { exit_date: string; exit_price: string; exit_trigger: string },
+) {
+  return request<Decision>(`/decisions/${decisionId}/outcomes`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 // --- Portfolio --------------------------------------------------------

@@ -4,6 +4,7 @@ import { NAV_ITEMS, REVIEW_SCREEN, type ScreenId } from "./nav";
 import { CompaniesScreen } from "./screens/CompaniesScreen";
 import { CompanyScreen } from "./screens/CompanyScreen";
 import { DataHealthScreen } from "./screens/DataHealthScreen";
+import { JournalScreen } from "./screens/JournalScreen";
 import { MacroScreen } from "./screens/MacroScreen";
 import { NotBuiltScreen } from "./screens/NotBuiltScreen";
 import { OpportunitiesScreen } from "./screens/OpportunitiesScreen";
@@ -65,6 +66,8 @@ export function App() {
         return <PortfolioScreen />;
       case "opportunities":
         return <OpportunitiesScreen />;
+      case "journal":
+        return <JournalScreen />;
       case "data-health":
         return <DataHealthScreen onOpenReview={() => go("review")} />;
       case "review":
