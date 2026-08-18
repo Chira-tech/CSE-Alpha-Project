@@ -326,6 +326,32 @@ export interface Spread {
   history: SpreadPoint[];
 }
 
+export interface SensitivityEstimate {
+  shock_name: string;
+  coefficient: string;
+  p_value: string;
+  r_squared: string;
+  observation_count: number;
+  significant: boolean;
+  direction_label: string;
+}
+
+export interface SectorSensitivityRow {
+  sector: string;
+  constituent_count: number;
+  estimates: SensitivityEstimate[];
+}
+
+export interface SectorSensitivity {
+  as_of: string;
+  rows: SectorSensitivityRow[];
+  /** `[sector, constituent_count]` pairs — real `cse_sector` assignment,
+   * too few real tickers to estimate from. Named, not silently dropped. */
+  thin_sectors: [string, number][];
+  shocks_used: string[];
+  warnings: string[];
+}
+
 export interface IndexPoint {
   obs_date: string;
   value: string;

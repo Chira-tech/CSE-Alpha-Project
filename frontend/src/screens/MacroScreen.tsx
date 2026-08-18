@@ -1,24 +1,38 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getIndexHistory, getMarketOverview } from "../api";
+import { ApiRequestError, getIndexHistory, getMarketOverview, getSectorSensitivity, getSpread } from "../api";
 import { Delta } from "../components/Delta";
 import { IndexHistoryChart } from "../components/IndexHistoryChart";
-import { ErrorState, PartialNotice, SkeletonTable } from "../components/states";
+import { SectorSensitivityMatrix } from "../components/SectorSensitivityMatrix";
+import { SpreadHero } from "../components/SpreadHero";
+import { ErrorState, PartialNotice, SkeletonCard, SkeletonTable } from "../components/states";
 import { formatIndexValue, formatMagnitude } from "../format";
-import type { IndexHistory, MarketOverview } from "../types";
+import type { IndexHistory, MarketOverview, SectorSensitivity, Spread } from "../types";
 
 /**
  * §7.1 Macro: "the regime, the variables, the project pipeline."
  *
- * The regime classifier, ARDL estimation, sector sensitivity matrix and
- * project register are all Phase 5 (§29–34) and don't exist. What DOES
- * exist and belongs on this screen is the live sector index board — real
- * data, clearly labelled for what it is — plus an honest statement of
- * what the finished screen carries.
+ * Phase 5 (§29–34) is now real on the backend: the §29 hero spread, unit
+ * root / cointegration testing, Johansen/VECM and VAR-in-differences
+ * estimation, impulse-response/FEVD and Toda-Yamamoto causality, an
+ * event study around CBSL policy-rate changes, and the §33 sector
+ * sensitivity matrix. This screen surfaces the two pieces the spec
+ * names as the centre of the layer — the hero spread and the sensitivity
+ * matrix — plus the live sector index board that was already here.
+ *
+ * STILL NOT ON THIS SCREEN: the regime gauge (the classifier exists on
+ * the backend but hasn't been validated against real historical Sri
+ * Lankan regime periods — this system's own real macro series don't yet
+ * span one), the macro variable heatmap, the causality/impulse-response
+ * panels, and the national project register. Named here rather than
+ * silently omitted.
  */
 export function MacroScreen() {
   const [market, setMarket] = useState<MarketOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [index, setIndex] = useState<IndexHistory | null>(null);
+  const [spread, setSpread] = useState<Spread | null>(null);
+  const [sensitivity, setSensitivity] = useState<SectorSensitivity | null>(null);
+  const [sensitivityError, setSensitivityError] = useState<string | null>(null);
 
   useEffect(() => {
     getMarketOverview()
@@ -29,6 +43,12 @@ export function MacroScreen() {
     getIndexHistory()
       .then(setIndex)
       .catch(() => setIndex(null));
+    getSpread()
+      .then(setSpread)
+      .catch(() => setSpread(null));
+    getSectorSensitivity()
+      .then(setSensitivity)
+      .catch((e) => setSensitivityError(e instanceof ApiRequestError ? e.message : String(e)));
   }, []);
 
   // The feed includes the all-share index as a sector row; showing it in
@@ -43,22 +63,38 @@ export function MacroScreen() {
       </header>
 
       <div className="notice notice-neutral">
-        <h3>The macro engine is not built yet — Phase 5</h3>
+        <h3>What's real on this screen, and what's still missing</h3>
         <p className="prose t-body">
           On the CSE this layer is worth more than the other three combined, because Sri Lankan
           equities move as a bloc with the rate cycle far more than on idiosyncratic news (§G). The
-          finished screen carries the regime gauge with its probability, the
-          earnings-yield-minus-364-day-T-bill spread as hero chart, a macro variable heatmap of
-          z-scores, impulse-response panels, the error-correction half-life stated in plain language,
-          the sector sensitivity matrix, and the national project register filtered to confirmed
-          status.
-        </p>
-        <p className="prose t-body">
-          Below is the one piece that exists today: the live S&amp;P/CSE sector index board. It is a
-          passthrough, not an estimated sensitivity — it tells you what each sector did, not what it
-          would do under a rate cut.
+          hero spread and sector sensitivity matrix below are real, live estimates. Still missing:
+          the regime gauge (the classifier itself exists, but hasn't been validated against a real
+          historical Sri Lankan regime — this system's own macro series aren't deep enough yet), a
+          macro variable heatmap, the causality/impulse-response panels, and the national project
+          register.
         </p>
       </div>
+
+      <section aria-labelledby="spread-heading" className="stack-tight">
+        <h2 id="spread-heading">The hero spread (§29)</h2>
+        {spread ? <SpreadHero spread={spread} /> : <SkeletonCard lines={4} />}
+      </section>
+
+      <section aria-labelledby="sensitivity-heading" className="stack-tight">
+        <h2 id="sensitivity-heading">Sector sensitivity matrix (§33)</h2>
+        {sensitivityError ? (
+          <ErrorState
+            whatFailed="The sector sensitivity matrix could not be loaded"
+            whatItAffects="This section only."
+            whatStillWorks="The hero spread and sector index board below both read independently."
+            whatHappensNext={`Underlying error: ${sensitivityError}`}
+          />
+        ) : sensitivity ? (
+          <SectorSensitivityMatrix data={sensitivity} />
+        ) : (
+          <SkeletonTable rows={10} columns={5} />
+        )}
+      </section>
 
       {index && index.points.length > 1 && (
         <section aria-labelledby="aspi-history-heading" className="stack-tight">

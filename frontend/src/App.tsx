@@ -86,7 +86,7 @@ export function App() {
         <nav className="rail" aria-label="Primary">
           <div className="rail-brand">
             <div className="rail-brand-name">CSE Alpha Engine</div>
-            <div className="t-caption">Phase 1 · data spine</div>
+            <div className="t-caption">Backend: Phases 1–6 · UI catching up</div>
           </div>
 
           <div className="rail-search">

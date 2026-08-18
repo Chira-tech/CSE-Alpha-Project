@@ -80,9 +80,9 @@ export const NAV_ITEMS: NavItem[] = [
     id: "macro",
     label: "Macro",
     blurb: "The regime, the variables, the project pipeline",
-    awaitingPhase: "Phase 5",
+    awaitingPhase: null,
     willContain:
-      "The regime gauge with its probability, the earnings-yield-minus-364-day-T-bill spread as the hero chart (§29 — the single most powerful macro variable in this market), the macro variable heatmap, impulse-response panels, the error-correction half-life in plain language, the sector sensitivity matrix and the national project register (§29–34).",
+      "Built: the earnings-yield-minus-364-day-T-bill spread as the hero chart (§29 — the single most powerful macro variable in this market) and the §33 sector sensitivity matrix, both real, live estimates. Still awaiting Phase 5/9: the regime gauge (the classifier exists but hasn't been validated against a real historical Sri Lankan regime yet), a macro variable heatmap, the causality/impulse-response panels, and the national project register.",
     group: "primary",
   },
   {

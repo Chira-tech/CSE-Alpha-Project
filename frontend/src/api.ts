@@ -6,6 +6,7 @@ import type {
   Fundamental,
   IndexHistory,
   MarketOverview,
+  SectorSensitivity,
   SecurityDetail,
   SecurityListItem,
 } from "./types";
@@ -126,4 +127,8 @@ export function getIndexHistory() {
 
 export function getSpread() {
   return request<Spread>("/market/spread");
+}
+
+export function getSectorSensitivity() {
+  return request<SectorSensitivity>("/market/sector-sensitivity");
 }
