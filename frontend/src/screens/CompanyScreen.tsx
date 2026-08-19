@@ -9,6 +9,12 @@ import { EmptyState, ErrorState, QuarantineNotice, SkeletonCard } from "../compo
 import { formatMagnitude, formatPrice, UNAVAILABLE } from "../format";
 import type { CompanyValuation, PricePoint, SecurityDetail } from "../types";
 
+/** Collapsed price-history table shows only the most recent sessions —
+ * a company with a year of daily rows made this table the longest thing
+ * on the page by far. "Show all" reveals the rest without a second
+ * request; `data.price_history` is already fully loaded. */
+const PRICE_ROWS_COLLAPSED = 5;
+
 const ACTION_LABELS: Record<string, string> = {
   dividend_cash: "Cash dividend",
   bonus_issue: "Bonus issue",
@@ -34,10 +40,12 @@ export function CompanyScreen({
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [valuation, setValuation] = useState<CompanyValuation | null>(null);
   const [valuationError, setValuationError] = useState<string | null>(null);
+  const [showAllPrices, setShowAllPrices] = useState(false);
 
   useEffect(() => {
     setData(null);
     setError(null);
+    setShowAllPrices(false);
     getSecurity(ticker)
       .then(setData)
       .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
@@ -238,42 +246,63 @@ export function CompanyScreen({
         ) : (
           <>
             <PriceHistoryChart history={data.price_history} />
-            <div className="table-wrap table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th scope="col">Date</th>
-                  <th scope="col" className="right">Open</th>
-                  <th scope="col" className="right">High</th>
-                  <th scope="col" className="right">Low</th>
-                  <th scope="col" className="right">Close</th>
-                  <th scope="col" className="right">Volume</th>
-                  <th scope="col" className="right">Adj. factor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...data.price_history].reverse().map((p) => (
-                  <tr key={p.date}>
-                    <th scope="row" className="num" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
-                      {p.date}
-                    </th>
-                    <td className="right num">{formatPrice(p.open)}</td>
-                    <td className="right num">{formatPrice(p.high)}</td>
-                    <td className="right num">{formatPrice(p.low)}</td>
-                    <td className="right num">{formatPrice(p.close)}</td>
-                    <td className="right num">
-                      {p.volume === null ? (
-                        <span className="unavailable">{UNAVAILABLE}</span>
-                      ) : (
-                        p.volume.toLocaleString("en-LK")
-                      )}
-                    </td>
-                    <td className="right num">{Number(p.adj_factor).toFixed(6)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </div>
+            {(() => {
+              const pricesDescending = [...data.price_history].reverse();
+              const visiblePrices = showAllPrices
+                ? pricesDescending
+                : pricesDescending.slice(0, PRICE_ROWS_COLLAPSED);
+              return (
+                <>
+                  <div className="table-wrap table-scroll">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Date</th>
+                        <th scope="col" className="right">Open</th>
+                        <th scope="col" className="right">High</th>
+                        <th scope="col" className="right">Low</th>
+                        <th scope="col" className="right">Close</th>
+                        <th scope="col" className="right">Volume</th>
+                        <th scope="col" className="right">Adj. factor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visiblePrices.map((p) => (
+                        <tr key={p.date}>
+                          <th scope="row" className="num" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
+                            {p.date}
+                          </th>
+                          <td className="right num">{formatPrice(p.open)}</td>
+                          <td className="right num">{formatPrice(p.high)}</td>
+                          <td className="right num">{formatPrice(p.low)}</td>
+                          <td className="right num">{formatPrice(p.close)}</td>
+                          <td className="right num">
+                            {p.volume === null ? (
+                              <span className="unavailable">{UNAVAILABLE}</span>
+                            ) : (
+                              p.volume.toLocaleString("en-LK")
+                            )}
+                          </td>
+                          <td className="right num">{Number(p.adj_factor).toFixed(6)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  </div>
+                  {pricesDescending.length > PRICE_ROWS_COLLAPSED && (
+                    <button
+                      className="btn-link"
+                      onClick={() => setShowAllPrices((v) => !v)}
+                      aria-expanded={showAllPrices}
+                    >
+                      {showAllPrices
+                        ? "Show fewer sessions ▲"
+                        : `Show all ${pricesDescending.length} sessions ▾`}
+                    </button>
+                  )}
+                </>
+              );
+            })()}
           </>
         )}
       </section>
