@@ -11,13 +11,24 @@ company, its full history — which is exactly PARAMETERS.md #2's "backfill
 target 2015-01-01" and the trend-detection engine's "most tickers have
 one period" gap in one place.
 
-VERIFIED DEPTH, AND ITS REAL LIMIT. COMB.N0000: 16 annual reports and 59
-quarterly filings, catalogued back to 2012. But only files from
-~2019 onward actually download — every 2018-and-earlier file 403s from
-the CDN despite being listed, confirmed by checking all 16 annual reports
-individually. The catalogue is more complete than the CDN; this loader
-therefore treats a 403 as an expected, counted outcome, not a failure
-that should look like a bug.
+VERIFIED DEPTH — AND A REAL FIX TO WHAT WAS ONCE RECORDED HERE AS A
+LIMIT. COMB.N0000: 16 annual reports and 59 quarterly filings,
+catalogued back to 2012. Every 2018-and-earlier file's CATALOGUED path
+403s from the CDN — that part of the earlier investigation
+(README_ENDPOINTS.md's own "the catalogue is more complete than the
+CDN") was real. But the file itself is NOT gone: the CDN relocated
+every uploaded report under a `cmt/` prefix at some point, and
+`/api/financials`'s own `path` field for filings older than that move
+was simply never updated to match — the SAME file id 200s the moment
+`cmt/` is inserted. Confirmed live against all three of COMB's own
+oldest annual reports (2012-2014, the exact ones the earlier
+investigation checked and concluded were permanently unavailable) and
+8 of AAF.N0000's, 8 for 8. `_resolve_download_url` below normalizes
+every catalogued path to its `cmt/`-prefixed form before ever
+requesting it, with the literal catalogued path tried second as a
+defensive fallback in case some filing genuinely isn't reachable either
+way — not assumed impossible, just not what any real case tried so far
+has shown.
 
 POINT-IN-TIME: `uploadedDate` IS TRUSTED, and here is the evidence, not
 an assumption. Every one of 60 real (period_end, uploadedDate) pairs for
@@ -127,6 +138,19 @@ def _already_ingested_by_source(db: Session, ticker: str, source_url: str) -> bo
     return existing_log_entry is not None
 
 
+def _resolve_download_url(path: str) -> tuple[str, str | None]:
+    """Returns (primary_url, fallback_url). `path` (from `/api/financials`)
+    is normalized to its `cmt/`-prefixed form first — see this module's
+    own docstring for the live evidence that this is where the file
+    actually lives, catalogue metadata notwithstanding — with the
+    literal, un-normalized path as a second try if that somehow still
+    403s. A path already carrying `cmt/` (every recent filing) has
+    nothing to normalize, so there is no second URL to try."""
+    if path.startswith("cmt/"):
+        return _CDN_BASE_URL + path, None
+    return _CDN_BASE_URL + "cmt/" + path, _CDN_BASE_URL + path
+
+
 def _next_version(db: Session, ticker: str, period_end: dt.date, period_type: str) -> int:
     """1 for a period's first filing; N+1 if N distinct source PDFs have
     already been ingested for this (ticker, period_end, period_type) —
@@ -153,10 +177,14 @@ def ingest_archived_report(
     period_type: str,
 ) -> int:
     """One archived filing -> zero or more draft `Fundamental` rows.
-    Returns the count inserted. A 403 from the CDN (confirmed live: every
-    2018-and-earlier COMB.N0000 filing) is caught and counted, not raised
-    — the catalogue listing a file does not mean the file is retrievable,
-    and one unavailable filing must not abort the rest of a company's
+    Returns the count inserted. The `cmt/`-normalized URL (see this
+    module's own docstring) resolves every filing this session has
+    actually tried, including the 2018-and-earlier COMB.N0000 ones once
+    recorded here as permanently gone — but a still-403ing filing after
+    BOTH the normalized and literal catalogue URL are tried is caught and
+    counted, not raised, because the catalogue listing a file is real
+    evidence it once existed even when neither URL still serves it, and
+    one unavailable filing must not abort the rest of a company's
     archive.
 
     A GENUINE, UNFIXABLE REAL LIMITATION, NAMED PRECISELY RATHER THAN
@@ -191,18 +219,36 @@ def ingest_archived_report(
         )
         return 0
 
-    source_url = _CDN_BASE_URL + report.path
+    source_url, fallback_url = _resolve_download_url(report.path)
     if _already_ingested_by_source(db, ticker, source_url):
+        return 0
+    if fallback_url is not None and _already_ingested_by_source(db, ticker, fallback_url):
+        # A row from before this fix, filed under the old (un-normalized,
+        # 403-ing) URL — only reachable here for a filing whose catalogue
+        # path already lacked cmt/ AND which somehow still succeeded
+        # under the literal path (the defensive fallback below actually
+        # working). Recognised as done rather than reprocessed.
         return 0
 
     try:
         pdf_bytes = download_pdf(source_url, user_agent=settings.cse_user_agent)
     except httpx.HTTPStatusError as exc:
-        logger.info(
-            "archived report unavailable (status %s) for %s, id=%s: %s",
-            exc.response.status_code, ticker, report.id, source_url,
-        )
-        raise
+        if fallback_url is None:
+            logger.info(
+                "archived report unavailable (status %s) for %s, id=%s: %s",
+                exc.response.status_code, ticker, report.id, source_url,
+            )
+            raise
+        try:
+            pdf_bytes = download_pdf(fallback_url, user_agent=settings.cse_user_agent)
+            source_url = fallback_url
+        except httpx.HTTPStatusError as fallback_exc:
+            logger.info(
+                "archived report unavailable for %s, id=%s: %s (%s) and its fallback %s (%s)",
+                ticker, report.id, source_url, exc.response.status_code,
+                fallback_url, fallback_exc.response.status_code,
+            )
+            raise fallback_exc from exc
 
     candidates = extract_financial_statement_candidates(pdf_bytes)
 

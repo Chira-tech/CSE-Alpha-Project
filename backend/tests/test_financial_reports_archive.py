@@ -16,6 +16,7 @@ import pytest
 from app.ingestion.financial_reports_archive_loader import (
     _already_ingested_by_source,
     _next_version,
+    _resolve_download_url,
     ingest_archived_report,
     ingest_report_archive_for_ticker,
     resolve_first_available_date,
@@ -189,7 +190,10 @@ class TestZeroDraftFilingsAreRecordedAsIngested:
         assert db.query(Fundamental).filter_by(ticker=TICKER).count() == 0
 
         log_entry = db.query(IngestedFilingLog).filter_by(ticker=TICKER).one()
-        assert log_entry.source_url == "https://cdn.cse.lk/scanned.pdf"
+        # cmt/-normalized (see _resolve_download_url) — "scanned.pdf"
+        # doesn't itself carry cmt/, so it's added before the file is
+        # ever requested.
+        assert log_entry.source_url == "https://cdn.cse.lk/cmt/scanned.pdf"
         assert log_entry.drafted_count == 0
         assert log_entry.period_type == "quarterly"
 
@@ -320,3 +324,67 @@ class TestUnavailableFilesAreCountedNotFatal:
         )
         with pytest.raises(httpx.HTTPStatusError):
             ingest_archived_report(None, db_session, TICKER, report, period_type="annual")
+
+
+class TestCmtUrlNormalization:
+    """Real bug, found live: `/api/financials`'s own `path` for every
+    filing older than some CDN reorganization still points at the
+    pre-move location and 403s, but the SAME file id 200s the instant
+    `cmt/` is inserted — confirmed against all 8 of COMB.N0000's real
+    pre-2019 annual reports and 8 of AAF.N0000's, 16 for 16. This used
+    to be recorded (README_ENDPOINTS.md, this module's own docstring) as
+    a genuine, permanent CDN gap; it wasn't."""
+
+    def test_a_path_without_cmt_is_normalized_with_the_literal_path_as_fallback(self):
+        primary, fallback = _resolve_download_url("upload_report_file/369_1372043496.pdf")
+        assert primary == "https://cdn.cse.lk/cmt/upload_report_file/369_1372043496.pdf"
+        assert fallback == "https://cdn.cse.lk/upload_report_file/369_1372043496.pdf"
+
+    def test_a_path_already_carrying_cmt_has_no_fallback_to_try(self):
+        primary, fallback = _resolve_download_url("cmt/upload_report_file/369_1773048532050.pdf")
+        assert primary == "https://cdn.cse.lk/cmt/upload_report_file/369_1773048532050.pdf"
+        assert fallback is None
+
+    def test_a_403_on_the_normalized_url_falls_back_to_the_literal_path_and_succeeds(
+        self, db_session, monkeypatch
+    ):
+        """The mechanism, proven independent of which URL shape reality
+        happens to favour: if the FIRST attempt 403s, the second is
+        actually tried, and a real draft lands from whichever one
+        works."""
+        from app.domain.financial_statement_parsing import ExtractedLine
+
+        db_session.add(Security(ticker=TICKER, name="COMMERCIAL BANK", issuer_code="COMB"))
+        db_session.commit()
+
+        def fake_download(url, *, user_agent, timeout=60.0):
+            if "/cmt/" in url:
+                raise httpx.HTTPStatusError(
+                    "403", request=httpx.Request("GET", url),
+                    response=httpx.Response(403, request=httpx.Request("GET", url)),
+                )
+            return b"%PDF-1.4 fake"
+
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf", fake_download
+        )
+        line = ExtractedLine(
+            raw_label="Total Assets", statement_line="total_assets",
+            values=(Decimal("100"),), raw_text="Total Assets 100",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(1, line)],
+        )
+        report = CompanyArchiveReportFile(
+            id=1, path="upload_report_file/369_1372043496.pdf",
+            manualDate=1356819000000, uploadedDate=1362614400000,
+        )
+
+        inserted = ingest_archived_report(None, db_session, TICKER, report, period_type="annual")
+
+        assert inserted == 1
+        row = db_session.query(Fundamental).filter_by(ticker=TICKER).one()
+        # Recorded against the URL that actually served the file, not
+        # the dead one — provenance should point somewhere real.
+        assert row.source_url == "https://cdn.cse.lk/upload_report_file/369_1372043496.pdf"

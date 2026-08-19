@@ -376,12 +376,21 @@ it:
   (38-92 days) tracking its own period — a bulk 2019-migration backfill
   would instead show every old row stamped with one shared date, and it
   doesn't.
-- **The catalogue is more complete than the CDN.** Every COMB.N0000
-  annual report from 2018 and earlier is listed here but returns HTTP
-  403 from `cdn.cse.lk` on download — checked individually, all 8 of
-  them. 2019 onward downloads cleanly. Treat "listed" and "retrievable"
-  as two different facts; `financial_reports_archive_loader.py` counts
-  them separately rather than treating a 403 as a bug.
+- **CORRECTED, a session later: the "2018-and-earlier 403s" finding
+  above was a stale-`path` bug, not a genuinely missing file.** Every
+  COMB.N0000 annual report from 2018 and earlier 403s from `cdn.cse.lk`
+  on the LITERAL path this endpoint returns — that much was real,
+  checked individually, all 8 of them. But the file isn't gone: `cdn.
+  cse.lk` relocated every uploaded report under a `cmt/` prefix at some
+  point, and this endpoint's own `path` field for filings older than
+  that move was simply never updated to match. The same file id 200s
+  the instant `cmt/` is inserted — reverified live against those exact
+  8 COMB filings plus 8 more for a second ticker (AAF.N0000), 16 for
+  16. `financial_reports_archive_loader.py` now normalizes every
+  catalogued `path` to its `cmt/`-prefixed form before requesting it
+  (literal path as a defensive second try, in case some filing really
+  is gone), rather than counting a 403 on the raw path as the file's
+  final word.
 
 Consumed by `app.ingestion.financial_reports_archive_loader`.
 
