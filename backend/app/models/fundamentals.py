@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -32,6 +32,14 @@ class Fundamental(Base):
     """
 
     __tablename__ = "fundamentals"
+    __table_args__ = (
+        Index("ix_fundamentals_ticker", "ticker"),
+        # (ticker, first_available_date): the point-in-time query shape
+        # every caller is supposed to use (§6 — always filter on
+        # first_available_date <= t, never period_end <= t).
+        Index("ix_fundamentals_ticker_first_available", "ticker", "first_available_date"),
+        Index("ix_fundamentals_ticker_source_url", "ticker", "source_url"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String(20), ForeignKey("securities.ticker"), nullable=False)
