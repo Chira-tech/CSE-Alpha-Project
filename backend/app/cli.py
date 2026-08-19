@@ -270,6 +270,17 @@ def cmd_backfill_financials(args: argparse.Namespace) -> int:
         tickers = [t for (t,) in db.execute(select(Security.ticker).order_by(Security.ticker)).all()]
         if args.ticker:
             tickers = [t for t in tickers if t in set(args.ticker)]
+        if args.after:
+            # A real, measured inefficiency, not a hypothetical one: this
+            # command is idempotent, so a KILLED/resumed run always
+            # RE-VERIFIES every already-processed ticker alphabetically
+            # before reaching new ground — cheap per ticker (one archive
+            # listing request) but linear in how many tickers are already
+            # done, so it keeps eating a growing share of each restart's
+            # own time budget the further the backfill progresses.
+            # --after skips that re-verification outright by starting the
+            # ticker list past a known-done point.
+            tickers = [t for t in tickers if t > args.after]
         if args.limit:
             tickers = tickers[: args.limit]
         if not tickers:
@@ -562,6 +573,14 @@ def main(argv: list[str] | None = None) -> int:
             "only the N most recent annual and N most recent quarterly filings per "
             "ticker (breadth-first: reaches every ticker's current period quickly "
             "instead of one company's full history at a time). Omit for full depth."
+        ),
+    )
+    p_bf.add_argument(
+        "--after", type=str, default=None,
+        help=(
+            "skip straight to tickers alphabetically after this one — for resuming "
+            "an interrupted run without re-verifying everything already done "
+            "(idempotency still applies even without this; it's purely a speed-up)."
         ),
     )
     p_bf.set_defaults(func=cmd_backfill_financials)
