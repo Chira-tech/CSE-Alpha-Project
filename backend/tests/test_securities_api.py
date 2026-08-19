@@ -189,3 +189,57 @@ def test_detail_never_exposes_a_score_or_fair_value(db_session, client):
 
 def test_detail_unknown_ticker_404s(client):
     assert client.get("/securities/NOPE.X0000").status_code == 404
+
+
+def _seed_seven_days_of_jkh(db_session):
+    """Seven daily rows so a 5-per-page default leaves a real second page,
+    without seeding anywhere near a real year of history."""
+    if db_session.get(Security, "JKH.N0000") is None:
+        db_session.add(Security(ticker="JKH.N0000", name="JOHN KEELLS HOLDINGS PLC"))
+    db_session.add_all(
+        [
+            PriceDaily(
+                ticker="JKH.N0000",
+                date=dt.date(2026, 8, 3) + dt.timedelta(days=i),
+                close=Decimal("10.00") + i,
+                fetched_at=NOW,
+            )
+            for i in range(7)
+        ]
+    )
+    db_session.commit()
+
+
+def test_prices_endpoint_defaults_to_five_most_recent_descending(db_session, client):
+    _seed_seven_days_of_jkh(db_session)
+    page = client.get("/securities/JKH.N0000/prices").json()
+    assert page["limit"] == 5
+    assert page["offset"] == 0
+    assert page["total"] == 7
+    assert len(page["items"]) == 5
+    assert [p["date"] for p in page["items"]] == [
+        "2026-08-09", "2026-08-08", "2026-08-07", "2026-08-06", "2026-08-05",
+    ]
+
+
+def test_prices_endpoint_second_page_via_limit_and_offset(db_session, client):
+    _seed_seven_days_of_jkh(db_session)
+    page = client.get("/securities/JKH.N0000/prices", params={"limit": 5, "offset": 5}).json()
+    assert page["total"] == 7
+    assert [p["date"] for p in page["items"]] == ["2026-08-04", "2026-08-03"]
+
+
+def test_prices_endpoint_page_size_options(db_session, client):
+    _seed_seven_days_of_jkh(db_session)
+    page = client.get("/securities/JKH.N0000/prices", params={"limit": 25}).json()
+    assert page["total"] == 7
+    assert len(page["items"]) == 7  # fewer rows exist than the page size
+
+
+def test_prices_endpoint_rejects_page_sizes_outside_the_ui_options(client):
+    assert client.get("/securities/JKH.N0000/prices", params={"limit": 51}).status_code == 422
+    assert client.get("/securities/JKH.N0000/prices", params={"limit": 0}).status_code == 422
+
+
+def test_prices_endpoint_unknown_ticker_404s(client):
+    assert client.get("/securities/NOPE.X0000/prices").status_code == 404

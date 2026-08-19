@@ -90,6 +90,22 @@ class PricePoint(BaseModel):
     adj_factor: Decimal
 
 
+class PriceHistoryPage(BaseModel):
+    """One page of a ticker's daily price rows, most-recent-first. Backs
+    the company file's price-history table (a separate concern from
+    `SecurityDetail.price_history`, which stays oldest-first and fully
+    loaded up to its own cap for the chart above the table) — that table
+    can be a year-plus of daily rows, so it is paged with SQL LIMIT/OFFSET
+    rather than shipping every row and slicing client-side."""
+
+    items: list[PricePoint]
+    total: int
+    """Total sessions stored for this ticker, independent of `limit` —
+    lets the UI show "1-5 of 241" and disable Next past the last page."""
+    limit: int
+    offset: int
+
+
 class CorporateActionSummary(BaseModel):
     id: int
     ex_date: dt.date
@@ -309,6 +325,55 @@ def _quarantined_set(db: Session) -> set[str]:
         select(DataAlert.ticker).where(DataAlert.resolved.is_(False)).distinct()
     ).all()
     return {t for (t,) in rows}
+
+
+@router.get("/{ticker}/prices", response_model=PriceHistoryPage)
+def get_security_prices(
+    ticker: str,
+    limit: int = Query(5, ge=1, le=50, description="page size — the UI offers 5/10/25/50"),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> PriceHistoryPage:
+    """Paged, most-recent-first, for the company file's price-history
+    table. `total` comes from a separate `COUNT(*)`, and rows come from a
+    single `LIMIT/OFFSET` query — a ticker with a year-plus of daily rows
+    never has more than `limit` of them loaded from the database for one
+    request, unlike `SecurityDetail.price_history` above (capped at 400,
+    all loaded at once, and kept only to feed the chart)."""
+    if db.get(Security, ticker) is None:
+        raise HTTPException(status_code=404, detail=f"unknown ticker {ticker!r}")
+
+    total = (
+        db.scalar(select(func.count()).select_from(PriceDaily).where(PriceDaily.ticker == ticker))
+        or 0
+    )
+
+    rows = db.scalars(
+        select(PriceDaily)
+        .where(PriceDaily.ticker == ticker)
+        .order_by(PriceDaily.date.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    return PriceHistoryPage(
+        items=[
+            PricePoint(
+                date=p.date,
+                close=p.close,
+                open=p.open,
+                high=p.high,
+                low=p.low,
+                volume=p.volume,
+                turnover=p.turnover,
+                adj_factor=p.adj_factor,
+            )
+            for p in rows
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{ticker}", response_model=SecurityDetail)

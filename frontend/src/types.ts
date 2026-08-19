@@ -54,6 +54,27 @@ export interface Fundamental {
   confirmed_at: string | null;
 }
 
+/** One page of the confirm queue, most-recent-period-first — backs the
+ * Fundamentals tab's own table. Paged with SQL LIMIT/OFFSET server-side
+ * (mirrors `PriceHistoryPage`), not the whole queue shipped and sliced
+ * client-side — a real backfill grew this queue past 11,000 rows. */
+export interface FundamentalsPage {
+  items: Fundamental[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ConfirmBatchFailure {
+  id: number;
+  reason: string;
+}
+
+export interface ConfirmBatchResult {
+  confirmed: number[];
+  failed: ConfirmBatchFailure[];
+}
+
 export interface IndexSnapshot {
   value: number | null;
   change: number | null;
@@ -111,6 +132,16 @@ export interface PricePoint {
   volume: number | null;
   turnover: string | null;
   adj_factor: string;
+}
+
+/** One page of `GET /securities/{ticker}/prices`, most-recent-first —
+ * backs the company file's price-history table, paged server-side with
+ * limit/offset rather than sliced from a fully-loaded array. */
+export interface PriceHistoryPage {
+  items: PricePoint[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface CorporateActionSummary {

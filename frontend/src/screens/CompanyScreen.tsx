@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getSecurity, getValuation } from "../api";
+import { ApiRequestError, getSecurity, getSecurityPrices, getValuation } from "../api";
 import { EvidencePanel, type Evidence } from "../components/EvidencePanel";
 import { PriceHistoryChart } from "../components/PriceHistoryChart";
 import { PriceLadder } from "../components/PriceLadder";
@@ -7,13 +7,15 @@ import { ProvenanceChip } from "../components/ProvenanceChip";
 import { RatioTable } from "../components/RatioTable";
 import { EmptyState, ErrorState, QuarantineNotice, SkeletonCard } from "../components/states";
 import { formatMagnitude, formatPrice, UNAVAILABLE } from "../format";
-import type { CompanyValuation, PricePoint, SecurityDetail } from "../types";
+import type { CompanyValuation, PriceHistoryPage, PricePoint, SecurityDetail } from "../types";
 
-/** Collapsed price-history table shows only the most recent sessions —
- * a company with a year of daily rows made this table the longest thing
- * on the page by far. "Show all" reveals the rest without a second
- * request; `data.price_history` is already fully loaded. */
-const PRICE_ROWS_COLLAPSED = 5;
+/** The price-history table is paged server-side (`GET
+ * /securities/{ticker}/prices`, SQL limit/offset) rather than loading a
+ * year-plus of daily rows and slicing client-side — a company with a
+ * year of daily rows would otherwise make this the single largest
+ * response on the page for a table showing five rows at a time. */
+const PRICE_PAGE_SIZE_OPTIONS = [5, 10, 25, 50] as const;
+const DEFAULT_PRICE_PAGE_SIZE = 5;
 
 const ACTION_LABELS: Record<string, string> = {
   dividend_cash: "Cash dividend",
@@ -40,16 +42,45 @@ export function CompanyScreen({
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [valuation, setValuation] = useState<CompanyValuation | null>(null);
   const [valuationError, setValuationError] = useState<string | null>(null);
-  const [showAllPrices, setShowAllPrices] = useState(false);
+  const [pricePage, setPricePage] = useState<PriceHistoryPage | null>(null);
+  const [priceError, setPriceError] = useState<string | null>(null);
+  const [pricePageSize, setPricePageSize] = useState<number>(DEFAULT_PRICE_PAGE_SIZE);
+  const [priceOffset, setPriceOffset] = useState(0);
 
   useEffect(() => {
     setData(null);
     setError(null);
-    setShowAllPrices(false);
+    setPricePageSize(DEFAULT_PRICE_PAGE_SIZE);
+    setPriceOffset(0);
     getSecurity(ticker)
       .then(setData)
       .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
   }, [ticker]);
+
+  // Independent of the company file fetch above — a new page or page size
+  // only needs the one paged request, not the whole file reloaded.
+  useEffect(() => {
+    setPricePage(null);
+    setPriceError(null);
+    getSecurityPrices(ticker, pricePageSize, priceOffset)
+      .then(setPricePage)
+      .catch((e) => setPriceError(e instanceof ApiRequestError ? e.message : String(e)));
+  }, [ticker, pricePageSize, priceOffset]);
+
+  function changePricePageSize(size: number) {
+    setPricePageSize(size);
+    setPriceOffset(0); // a new page size starts back at the most recent page
+  }
+
+  function goToPreviousPricePage() {
+    setPriceOffset((offset) => Math.max(0, offset - pricePageSize));
+  }
+
+  function goToNextPricePage() {
+    setPriceOffset((offset) =>
+      pricePage && offset + pricePageSize < pricePage.total ? offset + pricePageSize : offset,
+    );
+  }
 
   // Fetched independently of the company file itself (§15.1's per-section
   // degradation: a valuation failure shouldn't take the rest of the page
@@ -233,7 +264,8 @@ export function CompanyScreen({
         <h2 id="prices-heading">
           Price history{" "}
           <span className="t-caption">
-            ({data.price_history.length} session{data.price_history.length === 1 ? "" : "s"} stored)
+            ({(pricePage?.total ?? data.price_history.length).toLocaleString("en-LK")} session
+            {(pricePage?.total ?? data.price_history.length) === 1 ? "" : "s"} stored)
           </span>
         </h2>
         {data.price_history.length === 0 ? (
@@ -246,14 +278,18 @@ export function CompanyScreen({
         ) : (
           <>
             <PriceHistoryChart history={data.price_history} />
-            {(() => {
-              const pricesDescending = [...data.price_history].reverse();
-              const visiblePrices = showAllPrices
-                ? pricesDescending
-                : pricesDescending.slice(0, PRICE_ROWS_COLLAPSED);
-              return (
-                <>
-                  <div className="table-wrap table-scroll">
+            {priceError ? (
+              <ErrorState
+                whatFailed="The price-history table could not be loaded"
+                whatItAffects="This table only — the chart above uses a separate request."
+                whatStillWorks="Everything else on this page."
+                whatHappensNext={<>Reload to try again. Underlying error: {priceError}</>}
+              />
+            ) : !pricePage ? (
+              <SkeletonCard lines={5} />
+            ) : (
+              <>
+                <div className="table-wrap table-scroll">
                   <table className="data-table">
                     <thead>
                       <tr>
@@ -267,7 +303,7 @@ export function CompanyScreen({
                       </tr>
                     </thead>
                     <tbody>
-                      {visiblePrices.map((p) => (
+                      {pricePage.items.map((p) => (
                         <tr key={p.date}>
                           <th scope="row" className="num" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
                             {p.date}
@@ -288,21 +324,54 @@ export function CompanyScreen({
                       ))}
                     </tbody>
                   </table>
-                  </div>
-                  {pricesDescending.length > PRICE_ROWS_COLLAPSED && (
-                    <button
-                      className="btn-link"
-                      onClick={() => setShowAllPrices((v) => !v)}
-                      aria-expanded={showAllPrices}
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "var(--s3)",
+                    marginTop: "var(--s3)",
+                  }}
+                >
+                  <label className="t-caption" style={{ display: "flex", alignItems: "center", gap: "var(--s2)" }}>
+                    Show
+                    <select
+                      value={pricePageSize}
+                      onChange={(e) => changePricePageSize(Number(e.target.value))}
+                      style={{ width: "auto" }}
+                      aria-label="Sessions per page"
                     >
-                      {showAllPrices
-                        ? "Show fewer sessions ▲"
-                        : `Show all ${pricesDescending.length} sessions ▾`}
+                      {PRICE_PAGE_SIZE_OPTIONS.map((size) => (
+                        <option key={size} value={size}>
+                          {size}
+                        </option>
+                      ))}
+                    </select>
+                    per page
+                  </label>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--s3)" }}>
+                    <span className="t-caption num">
+                      {pricePage.total === 0
+                        ? "0 of 0"
+                        : `${pricePage.offset + 1}–${pricePage.offset + pricePage.items.length} of ${pricePage.total}`}
+                    </span>
+                    <button onClick={goToPreviousPricePage} disabled={pricePage.offset === 0}>
+                      ← Previous
                     </button>
-                  )}
-                </>
-              );
-            })()}
+                    <button
+                      onClick={goToNextPricePage}
+                      disabled={pricePage.offset + pricePage.items.length >= pricePage.total}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </>
         )}
       </section>

@@ -1,11 +1,13 @@
 import type {
   Spread,
   CompanyValuation,
+  ConfirmBatchResult,
   CorporateAction,
   DataHealth,
   Decision,
   DecisionAction,
   Fundamental,
+  FundamentalsPage,
   IndexHistory,
   JobKey,
   JobRun,
@@ -13,6 +15,7 @@ import type {
   MarketOverview,
   OpportunityRanking,
   PortfolioSnapshotDetail,
+  PriceHistoryPage,
   SectorSensitivity,
   SecurityDetail,
   SecurityListItem,
@@ -76,6 +79,14 @@ export function getSecurity(ticker: string) {
   return request<SecurityDetail>(`/securities/${encodeURIComponent(ticker)}`);
 }
 
+/** Paged, most-recent-first — backs the company file's price-history
+ * table. The backend does the paging with SQL limit/offset, so a page
+ * request only ever loads `limit` rows, never the full history. */
+export function getSecurityPrices(ticker: string, limit: number, offset: number) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return request<PriceHistoryPage>(`/securities/${encodeURIComponent(ticker)}/prices?${params}`);
+}
+
 export function getDataHealth() {
   return request<DataHealth>("/data-health");
 }
@@ -119,11 +130,18 @@ export function rejectCorporateAction(id: number, actor: string) {
 
 // --- Fundamentals ---------------------------------------------------------
 
-export function listFundamentals(opts: { pendingOnly?: boolean; ticker?: string } = {}) {
+/** Paged — the Fundamentals tab defaults to 20/page, Previous/Next, not
+ * the whole queue loaded and sliced client-side (mirrors
+ * `getSecurityPrices`'s own real reason for existing). */
+export function listFundamentals(
+  opts: { pendingOnly?: boolean; ticker?: string; limit?: number; offset?: number } = {},
+) {
   const params = new URLSearchParams();
   if (opts.pendingOnly !== undefined) params.set("pending_only", String(opts.pendingOnly));
   if (opts.ticker) params.set("ticker", opts.ticker);
-  return request<Fundamental[]>(`/fundamentals?${params}`);
+  params.set("limit", String(opts.limit ?? 20));
+  params.set("offset", String(opts.offset ?? 0));
+  return request<FundamentalsPage>(`/fundamentals?${params}`);
 }
 
 export function confirmFundamental(id: number, actor: string, correctedValue?: string) {
@@ -133,6 +151,17 @@ export function confirmFundamental(id: number, actor: string, correctedValue?: s
       actor,
       correction: correctedValue ? { value: correctedValue } : null,
     }),
+  });
+}
+
+/** "Select all, confirm multiples" — never carries a per-row correction;
+ * a reviewer who needs to fix a value first uses the single-row Confirm,
+ * which still supports that. One bad id doesn't fail the rest of the
+ * batch — see `ConfirmBatchResult`'s own fields. */
+export function confirmFundamentalsBatch(ids: number[], actor: string) {
+  return request<ConfirmBatchResult>("/fundamentals/confirm-batch", {
+    method: "POST",
+    body: JSON.stringify({ actor, ids }),
   });
 }
 

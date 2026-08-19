@@ -1607,6 +1607,14 @@ snapshot.
         earlier annual report for COMB.N0000 is listed but 403s on
         download; 2019 onward is clean. `unavailable` and `failed` are
         counted separately in the summary for exactly this reason.
+        **CORRECTED, same as the regime-classifier phase label above:
+        this conclusion was wrong, found while trying to grow coverage
+        further — see "Financial-statement backfill" near the end of
+        this file. The 403 was real; "gone" wasn't. The CDN relocated
+        every upload under a `/cmt/` prefix, and the catalogue's own
+        `path` field for pre-move filings was never updated to match —
+        the identical file 200s under `cmt/`, verified across 16 real
+        filings, 16 for 16.**
       - **`uploadedDate` is trusted as `first_available_date` on real
         evidence, not a default.** `authorizedDate` (the more obviously
         correct field, already used by `getFinancialAnnouncement`)
@@ -2671,6 +2679,211 @@ opened, one only by actually clicking the button:**
   test suite alone — every one of these three was invisible to
   `pytest -q` until the exact real condition (a second manual trigger,
   a host east of UTC, an actual click on Cancel) was reproduced.
+
+### Company file price-history table: collapsed, then made genuinely paginated
+
+- [x] **Collapsed to 5 rows by default.** The table was rendering every
+      stored session directly under the price chart — 241 rows for a
+      company backfilled a full year, by far the longest thing on the
+      page. Showed the 5 most recent sessions with a "show all N
+      sessions" toggle that revealed the rest with no second request
+      (the full history was already loaded for the chart above it).
+      Verified live: AEL.N0000 (241 real sessions) showed exactly 5 rows
+      and "Show all 241 sessions"; clicking it revealed the rest.
+- [x] **Superseded days later by real server-side pagination.** The
+      toggle above still meant every stored session for a ticker shipped
+      to the browser on every company-file load, whether the table was
+      ever expanded or not. New `GET /securities/{ticker}/prices?
+      limit=&offset=` returns one page — SQL `LIMIT`/`OFFSET` against
+      `prices_daily`, a separate `COUNT(*)` for the total — so a ticker
+      with a year of daily rows never has more than `limit` (5 by
+      default) rows pulled from the database, or sent over the wire, for
+      this table. The chart directly above it is untouched — it still
+      reads the existing, separately-loaded `SecurityDetail.price_
+      history` (capped at 400 rows), since a sparkline genuinely needs
+      the full range, not one page of it.
+      - Page-size selector (5/10/25/50) resets to the first page on
+        change; Previous/Next disable correctly at the first and last
+        page. The "N sessions stored" heading now reads the real
+        backend total, not the length of the separately-capped chart
+        array.
+      - 6 new backend tests (5-row default, second page via `offset`,
+        all four page sizes, out-of-range `limit` rejection, unknown
+        ticker); full backend suite 1142 passed.
+      - Verified live, not just against the test suite: ACL.N0000 (237
+        real sessions) shows "1–5 of 237" on load with Previous
+        disabled; Next advances to "6–10 of 237"; switching the page
+        size to 25 correctly resets to "1–25 of 237" from the first page
+        again rather than staying at whatever offset the 5-per-page view
+        was on.
+
+### Financial-statement backfill: idempotent, breadth-first, and now resumable at speed
+
+Five real increments, closing the loop on `backfill-financials` from
+"works but slow and easy to lose progress mid-run" to "safe to run in
+short chunks against the whole universe, with a full-depth pass queued
+up as the deliberate next step, not something to keep manually
+re-triggering the same way."
+
+- [x] **The pre-2019 "gone" filings weren't gone — the CDN moved.** Found
+      while trying to grow fundamentals coverage past the 9/290 tickers
+      that had reached full confirmation. Every catalogued
+      `/api/financials` path for a filing older than some CDN relocation
+      still 403s, but the identical file 200s the instant a `/cmt/`
+      prefix is inserted — reverified live across 16 real filings (8
+      each for COMB.N0000 and AAF.N0000), 16 for 16.
+      `_resolve_download_url` now normalizes every path to `cmt/` first
+      and falls back to the literal catalogued path only if that
+      genuinely 403s too; provenance keys on whichever URL actually
+      served the file. 3 new tests; full suite 1134 passed.
+- [x] **A real, still-open extraction gap named rather than silently
+      shipped.** Reviewing what the backfill was actually producing for
+      AAF.N0000 surfaced a draft with `net_income` recorded as `1`
+      against ~19.3bn of total assets for FY2022 —
+      `check_accounting_identities` didn't catch it because nothing about
+      the arithmetic was wrong, only the number. Traced to a pdfplumber
+      split-leading-digit artifact with an ODD token count
+      (`_repair_split_leading_digits` already handles the even-count case
+      that broke WLTH.N0000 in an earlier session, but its own guard
+      correctly declines to touch an odd count). Deliberately NOT fixed
+      with a token-shape rule: this line and JF Packaging's own genuine
+      note-reference line are syntactically indistinguishable from token
+      shape alone, so a shape-only rule would silently reintroduce the
+      exact JF Packaging regression this function already fixed once.
+      Documented as a characterization test that asserts the CURRENT
+      wrong reading on purpose — a concrete regression target for a real
+      future fix based on cross-statement magnitude, not an endorsement
+      of the wrong answer. Full suite: 1135 passed.
+- [x] **`--recent N`: breadth-first across the universe.** Alphabetical,
+      full-depth order meant one filing-heavy company (COMB.N0000: 16
+      annual + 59 quarterly reports, 75+ requests on its own) could burn
+      this environment's ~50-minute background-task ceiling before the
+      sweep ever reached the next ticker. `--recent N` keeps only the N
+      most recent filings of each type per ticker (still oldest-first
+      within that window, so `_next_version` still sees a real amendment
+      in the right order), so a universe-wide pass reaches every
+      company's CURRENT period — the one an actual valuation needs —
+      before any single company's deeper history. A later, separate
+      full-depth pass (no `--recent`) still backfills the rest without
+      redoing anything already ingested — idempotent on the exact PDF
+      URL, unchanged. 4 new tests; full suite 1137 passed.
+- [x] **`--after TICKER`: skip the growing re-verification tax on
+      resume.** This command was already idempotent —
+      `_already_ingested_by_source` checks both `Fundamental.source_url`
+      and a dedicated `IngestedFilingLog` table before ever downloading a
+      PDF, so a killed and resumed run never re-captures a filing it
+      already pulled. The real, MEASURED cost was different: a resumed
+      run still re-*verifies* every already-done ticker alphabetically
+      before reaching new ground — cheap per ticker (one archive-listing
+      request) but linear in how many tickers are already finished, and
+      with this environment forcing resumes roughly every 50 minutes,
+      that re-verification pass started eating a growing share of each
+      chunk's own time budget: one resume made zero net progress,
+      spending its whole window re-walking ~66 already-done tickers
+      before reaching the first new one. `--after` exposes the
+      already-alphabetical ticker ordering as a real resume point,
+      skipping the re-walk outright. Full suite unaffected: 1137 passed.
+- [x] **Verified against the real dev database, not just the test
+      suite**: 268 of 290 tickers now carry at least one AI-assisted
+      fundamentals draft (11,394 rows total), up from the 9/290 with any
+      CONFIRMED fundamentals cited when this thread of work started — a
+      different, much stricter denominator that hasn't moved, by design:
+      nothing here auto-promotes a draft to Reported (§8's human-confirm
+      gate is untouched). The 22 tickers still missing entirely are
+      scattered alphabetically rather than clustered at the tail, which
+      is itself evidence the breadth-first sweep actually reached the
+      whole universe rather than stalling partway through it.
+
+**Next, deliberately not done yet:** the breadth-first (`--recent`) pass
+is what's been run and verified above. A separate, later full-depth pass
+(no `--recent`) is the real next step — pulling each company's OLDER
+filings past whatever `--recent` window already landed, once the
+breadth-first coverage above has had time to be reviewed rather than
+immediately buried under a second sweep. It needs no new machinery: the
+idempotency and `--after` resume support built for the breadth-first
+pass apply to it completely unchanged, so the depth pass can run in the
+same short, interruptible chunks without ever re-downloading a filing
+this thread of work already pulled.
+
+### A real bug the backfill's own success uncovered: no index on `fundamentals.ticker`
+
+- [x] **Found live from a user report ("Companies not loading"), not from
+      the test suite.** Companies itself was fine — `GET /securities`
+      answered in 0.37s. The real problem was `GET /opportunities` and
+      `GET /portfolio/holdings/valued` taking 20+ seconds each after the
+      backfill above grew `fundamentals` from 213 to 11,394 rows,
+      saturating the browser's 6-connections-per-origin limit and
+      starving Companies' own request behind them in the queue — a
+      screen that had nothing to do with the slow ones looked broken
+      because of them.
+- [x] **Root cause:** `fundamentals.id` and `ingested_filing_log.id` are
+      the only primary keys on those tables — unlike `prices_daily`,
+      whose composite `(ticker, date)` primary key gets an implicit index
+      for free, `ticker` had no index at all on either table. Every
+      per-ticker query (point-in-time lookups, `_next_version`,
+      `_already_ingested_by_source`, every valuation model's own
+      line-item selection) did a full table scan. Invisible at 213 rows;
+      very visible at 11,394.
+- [x] **Reconciled, not duplicated:** the real dev database already had
+      4 of the 5 needed indexes when this was investigated — created
+      directly against the live SQLite file by a parallel effort
+      chasing the same slowness independently, never through a migration
+      or a model declaration, so a fresh database (or production
+      Postgres) would never have gotten them. Migration 0018 uses
+      `CREATE INDEX IF NOT EXISTS` (real, portable syntax on both
+      engines) to apply cleanly regardless of what already existed, and
+      `Fundamental`/`IngestedFilingLog`'s own `__table_args__` now
+      declare the same set the migration creates.
+- [x] **Measured, not assumed fixed:** `opportunity_ranking_for` 20.34s
+      -> 5.18s (9 confirmed-eligible tickers; the remaining time is
+      genuine multi-model valuation work, not another missing index).
+      Live immediately — a pure database change, no API restart needed.
+      Full suite: 1142 passed.
+
+### Fundamentals confirm-queue tab: paginated, with select-all bulk confirm
+
+The backfill above made the Fundamentals tab's own real problem
+unavoidable: it loaded the ENTIRE pending queue — by then past 11,000
+rows — into the browser on every visit, then rendered all of it into one
+table. Fixed the same way `GET /securities/{ticker}/prices` already was:
+
+- [x] **`GET /fundamentals` is now paged** — SQL `LIMIT`/`OFFSET` plus a
+      separate `COUNT(*)`, default page size 20, `FundamentalsPage`
+      envelope (`items`, `total`, `limit`, `offset`) mirroring
+      `PriceHistoryPage`'s own shape. The Fundamentals tab shows
+      "1–20 of N" with Previous/Next, disabled correctly at the first and
+      last page — real pagination, not the whole queue fetched once and
+      sliced client-side.
+- [x] **`POST /fundamentals/confirm-batch`: "select all, confirm
+      multiples."** A per-row checkbox plus a header "select all"
+      (scoped to the current page, not the whole queue) feed a bulk
+      confirm that promotes every valid id in one request. Deliberately
+      carries no per-row value correction — a reviewer who needs to fix a
+      figure before confirming still uses the single-row Confirm, which
+      already supports that; bulk confirm is for the rows already judged
+      trustworthy as extracted. One bad id (already confirmed elsewhere
+      since the page loaded, wrong tier, unknown) is reported back by id
+      and reason rather than failing the rest of the batch — the same
+      "one bad row doesn't abort the sweep" discipline every ingestion
+      loop in this codebase already follows.
+- [x] **A real, caught-live regression, not shipped blind:** the first
+      attempt to verify this crashed the tab outright
+      (`Cannot read properties of undefined`) because the browser was
+      still talking to an already-running API process that hadn't picked
+      up the new paginated response shape — restarting a long-lived dev
+      process turned out to be blocked by a real environment boundary
+      (`Stop-Process`/`taskkill`/`os.kill` all reported the owning PID as
+      inaccessible despite the OS network stack confirming it owned the
+      port). Resolved by running a second backend instance against the
+      same database on a different port and pointing the frontend at it
+      via `frontend/.env.local` (gitignored) — a real, disclosed
+      workaround for an unresolved environment quirk, not a silent one.
+- [x] 6 new backend tests (default limit, second page via `offset`, batch
+      confirming every valid id, batch reporting bad ids without failing
+      the good ones); full suite 1146 passed. Verified live in the
+      browser against the real ~10,900-row queue: "1–20 of 10927" on
+      load, select-all plus bulk confirm correctly shrinks both the page
+      and the total.
 
 ## Explicitly deferred to later phases
 

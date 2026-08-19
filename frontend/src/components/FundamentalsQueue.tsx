@@ -1,17 +1,26 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, confirmFundamental, listFundamentals } from "../api";
-import type { Fundamental } from "../types";
+import {
+  ApiRequestError,
+  confirmFundamental,
+  confirmFundamentalsBatch,
+  listFundamentals,
+} from "../api";
+import type { ConfirmBatchFailure, Fundamental, FundamentalsPage } from "../types";
 import { ProvenanceChip } from "./ProvenanceChip";
 import { EmptyState, ErrorState, SkeletonTable } from "./states";
+
+const PAGE_SIZE = 20;
 
 interface RowProps {
   row: Fundamental;
   reviewerName: string;
+  selected: boolean;
+  onToggleSelected: (id: number) => void;
   onChanged: (updated: Fundamental) => void;
   onRemoved: (id: number) => void;
 }
 
-function Row({ row, reviewerName, onChanged, onRemoved }: RowProps) {
+function Row({ row, reviewerName, selected, onToggleSelected, onChanged, onRemoved }: RowProps) {
   const [value, setValue] = useState(row.value);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +48,14 @@ function Row({ row, reviewerName, onChanged, onRemoved }: RowProps) {
   return (
     <>
       <tr>
+        <td>
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelected(row.id)}
+            aria-label={`Select ${row.ticker} ${row.statement_line} for bulk confirm`}
+          />
+        </td>
         <th
           scope="row"
           className="mono"
@@ -93,7 +110,7 @@ function Row({ row, reviewerName, onChanged, onRemoved }: RowProps) {
       </tr>
       {showSource && (
         <tr>
-          <td colSpan={8}>
+          <td colSpan={9}>
             {/* §8: an AI-assisted figure "must show the source snippet". */}
             <pre className="code-block">{row.source_snippet}</pre>
             {row.source_url && (
@@ -110,14 +127,85 @@ function Row({ row, reviewerName, onChanged, onRemoved }: RowProps) {
 }
 
 export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
-  const [rows, setRows] = useState<Fundamental[] | null>(null);
+  const [page, setPage] = useState<FundamentalsPage | null>(null);
+  const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchNotice, setBatchNotice] = useState<{ confirmedCount: number; failed: ConfirmBatchFailure[] } | null>(
+    null,
+  );
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   useEffect(() => {
-    listFundamentals({ pendingOnly: true })
-      .then(setRows)
+    setPage(null);
+    setError(null);
+    setSelected(new Set());
+    setBatchNotice(null);
+    setBatchError(null);
+    listFundamentals({ pendingOnly: true, limit: PAGE_SIZE, offset })
+      .then(setPage)
       .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
-  }, []);
+  }, [offset]);
+
+  function updateRow(updated: Fundamental) {
+    setPage((p) => (p ? { ...p, items: p.items.map((x) => (x.id === updated.id ? updated : x)) } : p));
+  }
+
+  function removeRows(ids: number[]) {
+    const idSet = new Set(ids);
+    setPage((p) =>
+      p
+        ? { ...p, items: p.items.filter((x) => !idSet.has(x.id)), total: Math.max(0, p.total - ids.length) }
+        : p,
+    );
+    setSelected((s) => {
+      const next = new Set(s);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  }
+
+  function toggleSelected(id: number) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (!page) return;
+    setSelected((s) => (s.size === page.items.length ? new Set() : new Set(page.items.map((r) => r.id))));
+  }
+
+  async function confirmSelected() {
+    if (!reviewerName.trim()) {
+      setBatchError("Enter your name above before confirming.");
+      return;
+    }
+    setBatchBusy(true);
+    setBatchError(null);
+    setBatchNotice(null);
+    try {
+      const result = await confirmFundamentalsBatch(Array.from(selected), reviewerName.trim());
+      removeRows(result.confirmed);
+      setBatchNotice({ confirmedCount: result.confirmed.length, failed: result.failed });
+    } catch (e) {
+      setBatchError(e instanceof ApiRequestError ? e.message : "Request failed");
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  function goToPreviousPage() {
+    setOffset((o) => Math.max(0, o - PAGE_SIZE));
+  }
+
+  function goToNextPage() {
+    setOffset((o) => (page && o + page.items.length < page.total ? o + PAGE_SIZE : o));
+  }
 
   if (error) {
     return (
@@ -129,8 +217,8 @@ export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
       />
     );
   }
-  if (!rows) return <SkeletonTable rows={4} columns={8} />;
-  if (rows.length === 0) {
+  if (!page) return <SkeletonTable rows={4} columns={9} />;
+  if (page.total === 0) {
     return (
       <EmptyState title="Nothing pending.">
         <p style={{ margin: 0 }}>
@@ -141,33 +229,88 @@ export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
     );
   }
 
+  const allOnPageSelected = page.items.length > 0 && selected.size === page.items.length;
+
   return (
-    <div className="table-wrap table-scroll">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th scope="col">Ticker</th>
-            <th scope="col">Period end</th>
-            <th scope="col">Type</th>
-            <th scope="col">Line</th>
-            <th scope="col">Value</th>
-            <th scope="col">Provenance</th>
-            <th scope="col">Source</th>
-            <th scope="col">Review</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <Row
-              key={r.id}
-              row={r}
-              reviewerName={reviewerName}
-              onChanged={(u) => setRows((p) => p?.map((x) => (x.id === u.id ? u : x)) ?? p)}
-              onRemoved={(id) => setRows((p) => p?.filter((x) => x.id !== id) ?? p)}
-            />
-          ))}
-        </tbody>
-      </table>
+    <div className="stack-tight">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div className="row" style={{ alignItems: "center", gap: "var(--s3)" }}>
+          <button className="btn-primary" onClick={confirmSelected} disabled={selected.size === 0 || batchBusy}>
+            Confirm {selected.size > 0 ? `${selected.size} selected` : "selected"}
+          </button>
+          {batchError && (
+            <p className="t-caption" role="alert" style={{ margin: 0, color: "var(--neg-strong)" }}>
+              {batchError}
+            </p>
+          )}
+          {batchNotice && (
+            <p className="t-caption" role="status" style={{ margin: 0 }}>
+              {batchNotice.confirmedCount > 0 && (
+                <span style={{ color: "var(--pos-strong)" }}>{batchNotice.confirmedCount} confirmed. </span>
+              )}
+              {batchNotice.failed.length > 0 && (
+                <span style={{ color: "var(--neg-strong)" }}>
+                  {batchNotice.failed.length} could not be confirmed:{" "}
+                  {batchNotice.failed.map((f) => `#${f.id} (${f.reason})`).join("; ")}
+                </span>
+              )}
+            </p>
+          )}
+        </div>
+        <span className="t-caption num">
+          {page.total === 0 ? "0 of 0" : `${page.offset + 1}–${page.offset + page.items.length} of ${page.total}`}
+        </span>
+      </div>
+
+      <div className="table-wrap table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th scope="col">
+                <input
+                  type="checkbox"
+                  checked={allOnPageSelected}
+                  onChange={toggleSelectAll}
+                  aria-label="Select all rows on this page"
+                />
+              </th>
+              <th scope="col">Ticker</th>
+              <th scope="col">Period end</th>
+              <th scope="col">Type</th>
+              <th scope="col">Line</th>
+              <th scope="col">Value</th>
+              <th scope="col">Provenance</th>
+              <th scope="col">Source</th>
+              <th scope="col">Review</th>
+            </tr>
+          </thead>
+          <tbody>
+            {page.items.map((r) => (
+              <Row
+                key={r.id}
+                row={r}
+                reviewerName={reviewerName}
+                selected={selected.has(r.id)}
+                onToggleSelected={toggleSelected}
+                onChanged={updateRow}
+                onRemoved={(id) => removeRows([id])}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="row" style={{ justifyContent: "flex-end", alignItems: "center", gap: "var(--s3)" }}>
+        <span className="t-caption num">
+          {page.total === 0 ? "0 of 0" : `${page.offset + 1}–${page.offset + page.items.length} of ${page.total}`}
+        </span>
+        <button onClick={goToPreviousPage} disabled={page.offset === 0}>
+          ← Previous
+        </button>
+        <button onClick={goToNextPage} disabled={page.offset + page.items.length >= page.total}>
+          Next →
+        </button>
+      </div>
     </div>
   );
 }
