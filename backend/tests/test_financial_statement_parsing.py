@@ -1080,6 +1080,24 @@ def test_split_leading_digit_is_rejoined_not_dropped_as_a_note_reference(line, e
     assert result.primary_value == value
 
 
+def test_aafs_real_odd_count_split_digit_is_a_named_unfixed_gap():
+    """Characterises, rather than fixes, a real case found live (19 Aug
+    2026) reviewing AAF.N0000's backfilled annual reports: "Profit for
+    the year 1 18,561,733 45,196,117" — an ODD token count, so
+    `_repair_split_leading_digits` correctly declines to touch it (same
+    guard that protects JF Packaging's genuine note-reference line right
+    below), and the lone "1" is read as a syntactically valid, wrong
+    net_income. See that function's own docstring for why fixing this
+    from token shape alone would break the JF Packaging case — this test
+    exists so a future attempt at a real fix has a concrete, real
+    regression case to check against, not so this wrong answer is
+    endorsed."""
+    result = split_label_and_values("Profit for the year 1 18,561,733 45,196,117")
+    assert result is not None
+    assert result.statement_line == "net_income"
+    assert result.primary_value == Decimal("1")  # the known-wrong reading, not the real 118,561,733
+
+
 def test_jf_packagings_real_note_reference_is_not_wrongly_merged():
     """The safety boundary `_repair_split_leading_digits` is deliberately
     narrow to protect: J.F. Packaging PLC's real Revenue line has a

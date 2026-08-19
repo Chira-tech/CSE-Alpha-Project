@@ -146,7 +146,39 @@ def _repair_split_leading_digits(numeric_tokens: list[str]) -> list[str]:
     mixed) — see test_extract_candidate_lines_finds_every_canonical_
     item_on_paps_real_balance_sheet's own comment. Left as a named, real,
     disclosed gap rather than a forced fix that risks corrupting the
-    WLTH/JFP cases already verified above."""
+    WLTH/JFP cases already verified above.
+
+    A FOURTH, CONFIRMED REAL CASE (found 19 Aug 2026, Asia Asset Finance
+    PLC / AAF.N0000's real FY2022 annual report, ODD token count this
+    time, NOT fixed here either): "Profit for the year 1 18,561,733
+    45,196,117" tokenises as `["1", "18,561,733", "45,196,117"]` — 3
+    tokens, so this function's own `len(...) % 2 != 0` guard returns it
+    untouched, same as it correctly does for J.F. Packaging's genuine
+    "Revenue 5 4,504,801 ..." note-reference line. The lone "1" then
+    passes `_VALUE_RE` on its own (a bare single digit is syntactically
+    a valid, if implausible, value) and gets read as net_income = 1
+    instead of the real 118,561,733 — confirmed by cross-referencing
+    the SAME period's OTHER, correctly-parsed extraction attempt
+    (version 2 of this filing, which failed `check_accounting_
+    identities` for an unrelated reason and shows net_income =
+    118,561,733 there). A rule that merges a lone leading digit whenever
+    doing so produces a syntactically valid number would ALSO wrongly
+    merge J.F. Packaging's genuine "5" into "4,504,801" — traced by
+    hand, that exact JF Packaging line and this AAF line are
+    syntactically indistinguishable from token shape alone (both:
+    single leading digit, followed by a comma-grouped value that's
+    valid whether or not the digit is prepended). The real
+    discriminator is MAGNITUDE plausibility relative to the rest of the
+    same filing (a `net_income` of 1 next to a `total_assets` of ~19.3bn
+    is absurd; JF Packaging's "5 4,504,801" as a note reference is not),
+    which is exactly the kind of cross-line, whole-statement signal this
+    function's own docstring already names as the missing piece for the
+    WLTH/JFP case above — not solvable here, at the single-line/single-
+    statement level, without the same risk of reintroducing that
+    verified regression. `app.ingestion.financial_reports_archive_
+    loader`'s confirm-queue review is the current, real backstop for
+    this specific shape of error until a genuine cross-statement
+    plausibility check exists to catch it automatically."""
     if len(numeric_tokens) < 2 or len(numeric_tokens) % 2 != 0:
         return numeric_tokens
     merged: list[str] = []
