@@ -307,8 +307,10 @@ def ingest_archived_report(
     return len(drafts)
 
 
-def ingest_report_archive_for_ticker(client: CseClient, db: Session, ticker: str) -> dict[str, int]:
-    """Sweeps one company's full catalogued history, oldest filing first
+def ingest_report_archive_for_ticker(
+    client: CseClient, db: Session, ticker: str, *, max_per_type: int | None = None
+) -> dict[str, int]:
+    """Sweeps one company's catalogued history, oldest filing first
     within each period_type — the order `_next_version` needs to turn a
     real amendment into version=2 rather than version=1 arriving out of
     sequence. One unreachable file never aborts the rest (matches
@@ -316,6 +318,21 @@ def ingest_report_archive_for_ticker(client: CseClient, db: Session, ticker: str
     try/except); a 403 is counted separately from a genuine parse
     failure so the summary can tell "CDN doesn't have this one" apart
     from "something is actually broken".
+
+    `max_per_type`, when given, keeps only the `max_per_type` MOST
+    RECENT filings of each period_type — real, chosen trade-off:
+    a company with a decade of history is 50-85 requests on its own at
+    this project's own >=2s pacing (this module's own docstring), so a
+    universe-wide sweep in full-depth (oldest-first, no cap) order
+    spends its whole run on the first few alphabetically-early,
+    filing-heavy companies before ever reaching the rest. Capped, a
+    breadth-first pass reaches every ticker's MOST RECENT period
+    quickly — the one that actually matters for a fresh valuation —
+    with deeper history a genuinely separate, later pass (no `--recent`
+    flag) can still backfill without redoing anything already ingested
+    here (idempotent on `source_url`, same as always). Still oldest-
+    first WITHIN the kept window, so `_next_version` still sees any real
+    amendment among the recent filings in the right order.
     """
     archive = fetch_report_archive(client, ticker)
     drafted = unavailable = failed = 0
@@ -325,6 +342,8 @@ def ingest_report_archive_for_ticker(client: CseClient, db: Session, ticker: str
         ("quarterly", archive.infoQuarterlyData),
     ):
         ordered = sorted(reports, key=lambda r: r.uploadedDate or 0)
+        if max_per_type is not None:
+            ordered = ordered[-max_per_type:]
         for report in ordered:
             try:
                 drafted += ingest_archived_report(client, db, ticker, report, period_type=period_type)

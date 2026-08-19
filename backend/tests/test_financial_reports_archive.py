@@ -388,3 +388,69 @@ class TestCmtUrlNormalization:
         # Recorded against the URL that actually served the file, not
         # the dead one — provenance should point somewhere real.
         assert row.source_url == "https://cdn.cse.lk/upload_report_file/369_1372043496.pdf"
+
+
+class TestMaxPerTypeBreadthFirstMode:
+    """`--recent N` (`max_per_type` here) — a full-depth universe sweep
+    run alphabetically can spend an entire ~50-minute run on one
+    filing-heavy company before reaching the next ticker at all; this
+    mode reaches every ticker's current period first."""
+
+    def _fake_client(self, ids_downloaded: list[str]):
+        class FakeClient:
+            def post_form(self, path, model, data):
+                return model(
+                    infoAnnualData=[
+                        CompanyArchiveReportFile(
+                            id=i, path=f"cmt/upload_report_file/{i}.pdf",
+                            manualDate=1_000_000_000_000 + i, uploadedDate=1_000_000_000_000 + i,
+                        )
+                        for i in range(1, 6)  # 5 annual filings, ids 1..5, oldest to newest
+                    ],
+                    infoQuarterlyData=[],
+                )
+
+        def fake_download(url, *, user_agent, timeout=60.0):
+            ids_downloaded.append(url)
+            return b"%PDF-1.4 fake"
+
+        return FakeClient(), fake_download
+
+    def test_max_per_type_keeps_only_the_most_recent_filings(self, db_session, monkeypatch):
+        db_session.add(Security(ticker=TICKER, name="COMMERCIAL BANK", issuer_code="COMB"))
+        db_session.commit()
+        ids_downloaded: list[str] = []
+        client, fake_download = self._fake_client(ids_downloaded)
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf", fake_download
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [],
+        )
+
+        ingest_report_archive_for_ticker(client, db_session, TICKER, max_per_type=2)
+
+        # Only the two NEWEST of the five catalogued annual filings (ids 4, 5).
+        assert len(ids_downloaded) == 2
+        assert ids_downloaded[0].endswith("4.pdf")
+        assert ids_downloaded[1].endswith("5.pdf")
+
+    def test_max_per_type_none_still_sweeps_everything(self, db_session, monkeypatch):
+        """The default (no `--recent`) is unchanged — full history, same
+        as before this option existed."""
+        db_session.add(Security(ticker=TICKER, name="COMMERCIAL BANK", issuer_code="COMB"))
+        db_session.commit()
+        ids_downloaded: list[str] = []
+        client, fake_download = self._fake_client(ids_downloaded)
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf", fake_download
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [],
+        )
+
+        ingest_report_archive_for_ticker(client, db_session, TICKER)
+
+        assert len(ids_downloaded) == 5

@@ -247,16 +247,23 @@ def cmd_second_source_check(args: argparse.Namespace) -> int:
 
 
 def cmd_backfill_financials(args: argparse.Namespace) -> int:
-    """Backfill each company's full financial-statement history from
+    """Backfill each company's financial-statement history from
     /api/financials — annual and quarterly filings, years deeper than
     `financial-statement-scan`'s single most-recent filing per company.
 
     One request to list the archive plus one download per PDF, all
     through the paced CseClient (§5) — a single company with a long
     history (e.g. COMB.N0000: 16 annual + 59 quarterly reports) is
-    75+ requests on its own, so this is a genuinely long-running job.
-    Every draft still lands in the confirm queue (§8) exactly like the
-    single-filing scan; nothing here is auto-promoted to Reported.
+    75+ requests on its own, so a FULL-DEPTH universe sweep (no
+    `--recent`) genuinely takes hours and, run alphabetically, can spend
+    an entire run on the first few filing-heavy companies before
+    reaching the rest. `--recent N` switches to breadth-first — the N
+    most recent filings of each type per ticker — so a universe-wide
+    pass reaches every company's current period first; a later,
+    separate full-depth pass still backfills the rest without redoing
+    anything (idempotent on the exact PDF URL). Every draft still lands
+    in the confirm queue (§8) exactly like the single-filing scan;
+    nothing here is auto-promoted to Reported.
     """
     db = SessionLocal()
     try:
@@ -269,12 +276,15 @@ def cmd_backfill_financials(args: argparse.Namespace) -> int:
             print("No matching tickers. Run `bootstrap` first?", file=sys.stderr)
             return 1
 
-        print(f"Backfilling financial statement history for {len(tickers)} ticker(s).")
+        depth = f"the {args.recent} most recent filing(s) per period_type" if args.recent else "full history"
+        print(f"Backfilling financial statement history for {len(tickers)} ticker(s) — {depth}.")
         totals = {"drafted": 0, "unavailable": 0, "failed": 0}
         with CseClient() as client:
             for ticker in tickers:
                 try:
-                    summary = ingest_report_archive_for_ticker(client, db, ticker)
+                    summary = ingest_report_archive_for_ticker(
+                        client, db, ticker, max_per_type=args.recent
+                    )
                 except Exception as exc:  # noqa: BLE001 — one bad ticker must not abort the sweep
                     print(f"  {ticker}: FAILED ({exc})", file=sys.stderr)
                     continue
@@ -288,7 +298,7 @@ def cmd_backfill_financials(args: argparse.Namespace) -> int:
         print(
             f"Done. {totals['drafted']} draft(s) awaiting review at /fundamentals. "
             f"{totals['unavailable']} filing(s) listed but not retrievable from the CDN "
-            f"(expect this for most pre-2019 filings), {totals['failed']} genuine failures."
+            f"even after the cmt/ normalization, {totals['failed']} genuine failures."
         )
     finally:
         db.close()
@@ -546,6 +556,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_bf.add_argument("--limit", type=int, default=None, help="only the first N tickers")
     p_bf.add_argument("--ticker", action="append", help="restrict to one or more tickers")
+    p_bf.add_argument(
+        "--recent", type=int, default=None,
+        help=(
+            "only the N most recent annual and N most recent quarterly filings per "
+            "ticker (breadth-first: reaches every ticker's current period quickly "
+            "instead of one company's full history at a time). Omit for full depth."
+        ),
+    )
     p_bf.set_defaults(func=cmd_backfill_financials)
 
     p_bp = sub.add_parser(
