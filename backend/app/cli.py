@@ -417,8 +417,11 @@ def cmd_auto_confirm_fundamentals(args: argparse.Namespace) -> int:
 
     repo_root = Path(__file__).resolve().parents[2]
     out_path = repo_root / "docs" / "audits" / f"AUTO_CONFIRM_{dt.date.today().isoformat()}.md"
-    # ".partial.jsonl" so it matches .gitignore's resumable-checkpoint rule
-    checkpoint_path = out_path.parent / (out_path.stem + ".reextract.partial.jsonl")
+    # STABLE (not date-stamped) name so a later --apply run reuses the same
+    # ~15h of PDF re-extraction instead of re-downloading everything. Delete
+    # it by hand to force a fresh re-extraction. ".partial.jsonl" matches
+    # .gitignore's resumable-checkpoint rule.
+    checkpoint_path = out_path.parent / "auto_confirm.reextract.partial.jsonl"
 
     db = SessionLocal()
     verdicts = []
