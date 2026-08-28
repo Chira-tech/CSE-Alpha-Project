@@ -3531,6 +3531,77 @@ silent error is now caught.
       resolved alongside an identity-reconciled `total_assets` on the
       same page). Full suite: 1354 passed.
 
+### OI-4 full-scope sweep, resumed after a host shutdown, and the over-correction it exposed
+
+Prompted by the product owner asking, after the machine shut down mid-run,
+what still needed doing — then, seeing the answer, "make sure the product
+is correctly built without any sacrifices on the value it brings."
+
+- [x] **Everything from the sessions above committed for the first time.**
+      A host power-loss left weeks of intertwined work (all of Phase 6,
+      the M5 scaffold, `backend/scripts/`, the whole `docs/audits/` trail,
+      CI, migration 0019, ~30 frontend files) sitting unstaged on top of
+      commit `25dd846` — disk-safe but with zero git checkpoint. Landed
+      as five coarse thematic commits (housekeeping / backend / frontend /
+      ops+audit / docs); `.gitignore` grew `.claude/`, `scratch_*`,
+      `docs/price data/` (500+ MB of raw xlsx) and the resumable-sweep
+      `*.partial.jsonl` checkpoints.
+- [x] **The interrupted magnitude sweep finished and converged.**
+      `reverify_magnitude_flagged_fundamentals.py` resumed from its own
+      checkpoint (safe — an involuntary shutdown changed no parser code).
+      Four passes, each remediation re-measured from a cleared checkpoint:
+      **pass 2 flagged 58 confirmed-wrong REPORTED rows → remediated;
+      pass 3 flagged 2 (AHPL debt, surfaced only once the pass-2 siblings
+      shifted the plausibility baseline) → remediated; pass 4 flagged 0.**
+      The 58 were a wider seam than the earlier 8-line sweeps saw —
+      `inventories`, `trade_payables`, `trade_receivables`, `revaluation_
+      reserves`, `amortisation_expense` on component lines with no sibling
+      accounting identity, exactly the class root cause #11's `reconcile_
+      magnitude_implausible_values` was built to rescue.
+- [x] **Root cause #12 — the magnitude rescue could itself OVER-correct,
+      by ~110x.** Reviewing the pass-2/3 corrections against the real
+      source PDFs, ~20 rows across AHPL/CINS/CFVF had been "corrected" to
+      a value LARGER than the filing's own totals — AHPL's real
+      "Other components of equity 96 25 23,093,391 22,287,036 ..."
+      (page 96, note 25, then four value columns; note 25's own page is
+      headed "25 OTHER COMPONENTS OF EQUITY") became 2,523,093,391,000,
+      ~110x the real 23,093,391,000 and 59x the filing's own total
+      equity. `_merge_all_split_pairs` had fused the note number "25" into
+      the value, and `reconcile_magnitude_implausible_values`' small-side
+      floor cleared it without complaint — the floor is one-directional.
+      Two fixes in `app.domain.financial_statement_parsing`, both with
+      real-filing regression tests:
+      - **`split_label_and_values` now drops a SECOND leading reference
+        token** when it is multi-digit — a "<page-ref> <note-ref>
+        <values...>" line, common on CSE filings and recurring identically
+        on CINS and CFVF. Never a lone single digit: that is a pdfplumber
+        split-off leading digit (Serendib's real "Inventories 13 3 7,890
+        ..."), which `_merge_all_split_pairs` must rejoin, not drop.
+      - **`reconcile_magnitude_implausible_values` now rejects an alt that
+        breaches the subtotal the line structurally rolls into**
+        (`_COMPONENT_SUBTOTAL_CEILINGS`: `inventories` ≤ current assets,
+        `trade_payables` ≤ liabilities, `revaluation_reserves` ≤ equity,
+        …) — the symmetric bound the small-side flag was missing. Lanka
+        Walltiles' real 17.7bn group inventory against 52.8bn total assets
+        still corrects cleanly; it is contained, not a breach.
+      Verified end-to-end against AHPL's real filing: every over-corrected
+      line now extracts to a figure that reconciles with the balance
+      sheet's own totals.
+- [x] **`scripts/refix_oi4_overcorrections.py`** — re-runs the now-fixed
+      extractor against each affected filing and writes back the corrected
+      value, same conservative shape as `remediate_oi4_full_scope.py`
+      (dry-run default, every touched row kept AI_ASSISTED/unconfirmed,
+      original value preserved in a dated `source_snippet` note). **24
+      rows corrected**; 1 (LPRT `revaluation_reserves`) left flagged
+      because the fresh reading was itself implausibly small — named, not
+      forced. The same script corrects the 5 `income_tax_expense` rows
+      OI-4's sweep marked `unverifiable`: their real source line reads nil
+      for the period ("Income tax expense 4 - -"), so the real figure is
+      0, not the note reference that was stored.
+- [x] Full suite: **1356 passed** (2 new `financial_statement_parsing`
+      tests). DB integrity `ok`; a snapshot was taken before each
+      remediation.
+
 ## M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md): Task 1 (isolation scaffold) only
 
 A new, separate module — not part of the Master Spec's own phase

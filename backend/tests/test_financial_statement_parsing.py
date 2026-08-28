@@ -1384,6 +1384,48 @@ class TestReconcileMagnitudeImplausibleValues:
         alt_values = {"inventories": Decimal("100000000000000")}
         assert reconcile_magnitude_implausible_values(values, alt_values) == {}
 
+    def test_an_alt_that_breaches_its_subtotal_ceiling_is_rejected(self):
+        """REAL BUG THIS CLOSES, found live (28 Aug 2026) on AHPL's real
+        FY2022 balance sheet: "Other components of equity 96 25 23,093,391
+        22,287,036 ..." carries a note reference ("96") AND a spurious
+        second two-digit token ("25"); `_merge_all_split_pairs` fused "25"
+        into "23,093,391" -> 2,523,093,391, which reads as ~59x the
+        filing's own total equity. The small-side flag alone cleared it
+        (nothing else on the filing was then a millionth of it) — the
+        component-subtotal ceiling is what rejects it."""
+        values = {
+            "total_assets": Decimal("42508650"),
+            "total_equity_and_liabilities": Decimal("42508650"),
+            "total_equity": Decimal("34959316"),
+            "total_liabilities": Decimal("7549334"),
+            "total_current_assets": Decimal("1316880"),
+            "total_current_liabilities": Decimal("3096157"),
+            "revaluation_reserves": Decimal("25"),
+            "trade_payables": Decimal("29"),
+            "inventories": Decimal("20"),
+        }
+        alt_values = {
+            "revaluation_reserves": Decimal("2523093391"),  # > total equity
+            "trade_payables": Decimal("291020667"),  # > total liabilities
+            "inventories": Decimal("20204587"),  # > total current assets
+        }
+        assert reconcile_magnitude_implausible_values(values, alt_values) == {}
+
+    def test_a_real_large_component_within_its_subtotal_is_still_corrected(self):
+        """The ceiling only rejects a breach — Lanka Walltiles' real
+        FY2024 group `inventories` of 17.7bn against 52.8bn total assets
+        is a genuine large-but-contained figure and must still be
+        accepted once its own default reading is flagged."""
+        values = {
+            "total_assets": Decimal("52842454000"),
+            "total_equity": Decimal("26510773000"),
+            "inventories": Decimal("10"),
+        }
+        alt_values = {"inventories": Decimal("17711617000")}
+        assert reconcile_magnitude_implausible_values(values, alt_values) == {
+            "inventories": Decimal("17711617000"),
+        }
+
 
 def test_check_extraction_quality_combines_identities_and_magnitude():
     """A filing that fails ONLY the magnitude floor (no accounting

@@ -45,9 +45,9 @@ backend/logs/
 
 # scratch files (one-off PDFs pulled down while tracing an extraction bug)
 scratch_*
-# resumable-sweep checkpoints — regenerated on every run, the final
-# .md report next to them is the real audit artifact
-docs/audits/*.partial.jsonl
+# resumable-sweep checkpoints (and archived copies) — regenerated on
+# every run, the final .md report next to them is the real audit artifact
+docs/audits/*.partial.jsonl*
 # bulk raw market-data exports used by scripts/ingest_manual_price_history.py
 # — hundreds of MB of xlsx, kept on disk locally, never in git
 docs/price data/

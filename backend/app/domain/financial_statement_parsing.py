@@ -1210,6 +1210,25 @@ def split_label_and_values(
     if len(numeric_tokens) > effective_expected_value_columns and _NOTE_REF_RE.match(numeric_tokens[0]):
         numeric_tokens = numeric_tokens[1:]
 
+    # A SECOND leading reference: a page number followed by a note number,
+    # "Other components of equity 96 25 23,093,391 22,287,036 ..." on
+    # AHPL's real FY2022 balance sheet — page 96, note 25 (note 25's own
+    # page is literally headed "25 OTHER COMPONENTS OF EQUITY"), then four
+    # value columns; the same "<page> <note> <values...>" shape recurs on
+    # CINS and CFVF's real filings. Dropping only the first kept the note
+    # number ("25") as the value — flagged implausibly small, then over-
+    # corrected to a spurious ~2.5-trillion merge by `_merge_all_split_
+    # pairs`. Only ever a MULTI-digit token: a lone single digit in this
+    # position is a pdfplumber split-off leading digit (Serendib Hotels'
+    # real "Inventories 13 3 7,890 ..." — "3" belongs to "37,890"), which
+    # `_merge_all_split_pairs` rejoins and which must NOT be dropped.
+    if (
+        len(numeric_tokens) > effective_expected_value_columns
+        and len(numeric_tokens[0]) >= 2
+        and _NOTE_REF_RE.match(numeric_tokens[0])
+    ):
+        numeric_tokens = numeric_tokens[1:]
+
     values = tuple(_parse_value_token(t) for t in numeric_tokens)
     if all(v is None for v in values):
         return None  # every token was a bare "-" — not useful, and likely not a real data line
@@ -1372,6 +1391,34 @@ def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityChec
 _MAGNITUDE_IMPLAUSIBILITY_RATIO = Decimal("0.000001")
 
 
+#: A corrected value from `reconcile_magnitude_implausible_values` must
+#: still respect the balance sheet's own containment structure: a
+#: component line can never exceed the subtotal it rolls up into. The
+#: small-side magnitude flag (`_MAGNITUDE_IMPLAUSIBILITY_RATIO`) rescues a
+#: value that reads far TOO SMALL, but on its own it will just as happily
+#: accept an `alt_values` candidate that reads far TOO LARGE. REAL BUG
+#: THIS CLOSES, found live (28 Aug 2026) on AHPL/CINS/CFVF: a line like
+#: "Other components of equity 96 25 23,093,391 22,287,036 ..." carries a
+#: note reference ("96") AND a second spurious two-digit token ("25")
+#: before the real value; `_merge_all_split_pairs` fused "25" into
+#: "23,093,391" -> 2,523,093,391 (~110x the real figure and 59x the
+#: filing's own total equity), an alt the small-side flag cleared without
+#: complaint because nothing else on the filing was then a millionth of
+#: it. Each key lists the subtotal(s) that structurally bound it, most
+#: specific first; the check uses whichever the filing actually extracted.
+_COMPONENT_SUBTOTAL_CEILINGS: dict[str, tuple[str, ...]] = {
+    "inventories": ("total_current_assets", "total_assets"),
+    "trade_receivables": ("total_current_assets", "total_assets"),
+    "trade_payables": ("total_current_liabilities", "total_liabilities", "total_assets"),
+    "total_interest_bearing_debt": ("total_liabilities", "total_assets"),
+    "revaluation_reserves": ("total_equity", "total_equity_and_liabilities"),
+}
+#: A little slack for real group-vs-company column mismatches and ordinary
+#: publication rounding — every real over-correction found so far breaches
+#: its ceiling by 6x-110x, orders of magnitude past this.
+_COMPONENT_CEILING_TOLERANCE = Decimal("1.10")
+
+
 def _magnitude_implausible_keys(values: dict[str, Decimal]) -> set[str]:
     """The set of keys `check_magnitude_plausibility` would flag — pulled
     out so `reconcile_magnitude_implausible_values` below can ask the
@@ -1486,14 +1533,17 @@ def reconcile_magnitude_implausible_values(
     reconciliation, not a relaxation of it: a substitution is accepted
     ONLY when (a) the key was ALREADY flagged implausible under the
     default reading, (b) an alt candidate exists for it, (c) the alt
-    reading clears ITS OWN flag, and (d) the substitution introduces no
-    NEW implausibility flag on any other key (the corrected value
-    becoming large enough to shrink another key's own ratio below the
-    floor). Each flagged key is evaluated independently against the
-    ORIGINAL flagged set — never chained off a previous substitution in
-    the same pass — so this stays a single, deterministic, order-
-    independent pass, the same discipline `reconcile_ambiguous_values_
-    via_identities` already holds itself to.
+    reading clears ITS OWN flag, (d) the substitution introduces no NEW
+    implausibility flag on any other key (the corrected value becoming
+    large enough to shrink another key's own ratio below the floor), and
+    (e) the alt does not breach the subtotal this line structurally rolls
+    into (`_COMPONENT_SUBTOTAL_CEILINGS` — the guard against a too-LARGE
+    misread, symmetric with the too-small flag that opened the door).
+    Each flagged key is evaluated independently against the ORIGINAL
+    flagged set — never chained off a previous substitution in the same
+    pass — so this stays a single, deterministic, order-independent pass,
+    the same discipline `reconcile_ambiguous_values_via_identities`
+    already holds itself to.
     """
     originally_flagged = _magnitude_implausible_keys(values)
     corrections: dict[str, Decimal] = {}
@@ -1507,6 +1557,17 @@ def reconcile_magnitude_implausible_values(
             continue  # the alt itself is still implausible — not a fix
         if new_flags - originally_flagged:
             continue  # would newly implicate a key that was fine before
+        ceiling = next(
+            (
+                abs(values[c])
+                for c in _COMPONENT_SUBTOTAL_CEILINGS.get(key, ())
+                if c in values and values[c] != 0
+            ),
+            None,
+        )
+        if ceiling is not None and abs(alt_values[key]) > ceiling * _COMPONENT_CEILING_TOLERANCE:
+            continue  # the alt would exceed the subtotal this line rolls into —
+            # a too-large misread (a fused spurious token), not a fix
         corrections[key] = alt_values[key]
     return corrections
 
