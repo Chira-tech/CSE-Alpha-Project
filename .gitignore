@@ -28,6 +28,23 @@ frontend/*.tsbuildinfo
 *.sqlite
 *.sqlite3
 *.db-journal
+# WAL mode's own auxiliary files (app/db/session.py sets PRAGMA
+# journal_mode=WAL for every sqlite connection — see that file's own
+# comment) — *.sqlite above doesn't match these suffixes.
+*.sqlite-wal
+*.sqlite-shm
 
 # isolated git worktrees created for parallel agent sessions
 .claude/worktrees/
+# Claude Code local session state (locks, transient task output)
+.claude/
+
+# runtime-generated artifacts: automatic DB backups and job/server logs
+backend/backups/
+backend/logs/
+
+# scratch files (one-off PDFs pulled down while tracing an extraction bug)
+scratch_*
+# bulk raw market-data exports used by scripts/ingest_manual_price_history.py
+# — hundreds of MB of xlsx, kept on disk locally, never in git
+docs/price data/
