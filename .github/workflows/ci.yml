@@ -1,0 +1,126 @@
+name: CI
+
+# R1 T4B.1's own "wire it into CI as a smoke gate so these regressions
+# cannot silently return" — this repo had NO CI workflow of any kind
+# before this file. Two jobs:
+#
+# - `test`: the real, deterministic, always-correct gate — backend
+#   pytest (in-memory SQLite, no external data needed), frontend
+#   typecheck + build + the zone-fallback guard. Blocks the PR.
+#
+# - `qa-smoke`: runs `scripts/qa_capture.py` (R1 T4B.1) against a
+#   FRESH dev.sqlite with only Alembic migrations applied — no real
+#   ingested companies, prices or fundamentals. Deliberately
+#   NON-BLOCKING (`continue-on-error: true`): almost every one of that
+#   script's assertions is about what a REAL row of data looks like
+#   (a real ticker in a real table, a real ratio, a real trend chip) —
+#   against an empty database every one of those would read as a false
+#   failure, and a chronically-red required check trains reviewers to
+#   ignore it, which is worse than no gate. Its screenshots and report
+#   still upload as an artifact so a human can look, and running it
+#   here at least catches an outright crash (a missing import, a
+#   renamed route, a selector that no longer matches ANY markup) even
+#   with no real data to assert richer things against. The real,
+#   meaningful run of this script needs a maintained dev/staging
+#   environment with real ingested data — see `R1_QA_CAPTURE.md`'s own
+#   header for what that run found.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Backend tests
+        working-directory: backend
+        run: .venv/bin/python -m pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend typecheck + zone-fallback guard
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+  qa-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/python -m playwright install --with-deps chromium
+
+      - name: Apply migrations to a fresh dev database
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite+pysqlite:///./devdb.sqlite
+        run: .venv/bin/python -m alembic upgrade head
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite+pysqlite:///./devdb.sqlite
+        run: |
+          nohup .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 > uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8001/health && break; sleep 1; done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start frontend dev server
+        working-directory: frontend
+        run: |
+          nohup npm run dev -- --host 127.0.0.1 --port 5173 > vite.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:5173 && break; sleep 1; done
+
+      - name: Run QA capture (non-blocking against an unseeded DB)
+        working-directory: backend
+        run: .venv/bin/python -m scripts.qa_capture
+
+      - name: Upload QA capture report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r1-qa-capture
+          path: |
+            docs/audits/R1_QA_CAPTURE.md
+            docs/audits/screenshots/R1/
