@@ -385,6 +385,152 @@ def cmd_refresh_stale_fundamentals(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auto_confirm_fundamentals(args: argparse.Namespace) -> int:
+    """One-time mathematical cross-check of the AI-assisted confirm queue
+    (§8). Scores every pending row against independent signals — the
+    accounting-identity web, a fresh re-extraction of the source PDF,
+    cross-source agreement, annual/quarterly reconciliation, dual-listing
+    agreement — and auto-confirms only rows with >=2 signals (one of them
+    the re-extraction) and zero vetoes. See `app.domain.fundamental_
+    cross_check` for the full battery.
+
+    Dry-run by default: writes docs/audits/AUTO_CONFIRM_<date>.md and
+    changes nothing. `--apply` promotes the auto-confirmable rows to
+    REPORTED with confirmed_by="auto:cross-check-v1 [...]" and writes a
+    confidence band into every other pending row's source_snippet.
+    `scripts/revert_auto_confirm.py` undoes the whole pass.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from app.domain.fundamental_cross_check_view import cross_check_all
+    from app.models.enums import ProvenanceTier
+    from app.models.fundamentals import Fundamental
+
+    if args.no_reextract and args.apply:
+        print(
+            "--no-reextract cannot be combined with --apply: re-extraction (S2) is "
+            "required for auto-confirm. Drop --apply for a triage-only report.",
+            file=sys.stderr,
+        )
+        return 1
+
+    repo_root = Path(__file__).resolve().parents[2]
+    out_path = repo_root / "docs" / "audits" / f"AUTO_CONFIRM_{dt.date.today().isoformat()}.md"
+    # ".partial.jsonl" so it matches .gitignore's resumable-checkpoint rule
+    checkpoint_path = out_path.parent / (out_path.stem + ".reextract.partial.jsonl")
+
+    db = SessionLocal()
+    verdicts = []
+    try:
+        def _progress(i: int, total: int, group) -> None:
+            if i == 1 or i % 50 == 0 or i == total:
+                print(f"  [{i}/{total}] {group.ticker} {group.period_end} {group.period_type}", file=sys.stderr)
+
+        for v in cross_check_all(
+            db,
+            reextract=not args.no_reextract,
+            user_agent=settings.cse_user_agent,
+            checkpoint_path=checkpoint_path if not args.no_reextract else None,
+            pacing_seconds=args.pacing_seconds,
+            min_signals=args.min_signals,
+            only_ticker=args.ticker,
+            progress=_progress,
+        ):
+            verdicts.append(v)
+
+        auto = [v for v in verdicts if v.auto_confirm]
+        by_band: dict[str, int] = {}
+        by_combo: dict[str, int] = {}
+        by_line_auto: dict[str, int] = {}
+        for v in verdicts:
+            by_band[v.confidence] = by_band.get(v.confidence, 0) + 1
+            by_combo[v.describe()] = by_combo.get(v.describe(), 0) + 1
+            if v.auto_confirm:
+                by_line_auto[v.statement_line] = by_line_auto.get(v.statement_line, 0) + 1
+
+        lines = [
+            f"# Auto-confirm cross-check — {dt.date.today().isoformat()}",
+            "",
+            f"Re-extraction: {'OFF (triage only)' if args.no_reextract else 'ON'}. "
+            f"Min signals: {args.min_signals}. Scope: {args.ticker or 'whole queue'}.",
+            "",
+            f"**{len(verdicts)} pending rows scored. {len(auto)} auto-confirmable "
+            f"({len(auto) * 100 // max(len(verdicts), 1)}%).**",
+            "",
+            "## By confidence band",
+            "",
+            "| band | rows |",
+            "|---|---|",
+        ]
+        for band in ("auto-confirm", "high", "medium", "needs-review"):
+            lines.append(f"| {band} | {by_band.get(band, 0)} |")
+        lines += ["", "## Auto-confirm by statement line", "", "| line | rows |", "|---|---|"]
+        for line, n in sorted(by_line_auto.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {line} | {n} |")
+        lines += ["", "## Signal / veto combinations", "", "| combination | rows |", "|---|---|"]
+        for combo, n in sorted(by_combo.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {combo} | {n} |")
+        lines += [
+            "",
+            "## Every auto-confirmable row",
+            "",
+            "| ticker | line | period | type | value | signals |",
+            "|---|---|---|---|---|---|",
+        ]
+        for v in sorted(auto, key=lambda v: (v.ticker, v.period_end, v.statement_line)):
+            lines.append(
+                f"| {v.ticker} | {v.statement_line} | {v.period_end} | {v.period_type} "
+                f"| {v.value:,} | {'+'.join(sorted(v.signals))} |"
+            )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"\nWrote {out_path}")
+        print(f"{len(verdicts)} scored, {len(auto)} auto-confirmable, bands={by_band}")
+
+        if not args.apply:
+            print("DRY RUN — nothing written to the database. Re-run with --apply.")
+            return 0
+
+        confirmed = 0
+        banded = 0
+        stamp = dt.datetime.now(dt.timezone.utc)
+        for v in verdicts:
+            rows = db.scalars(
+                select(Fundamental).where(
+                    Fundamental.ticker == v.ticker,
+                    Fundamental.period_end == dt.date.fromisoformat(v.period_end),
+                    Fundamental.period_type == v.period_type,
+                    Fundamental.statement_line == v.statement_line,
+                    Fundamental.provenance_tier == ProvenanceTier.AI_ASSISTED,
+                    Fundamental.value == v.value,
+                )
+            ).all()
+            for row in rows:
+                if v.auto_confirm:
+                    sig = "+".join(sorted(v.signals))
+                    row.provenance_tier = ProvenanceTier.REPORTED
+                    row.confirmed_by = f"auto:cross-check-v1 [{sig}]"
+                    row.confirmed_at = stamp
+                    row.source_snippet = (
+                        f"[AUTO-CONFIRM {dt.date.today().isoformat()}] machine cross-check "
+                        f"passed on {sig} with no veto — promoted to REPORTED by "
+                        f"`app.domain.fundamental_cross_check`. Revert: "
+                        f"scripts/revert_auto_confirm.py.\n\n" + (row.source_snippet or "")
+                    )
+                    confirmed += 1
+                else:
+                    note = f"[cross-check {dt.date.today().isoformat()}: {v.confidence} — {v.describe()}]"
+                    if not (row.source_snippet or "").startswith("[cross-check "):
+                        row.source_snippet = note + " " + (row.source_snippet or "")
+                        banded += 1
+        db.commit()
+        print(f"APPLIED — {confirmed} rows promoted to REPORTED, {banded} rows tagged with a confidence band.")
+    finally:
+        db.close()
+    return 0
+
+
 def cmd_backfill_prices(args: argparse.Namespace) -> int:
     """Backfill ~1 year of daily price history per company from
     companyChartDataByStock — fills gaps only, never touches a date
@@ -670,6 +816,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_rs.add_argument("--ticker", action="append", help="restrict to one or more tickers")
     p_rs.set_defaults(func=cmd_refresh_stale_fundamentals)
+
+    p_ac = sub.add_parser(
+        "auto-confirm-fundamentals",
+        help="one-time mathematical cross-check of the confirm queue: auto-confirm every "
+        "pending row provable from >=2 independent signals (identity web, re-extraction, "
+        "cross-source, annual/quarterly, dual-listing) with no veto",
+    )
+    p_ac.add_argument("--ticker", type=str, default=None, help="scope to a single ticker")
+    p_ac.add_argument(
+        "--no-reextract", action="store_true",
+        help="triage report only, from stored data — cannot be combined with --apply "
+        "(re-extraction is required to auto-confirm)",
+    )
+    p_ac.add_argument("--min-signals", type=int, default=2, help="signals required to auto-confirm (default 2)")
+    p_ac.add_argument("--pacing-seconds", type=float, default=2.0, help="delay between PDF re-downloads")
+    p_ac.add_argument("--apply", action="store_true", help="write the confirmations to the database")
+    p_ac.set_defaults(func=cmd_auto_confirm_fundamentals)
 
     p_bp = sub.add_parser(
         "backfill-prices",

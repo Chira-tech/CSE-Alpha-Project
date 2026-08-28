@@ -3602,6 +3602,53 @@ is correctly built without any sacrifices on the value it brings."
       tests). DB integrity `ok`; a snapshot was taken before each
       remediation.
 
+### Mathematical cross-check + one-time machine confirmation of the queue
+
+Prompted by the product owner: "confirming 35k rows will have human
+errors — can we build something that mathematically cross-checks
+everything and confirms for one time." The bar was settled directly:
+promote passing rows to `REPORTED` tagged `auto:`, re-extraction
+mandatory, at least 2 independent signals.
+
+- [x] **`app.domain.fundamental_cross_check`** (pure) +
+      **`app.domain.fundamental_cross_check_view`** (DB-wired) — scores
+      every `AI_ASSISTED` row against independent signals: **S1** the
+      accounting-identity web balances (reusing `_identity_diffs` +
+      the module's own Rs 1,000 rounding tolerance); **S2** today's
+      parser, re-run against the source PDF, reproduces the stored value
+      exactly; **S3** an independently-sourced row (different
+      `source_url`) agrees; **S5** an annual flow line equals the sum of
+      its four quarters within 1%; **S6** the dual-listing counterpart
+      (`.N0000`/`.X0000`) reports the identical figure. Vetoes: magnitude
+      floor, component-subtotal ceiling, a >20x period-over-period jump
+      with no corroboration, and a live (not stale) "EXTRACTION FAILED
+      ARITHMETIC CHECK" marker.
+- [x] **Auto-confirm requires S2 AND ≥2 signals AND no veto AND a
+      genuinely independent cross-check** — either an external signal
+      (S3/S5/S6) or membership in ≥2 independently-passing identities.
+      S1+S2 alone are NOT enough for a single-identity line
+      (`net_income`, `revenue`): both read the same extraction of the
+      same filing, so neither catches a uniform-offset misread that
+      keeps its one identity balancing (JAT Holdings' real `net_income`).
+      Regression-tested against exactly that shape and against the
+      OI-1/OI-4 note-reference shape.
+- [x] **`python -m app.cli auto-confirm-fundamentals`** — dry-run by
+      default (writes `docs/audits/AUTO_CONFIRM_<date>.md`: counts by
+      confidence band, by signal combination, by line, and the full
+      would-confirm list), resumable PDF-re-extraction checkpoint,
+      `--apply` promotes to `REPORTED` with
+      `confirmed_by="auto:cross-check-v1 [<signals>]"` and writes a
+      confidence band onto every row it does NOT confirm so the residual
+      human queue is triaged. **`scripts/revert_auto_confirm.py`** undoes
+      the entire pass in one command.
+- [x] Proven end-to-end on a real scoped run (`--ticker AHPL.N0000`,
+      36 filings, live re-extraction): 20 of 382 rows auto-confirmed,
+      every one hand-checked correct — including the AHPL component lines
+      this session's own over-correction refix had just corrected, now
+      independently re-confirmed by S2+S3. 29 new tests; full suite
+      **1385 passed**. The full unattended run (~4,561 filings) is the
+      operator's to kick off.
+
 ## M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md): Task 1 (isolation scaffold) only
 
 A new, separate module — not part of the Master Spec's own phase
