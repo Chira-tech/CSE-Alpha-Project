@@ -33,6 +33,33 @@ class TestComputeCostOfDebt:
         assert result.pre_tax_cost_of_debt == Decimal("0.1")
         assert result.after_tax_cost_of_debt is None
 
+    def test_a_negative_signed_interest_expense_does_not_produce_a_negative_cost_of_debt(self):
+        """REAL BUG, found live (27 Aug 2026): LGL.N0000's real confirmed
+        `interest_expense` for its FY2013 annual filing is stored as
+        -5,053,018 — a faithful read of that filing's own real
+        parenthesised "Finance Costs 6.3 (5,053,018) ..." line — while
+        its own real quarterly filing for an adjacent period shows the
+        identical LKR 5,053,018 figure unparenthesised (positive). Both
+        are correct reads of genuinely inconsistent real source
+        documents; only the magnitude is reliable. Without abs(), this
+        would produce a NEGATIVE cost of debt, pulling WACC down and
+        overstating every DCF value built on it — the same dangerous
+        direction this module already guards against for a MISSING cost
+        of debt."""
+        negative = compute_cost_of_debt(
+            interest_expense=Decimal("-5053018"),
+            total_interest_bearing_debt=Decimal("100000000"),
+            effective_tax_rate=Decimal("0.28"),
+        )
+        positive = compute_cost_of_debt(
+            interest_expense=Decimal("5053018"),
+            total_interest_bearing_debt=Decimal("100000000"),
+            effective_tax_rate=Decimal("0.28"),
+        )
+        assert negative.pre_tax_cost_of_debt > 0
+        assert negative.pre_tax_cost_of_debt == positive.pre_tax_cost_of_debt
+        assert negative.after_tax_cost_of_debt == positive.after_tax_cost_of_debt
+
 
 class TestComputeWACC:
     def test_hand_worked(self):
@@ -51,6 +78,34 @@ class TestComputeWACC:
         assert result.debt_weight == Decimal("0.2")
         expected = Decimal("0.8") * Decimal("0.15") + Decimal("0.2") * Decimal("0.054445")
         assert abs(result.wacc - expected) < Decimal("0.000001")
+
+    def test_a_negative_signed_debt_balance_does_not_invert_the_weights(self):
+        """REAL BUG, found live (27 Aug 2026): LVEF.N0000's real confirmed
+        `total_interest_bearing_debt` for its FY2025 annual filing is
+        stored as -2,851,407,000 — a faithful read of that filing's own
+        real parenthesised debt-maturity-split line — while its own real
+        quarterly filing shows the identical figure unparenthesised
+        (positive). A debt BALANCE can never legitimately be negative;
+        without abs(), this would make `debt_weight` negative and
+        `equity_weight` exceed 1.0 — an uninterpretable weighted average,
+        not just a wrong number."""
+        negative = compute_wacc(
+            shares_outstanding=Decimal(100),
+            current_price=Decimal(20),
+            total_interest_bearing_debt=Decimal(-500),
+            cost_of_equity=Decimal("0.15"),
+            after_tax_cost_of_debt=Decimal("0.054445"),
+        )
+        positive = compute_wacc(
+            shares_outstanding=Decimal(100),
+            current_price=Decimal(20),
+            total_interest_bearing_debt=Decimal(500),
+            cost_of_equity=Decimal("0.15"),
+            after_tax_cost_of_debt=Decimal("0.054445"),
+        )
+        assert negative.debt_weight == positive.debt_weight == Decimal("0.2")
+        assert negative.equity_weight == positive.equity_weight == Decimal("0.8")
+        assert negative.wacc == positive.wacc
 
     def test_wacc_is_lower_than_ke_alone_for_a_levered_company(self):
         """The whole point of this module: a levered company's discount

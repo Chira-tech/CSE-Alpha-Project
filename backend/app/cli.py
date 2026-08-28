@@ -25,6 +25,7 @@ from app.ingestion.archetype_loader import apply_archetype_proposals
 from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.ingestion.financial_reports_archive_loader import ingest_report_archive_for_ticker
+from app.ingestion.financial_pdf_extractor import sweep_stale_fundamentals
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
@@ -264,6 +265,18 @@ def cmd_backfill_financials(args: argparse.Namespace) -> int:
     anything (idempotent on the exact PDF URL). Every draft still lands
     in the confirm queue (§8) exactly like the single-filing scan;
     nothing here is auto-promoted to Reported.
+
+    `--reconcile` — for when a parser fix or a new canonical-label alias
+    needs to reach filings ingested BEFORE it existed. The ordinary
+    (non-reconcile) run above skips a filing outright once it has ANY
+    row on file, however incomplete that extraction was — see
+    `ingest_archived_report`'s own docstring for why, and for the
+    guarantee that matters most here: reconcile mode only ever ADDS a
+    statement line genuinely missing from a filing's existing rows, and
+    NEVER touches, replaces, or deletes one already there, confirmed or
+    not. Costs the same request budget as a fresh run — every filing is
+    still re-downloaded and re-parsed, since there's no cheaper way to
+    find out whether anything new is now extractable from it.
     """
     db = SessionLocal()
     try:
@@ -294,7 +307,7 @@ def cmd_backfill_financials(args: argparse.Namespace) -> int:
             for ticker in tickers:
                 try:
                     summary = ingest_report_archive_for_ticker(
-                        client, db, ticker, max_per_type=args.recent
+                        client, db, ticker, max_per_type=args.recent, reconcile=args.reconcile
                     )
                 except Exception as exc:  # noqa: BLE001 — one bad ticker must not abort the sweep
                     print(f"  {ticker}: FAILED ({exc})", file=sys.stderr)
@@ -310,6 +323,62 @@ def cmd_backfill_financials(args: argparse.Namespace) -> int:
             f"Done. {totals['drafted']} draft(s) awaiting review at /fundamentals. "
             f"{totals['unavailable']} filing(s) listed but not retrievable from the CDN "
             f"even after the cmt/ normalization, {totals['failed']} genuine failures."
+        )
+    finally:
+        db.close()
+    return 0
+
+
+def cmd_refresh_stale_fundamentals(args: argparse.Namespace) -> int:
+    """For each given ticker, find every (period_end, period_type) filing
+    whose CURRENTLY STORED fundamentals fail `check_extraction_quality`
+    (an accounting identity, or the magnitude-plausibility floor),
+    re-download that filing's PDF, and re-run today's extractor against
+    it — repairing any row a since-fixed extraction bug left wrong
+    (`app.ingestion.financial_pdf_extractor.refresh_stale_fundamentals`'s
+    own docstring has the real cases this exists for: HNB.N0000/X0000,
+    CALH.N0000, COCR.N0000). `backfill-financials` itself will never
+    revisit these on its own — it treats "a filing already has stored
+    rows" as done, no matter how wrong they are.
+
+    Only ever touches still-unconfirmed AI-assisted rows; a fresh
+    extraction that still doesn't balance changes nothing and is reported
+    as such, not silently retried or forced in. Thin wrapper around
+    `app.ingestion.financial_pdf_extractor.sweep_stale_fundamentals` —
+    all the real logic (and the same sweep `app.jobs.runner`'s scheduled
+    job runs) lives there; this command just prints it.
+    """
+    db = SessionLocal()
+    try:
+        tickers = [t for (t,) in db.execute(select(Security.ticker).order_by(Security.ticker)).all()]
+        if args.ticker:
+            tickers = [t for t in tickers if t in set(args.ticker)]
+        if not tickers:
+            print("No matching tickers.", file=sys.stderr)
+            return 1
+
+        def on_filing(i: int, total: int, label: str) -> None:
+            print(f"  [{i}/{total}] checking {label}...", file=sys.stderr)
+
+        outcomes = sweep_stale_fundamentals(db, tickers, on_filing=on_filing)
+        totals = {"repaired": 0, "still_failing": 0, "no_source": 0, "error": 0}
+        for o in outcomes:
+            if o.status == "repaired":
+                print(f"  {o.ticker} {o.period_end} {o.period_type}: repaired {list(o.updated_lines)}")
+            elif o.status == "still_failing":
+                print(f"  {o.ticker} {o.period_end} {o.period_type}: still fails after re-extraction — {o.detail}")
+            elif o.status == "no_source":
+                print(f"  {o.ticker} {o.period_end} {o.period_type}: no source_url stored, cannot refresh")
+            elif o.status == "error":
+                print(f"  {o.ticker} {o.period_end} {o.period_type}: FAILED ({o.detail})", file=sys.stderr)
+            else:
+                print(f"  {o.ticker} {o.period_end} {o.period_type}: {o.detail}")
+            if o.status in totals:
+                totals[o.status] += 1
+        print(
+            f"Done. {len(outcomes)} filing(s) currently fail an accounting identity or magnitude check; "
+            f"{totals['repaired']} repaired, {totals['still_failing']} still fail after "
+            f"re-extraction, {totals['no_source']} had no stored source_url, {totals['error']} errored."
         )
     finally:
         db.close()
@@ -583,7 +652,24 @@ def main(argv: list[str] | None = None) -> int:
             "(idempotency still applies even without this; it's purely a speed-up)."
         ),
     )
+    p_bf.add_argument(
+        "--reconcile", action="store_true",
+        help=(
+            "re-parse filings already on file too, adding any statement line a parser "
+            "fix now extracts but the original pass missed — never touches, replaces, "
+            "or deletes an existing row, confirmed or not. Costs the same request "
+            "budget as a fresh run (every filing is re-downloaded and re-parsed)."
+        ),
+    )
     p_bf.set_defaults(func=cmd_backfill_financials)
+
+    p_rs = sub.add_parser(
+        "refresh-stale-fundamentals",
+        help="re-extract filings whose stored fundamentals fail an accounting identity, "
+        "repairing any that a since-fixed extraction bug left wrong",
+    )
+    p_rs.add_argument("--ticker", action="append", help="restrict to one or more tickers")
+    p_rs.set_defaults(func=cmd_refresh_stale_fundamentals)
 
     p_bp = sub.add_parser(
         "backfill-prices",

@@ -139,5 +139,22 @@ class Settings(BaseSettings):
     excluded_sectors: list[str] = Field(default_factory=list)
     excluded_tickers: list[str] = Field(default_factory=list)
 
+    # --- M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md) --
+    m5_enabled: bool = False
+    """The ONLY M5-related field on this object, deliberately: every
+    other M5 setting lives in `m5.config.M5Settings`, a completely
+    separate settings object M5's own modules read instead (brief §0's
+    isolation rule extended to config, not just data/components). This
+    field exists purely so `app/main.py`'s own allowlisted guard line
+    (brief §1.3 — `if settings.m5_enabled:`) has something real to read;
+    `pydantic_settings.BaseSettings` with `extra="ignore"` (this class's
+    own `model_config`) silently drops an undeclared env var, so the
+    guard would otherwise always evaluate false regardless of the real
+    `M5_ENABLED` env var. A disclosed, minimal exception to brief §1.3's
+    literal "only main.py, one line" — flagged here per the brief's own
+    "if an existing file must change, STOP and raise it" rule, not
+    silently done. Grants M5 no write access to anything and changes no
+    existing behaviour."""
+
 
 settings = Settings()

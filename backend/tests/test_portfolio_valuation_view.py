@@ -127,7 +127,7 @@ class TestValuePortfolio:
         )
         db_session.commit()
 
-        def _fake_ke(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None):
+        def _fake_ke(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None, universe_liquidity_percentiles=None):
             return CostOfEquityResult(
                 ke=Decimal("0.15"), risk_free_rate=Decimal("0.12"), beta=Decimal("1.0"),
                 erp_effective=Decimal("0.07"), beta_times_erp=Decimal("0.07"), size_premium=None,
@@ -143,3 +143,82 @@ class TestValuePortfolio:
 
         assert pos.price_ladder_zone is None
         assert any("fair_value must be positive" in w for w in pos.warnings)
+
+
+def test_a_quarantined_holding_shows_price_but_withholds_fair_value(db_session):
+    """OI-3 (docs/audits/R1_OPEN_ISSUES.md): a quarantined ticker's real
+    price/quantity/cost still show (directly observed, not model
+    output), but every derived valuation field is withheld with a named
+    reason — the same real gap `opportunity_ranking_view` had, closed
+    the same way here."""
+    from app.models.data_quality import DataAlert
+
+    db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+    now = dt.datetime.now(dt.timezone.utc)
+    db_session.add(
+        PriceDaily(ticker="JKH.N0000", date=AS_OF, close=Decimal("25.0"), adj_factor=Decimal("1"), fetched_at=now)
+    )
+    db_session.add(
+        DataAlert(
+            ticker="JKH.N0000", alert_type="reconciliation_mismatch", detail="test",
+            raised_at=now, resolved=False,
+        )
+    )
+    db_session.commit()
+
+    snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000"), source_filename="p.xlsx")
+    result = value_portfolio(db_session, snapshot, AS_OF)
+    pos = result.positions[0]
+
+    # Real, directly observed figures still show.
+    assert pos.live_current_price == Decimal("25.0")
+    assert pos.live_market_value is not None
+
+    # Every derived valuation field is withheld.
+    assert pos.blended_fair_value_per_share is None
+    assert pos.price_ladder_zone is None
+    assert pos.buy_below_price is None
+    assert pos.sell_above_price is None
+    assert pos.margin_of_safety_pct is None
+    assert pos.dispersion_pct is None
+    assert any("quarantined" in w for w in pos.warnings)
+
+
+class TestPortfolioValueTrend:
+    def test_real_price_change_computed_from_todays_holdings_at_past_prices(self, db_session):
+        """R1 T4.1.6 — real §41-lite trend: today's exact quantity,
+        priced at real historical closes."""
+        from app.domain.portfolio_valuation_view import portfolio_value_trend
+
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add(
+            PriceDaily(ticker="JKH.N0000", date=AS_OF - dt.timedelta(days=15), close=Decimal("20.0"), adj_factor=Decimal("1"), fetched_at=now)
+        )
+        db_session.add(
+            PriceDaily(ticker="JKH.N0000", date=AS_OF, close=Decimal("25.0"), adj_factor=Decimal("1"), fetched_at=now)
+        )
+        db_session.commit()
+
+        snapshot = store_portfolio_snapshot(
+            db_session, _parsed("JKH.N0000", avg_price=Decimal("20.0"), quantity=Decimal("1000")),
+            source_filename="p.xlsx",
+        )
+        result = portfolio_value_trend(db_session, snapshot, AS_OF, (15,))
+        # 1000 * 25.0 vs 1000 * 20.0 -> +25%
+        assert result[15] == Decimal("25")
+
+    def test_missing_price_that_far_back_returns_none_not_a_partial_total(self, db_session):
+        from app.domain.portfolio_valuation_view import portfolio_value_trend
+
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add(
+            PriceDaily(ticker="JKH.N0000", date=AS_OF, close=Decimal("25.0"), adj_factor=Decimal("1"), fetched_at=now)
+        )
+        db_session.commit()
+
+        snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000"), source_filename="p.xlsx")
+        result = portfolio_value_trend(db_session, snapshot, AS_OF, (15, 30))
+        assert result[15] is None
+        assert result[30] is None

@@ -50,6 +50,7 @@ import datetime as dt
 import io
 import logging
 from decimal import Decimal
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -59,16 +60,20 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domain.financial_statement_parsing import (
+    DEFAULT_EXPECTED_VALUE_COLUMNS,
     DERIVED_DIFFERENCES,
     DERIVED_SUMS,
     NET_WORKING_CAPITAL_ASSET_COMPONENTS,
     NET_WORKING_CAPITAL_LIABILITY_COMPONENTS,
     SUM_ACROSS_OCCURRENCES,
     ExtractedLine,
-    check_accounting_identities,
+    check_extraction_quality,
     derive_additional_line_items,
+    detect_expected_value_columns,
     detect_unit_scale,
     extract_candidate_lines,
+    reconcile_ambiguous_values_via_identities,
+    reconcile_magnitude_implausible_values,
     repair_character_doubling,
 )
 from app.ingestion.cse_client import CseClient
@@ -118,13 +123,59 @@ _STATEMENT_PAGE_MARKERS = (
 # "notes reuse words like Total" risk already used exactly this phrase),
 # so it is checked FIRST and unconditionally excludes the page,
 # regardless of which positive marker also happens to match.
-_NOTES_PAGE_MARKER = "notes to the"
+#
+# SECOND real case, found live tracing HNB.N0000's real ~15x net_income
+# error (27 Aug 2026, R1_VALIDATION.md's own named, unfixed finding):
+# HNB's real FY2024 annual report has a note, "34 (d) Summarised
+# Statement Of Profit Or Loss Of Joint Venture - Acuity Partners (Pvt)
+# Ltd and its Subsidiaries" (page 403), that prints a miniature income
+# statement for its OWN joint venture — same canonical labels (Revenue,
+# Profit before tax, Profit for the year...) as HNB's real consolidated
+# statement, but a completely different, much smaller entity's figures.
+# It does NOT contain "notes to the" (it's a continuation page deep
+# inside note 34, not the notes section's own opening header), so the
+# existing marker missed it, and it happens to appear BEFORE HNB's own
+# real income statement in page order — "first occurrence wins"
+# (`build_fundamental_drafts`) then kept the joint venture's own
+# net_income as if it were HNB's. "Summarised Statement of ..." is a
+# reliable, generalisable signal distinct from this marker's first case:
+# a genuine PRIMARY statement is never described as "summarised" in its
+# own real heading (summarised implies an abbreviated recap of a fuller
+# statement located elsewhere — i.e. note content, by definition), so
+# this catches the same shape for ANY company's joint-venture/associate/
+# segment sub-schedule, not just Acuity Partners specifically.
+_NOTES_PAGE_MARKERS = ("notes to the", "summarised statement of", "summarized statement of")
+
+# THIRD real case, found live in the SAME HNB.N0000 investigation as the
+# marker tuple above, tracing why the fix for the second case still
+# wasn't enough: HNB's real PRIMARY income statement page (its own
+# genuine "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME")
+# was ALSO being excluded — by the FIRST marker, "notes to the", firing
+# on this completely ordinary footer line every real primary statement
+# page in this filing carries: "The notes to the financial statements
+# from pages 298 to 466 form an integral part of these financial
+# statements." (verified: line 39 of 41 on that real page — a footer
+# disclosure, not a section header). `_NOTES_PAGE_MARKERS` was built and
+# verified only against genuine notes-SECTION headers, which real
+# filings checked so far always print within the first few lines of the
+# page (J.F. Packaging's own "NOTES TO THE CONSOLIDATED FINANCIAL
+# STATEMENTS" sits on line 1) — never against a page whose exclusion
+# marker shows up as ordinary running/footer text instead. Scoping the
+# `_NOTES_PAGE_MARKERS` check to the page's own first
+# `_NOTES_MARKER_SEARCH_LINES` lines (matching `financial_statement_
+# parsing._HEADER_SEARCH_LINES`'s own precedent for exactly this "only
+# look at where a real header actually lives" discipline) fixes this
+# without narrowing what it was built to catch — every real notes-
+# section header and every real "Summarised Statement of ..." sub-
+# schedule heading checked so far still sits well within this window.
+_NOTES_MARKER_SEARCH_LINES = 10
 
 
-def _is_primary_statement_page(page_text_lower: str) -> bool:
-    if _NOTES_PAGE_MARKER in page_text_lower:
+def _is_primary_statement_page(page_text: str) -> bool:
+    header_lower = "\n".join(page_text.splitlines()[:_NOTES_MARKER_SEARCH_LINES]).lower()
+    if any(marker in header_lower for marker in _NOTES_PAGE_MARKERS):
         return False
-    return any(marker in page_text_lower for marker in _STATEMENT_PAGE_MARKERS)
+    return any(marker in page_text.lower() for marker in _STATEMENT_PAGE_MARKERS)
 
 
 def fetch_recent_financial_announcements(client: CseClient) -> list[FinancialAnnouncementRow]:
@@ -193,9 +244,16 @@ def _scale_extracted_line(line: ExtractedLine, scale: Decimal) -> ExtractedLine:
     """Every value column scaled uniformly — see `app.domain.financial_
     statement_parsing.detect_unit_scale`'s own docstring for why this is
     a page-wide multiplier, not applied per-line, and its documented
-    "not applicable to per-share lines" caveat."""
+    "not applicable to per-share lines" caveat. `alt_values` (see that
+    field's own docstring) gets the identical scale — it's the same
+    printed figures, just a different candidate reading of them, not a
+    different unit."""
     return dataclasses.replace(
-        line, values=tuple(v * scale if v is not None else None for v in line.values)
+        line,
+        values=tuple(v * scale if v is not None else None for v in line.values),
+        alt_values=(
+            tuple(v * scale for v in line.alt_values) if line.alt_values is not None else None
+        ),
     )
 
 
@@ -228,8 +286,7 @@ def extract_financial_statement_candidates(
             # doesn't show strong evidence of the bug (i.e. every page of
             # every other real filing checked so far).
             text = repair_character_doubling(text)
-            lower = text.lower()
-            if not _is_primary_statement_page(lower):
+            if not _is_primary_statement_page(text):
                 continue
             scale = detect_unit_scale(text)
             if scale is None:
@@ -240,10 +297,85 @@ def extract_financial_statement_candidates(
                     page_number,
                 )
                 continue
-            for line in extract_candidate_lines(text):
+            # This page's OWN real column count, read from its own header
+            # — see `detect_expected_value_columns`'s own docstring for
+            # the real, live bug this closes (a company whose statement
+            # isn't the assumed 4-column Group/Company comparative used
+            # to silently get the wrong expected count). Falls back to
+            # the same default every page used before this existed.
+            expected_columns = (
+                detect_expected_value_columns(text) or DEFAULT_EXPECTED_VALUE_COLUMNS
+            )
+            for line in extract_candidate_lines(text, expected_columns):
                 if line.statement_line is not None and line.primary_value is not None:
                     results.append((page_number, _scale_extracted_line(line, scale)))
+
+    _apply_identity_reconciled_corrections(results)
     return results
+
+
+def _apply_identity_reconciled_corrections(results: list[tuple[int, ExtractedLine]]) -> None:
+    """Mutates `results` IN PLACE, replacing a line's `values` with its
+    own `alt_values` reading wherever either of TWO reconciliation passes
+    (app.domain.financial_statement_parsing) accepts the correction: (1)
+    `reconcile_ambiguous_values_via_identities` — a substitution that
+    turns a FAILING accounting identity into a passing one without
+    breaking one that already passed; then (2) `reconcile_magnitude_
+    implausible_values`, run against the values AFTER pass (1)'s own
+    corrections are applied — the narrower, identity-free acceptance rule
+    for a component line (`inventories`, `trade_receivables`) that no
+    accounting identity in this module mentions at all, so pass (1) never
+    even considers it however implausible the default reading is. See
+    that function's own docstring for the real case (Serendib Hotels
+    PLC's real confirmed `inventories`) and its own acceptance rule.
+
+    Built from the FIRST occurrence of each statement_line, matching
+    `build_fundamental_drafts`'s own "first occurrence wins" rule
+    exactly — a correction is only meaningful if it lands on the same
+    occurrence that rule would actually keep as the real draft; a second
+    (e.g. Company-column) occurrence of the same canonical key is never
+    consulted or corrected here, same as it's never used for the draft
+    either.
+    """
+    values: dict[str, Decimal] = {}
+    alt_values: dict[str, Decimal] = {}
+    first_index_by_key: dict[str, int] = {}
+    for index, (_page, line) in enumerate(results):
+        if line.statement_line is None or line.primary_value is None:
+            continue
+        if line.statement_line in values:
+            continue
+        values[line.statement_line] = line.primary_value
+        first_index_by_key[line.statement_line] = index
+        if line.alt_values is not None:
+            alt_values[line.statement_line] = line.alt_values[0]
+
+    corrections = dict(reconcile_ambiguous_values_via_identities(values, alt_values))
+    values_after_identity_pass = {**values, **corrections}
+    magnitude_corrections = reconcile_magnitude_implausible_values(
+        values_after_identity_pass, alt_values
+    )
+    corrections.update(magnitude_corrections)
+
+    for statement_line, corrected_value in corrections.items():
+        index = first_index_by_key[statement_line]
+        page_number, line = results[index]
+        assert line.alt_values is not None  # only ever offered as a correction if this line had one
+        results[index] = (
+            page_number,
+            dataclasses.replace(line, values=line.alt_values),
+        )
+        reason = (
+            "magnitude-plausibility cross-check; see app.domain.financial_statement_parsing."
+            "reconcile_magnitude_implausible_values"
+            if statement_line in magnitude_corrections
+            else "accounting-identity cross-check; see app.domain.financial_statement_parsing."
+            "reconcile_ambiguous_values_via_identities"
+        )
+        logger.info(
+            "reconciled %s: %s -> %s (%s)",
+            statement_line, values[statement_line], corrected_value, reason,
+        )
 
 
 def build_fundamental_drafts(
@@ -450,19 +582,23 @@ def ingest_financial_statement(
     pdf_bytes = download_pdf(source_url, user_agent=user_agent or settings.cse_user_agent)
     candidates = extract_financial_statement_candidates(pdf_bytes)
 
-    # Independent arithmetic check before anything is stored. A statement
-    # that doesn't balance means the extraction is wrong, and the failure
-    # mode this guards against is a plausible number rather than a crash —
-    # a split thousands separator once turned 4,453,103 into 453,103 and
-    # nothing else in the pipeline noticed. Drafts still get written
-    # (they're unconfirmed by definition), but the failure is recorded on
-    # every row's notes so a reviewer sees it before promoting anything.
+    # Independent arithmetic + magnitude check before anything is stored.
+    # A statement that doesn't balance means the extraction is wrong, and
+    # the failure mode this guards against is a plausible number rather
+    # than a crash — a split thousands separator once turned 4,453,103
+    # into 453,103 and nothing else in the pipeline noticed.
+    # check_extraction_quality also catches the narrower case an identity
+    # can't: a value with no computable identity covering it at all (see
+    # check_magnitude_plausibility's own docstring — real cases:
+    # AAF.N0000, VLL.N0000). Drafts still get written (they're
+    # unconfirmed by definition), but the failure is recorded on every
+    # row's notes so a reviewer sees it before promoting anything.
     extracted_values = {
         line.statement_line: line.primary_value
         for _page, line in candidates
         if line.statement_line and line.primary_value is not None
     }
-    failed_identities = [c for c in check_accounting_identities(extracted_values) if not c.passed]
+    failed_identities = [c for c in check_extraction_quality(extracted_values) if not c.passed]
     if failed_identities:
         logger.error(
             "extraction for %s %s failed %d accounting identity check(s): %s",
@@ -520,3 +656,229 @@ def ingest_financial_statements_for_known_tickers(client: CseClient, db: Session
             except Exception:
                 logger.exception("financial statement ingestion failed for %s filing id=%s", ticker, row.id)
     return total
+
+
+@dataclasses.dataclass(frozen=True)
+class StaleRefreshResult:
+    """What `refresh_stale_fundamentals` actually did to one filing's
+    already-stored rows — reported per-line so a caller can print an
+    honest summary rather than a bare success/failure flag."""
+
+    updated: tuple[str, ...]
+    """statement_line keys whose stored value changed."""
+    unchanged: int
+    """Rows whose fresh re-extraction matched what was already stored."""
+    skipped_confirmed: int
+    """Rows left untouched because they're already human-confirmed
+    (Reported) — this function never edits confirmed data, matching every
+    other confirm-queue write path in this codebase."""
+    still_failing: bool
+    """True if the FRESH extraction still fails `check_accounting_
+    identities` (or found nothing at all) — nothing was written in this
+    case; re-extracting is not a fix in itself, only a candidate that
+    still has to earn its way in by actually balancing."""
+    note: str
+
+
+def refresh_stale_fundamentals(
+    db: Session, ticker: str, period_end: dt.date, period_type: str, pdf_bytes: bytes
+) -> StaleRefreshResult:
+    """Re-runs TODAY's extractor against a filing this system already has
+    draft rows for, and repairs any row a since-FIXED extraction bug left
+    wrong — real, confirmed cases: HNB.N0000/HNB.X0000 (`total_equity`
+    short by exactly LKR 200bn), CALH.N0000 (`total_assets` short by
+    80-100bn across 6 real quarters), COCR.N0000 (`total_liabilities` AND
+    `total_equity` both independently short, ~110bn combined) — all three
+    traced by hand against the real source PDF: `_repair_split_leading_
+    digits` genuinely mis-handled these rows when they were first
+    ingested, but re-running `extract_financial_statement_candidates`
+    against the identical PDF TODAY reads every one of them correctly —
+    something upstream of that function (column-count / variance-%
+    detection) was fixed since, independently of this repair.
+
+    The real problem this closes: `_already_ingested` treats "any row
+    already exists for this (ticker, period_end, period_type)" as done,
+    so a routine `backfill-financials` re-run — no matter how many times
+    it's run — never revisits these rows to pick up the fix. Nothing
+    short of an explicit re-extraction (this function) ever will.
+
+    Deliberately conservative in three ways, matching every other write
+    path onto this table:
+      1. NEVER touches an already-confirmed (Reported) row — only
+         still-AI-assisted, unconfirmed drafts are eligible, exactly like
+         `POST /fundamentals/{id}/confirm`'s own refusal to edit one.
+      2. The fresh reading is only ever applied if it makes `check_
+         extraction_quality` pass CLEANLY — every computable identity
+         AND magnitude check, not just whichever one used to fail —
+         using the exact same acceptance bar `reconcile_ambiguous_
+         values_via_identities` already established for its own,
+         narrower "ambiguous alt_values" case. A fresh extraction that
+         still doesn't balance is not "more recent," it's just a
+         different wrong number, and is refused the same as the current
+         stale one.
+      3. All-or-nothing per filing: if the fresh extraction can't be
+         trusted, NO row for this filing is touched, not even the ones
+         that happened to already match.
+    """
+    candidates = extract_financial_statement_candidates(pdf_bytes)
+    fresh_values: dict[str, Decimal] = {}
+    fresh_source: dict[str, tuple[int, ExtractedLine]] = {}
+    for page, line in candidates:
+        if (
+            line.statement_line is not None
+            and line.primary_value is not None
+            and line.statement_line not in fresh_values
+        ):
+            fresh_values[line.statement_line] = line.primary_value
+            fresh_source[line.statement_line] = (page, line)
+
+    if not fresh_values:
+        return StaleRefreshResult((), 0, 0, True, "fresh extraction found no statement pages/lines at all")
+
+    failed = [c for c in check_extraction_quality(fresh_values) if not c.passed]
+    if failed:
+        return StaleRefreshResult(
+            (), 0, 0, True,
+            "fresh extraction still fails: " + "; ".join(f"{c.name} ({c.detail})" for c in failed),
+        )
+
+    existing_rows = db.scalars(
+        select(Fundamental).where(
+            Fundamental.ticker == ticker,
+            Fundamental.period_end == period_end,
+            Fundamental.period_type == period_type,
+        )
+    ).all()
+
+    updated: list[str] = []
+    unchanged = 0
+    skipped_confirmed = 0
+    today = dt.datetime.now(_SRI_LANKA_TZ).date().isoformat()
+    for row in existing_rows:
+        if row.confirmed_by is not None:
+            skipped_confirmed += 1
+            continue
+        fresh = fresh_values.get(row.statement_line)
+        if fresh is None:
+            continue  # this line wasn't part of what got re-extracted; leave it exactly as is
+        if fresh == row.value:
+            unchanged += 1
+            continue
+        page, line = fresh_source[row.statement_line]
+        old_value = row.value
+        row.value = fresh
+        row.source_page = page
+        row.source_snippet = (
+            f"RE-EXTRACTED {today}: today's parser reads this line correctly and the filing "
+            f"now balances against every other extracted total (previously stored {old_value:,}, "
+            "a stale value from before a real split-leading-digit extraction bug was fixed — see "
+            "ROADMAP.md's \"stale pre-fix drafts\" entry). Raw text: " + line.raw_text
+        )
+        updated.append(row.statement_line)
+
+    db.commit()
+    return StaleRefreshResult(tuple(updated), unchanged, skipped_confirmed, False, "")
+
+
+@dataclasses.dataclass(frozen=True)
+class StaleSweepOutcome:
+    """One filing's outcome from `sweep_stale_fundamentals` — the SAME
+    shape whether the caller is `app.cli`'s `refresh-stale-fundamentals`
+    command (prints it) or `app.jobs.runner`'s scheduled/manual job
+    (folds it into progress_note / rows_written)."""
+
+    ticker: str
+    period_end: dt.date
+    period_type: str
+    status: str
+    """One of "repaired", "still_failing", "unchanged", "no_source",
+    "error" — never a raw exception or a free-form string a caller would
+    have to pattern-match against prose."""
+    detail: str
+    updated_lines: tuple[str, ...] = ()
+
+
+def sweep_stale_fundamentals(
+    db: Session,
+    tickers: list[str],
+    *,
+    user_agent: str | None = None,
+    on_filing: Callable[[int, int, str], bool | None] | None = None,
+) -> list[StaleSweepOutcome]:
+    """Every (ticker, period_end, period_type) filing across `tickers`
+    whose CURRENTLY STORED fundamentals fail `check_extraction_quality`,
+    re-downloaded and re-run through today's extractor via
+    `refresh_stale_fundamentals` — the shared core behind BOTH `app.cli`'s
+    `refresh-stale-fundamentals` command and `app.jobs.runner`'s
+    corresponding job, so the two can never drift apart (this project's
+    own established discipline — see `app.jobs.runner`'s own module
+    docstring, "every runner wraps an already-real ingestion call", now
+    true of this one too). See `refresh_stale_fundamentals`'s own
+    docstring for the real repair cases and the three ways this stays
+    conservative (never touches a confirmed row; only applies a fresh
+    reading that passes EVERY computable check, not just the one that
+    used to fail; all-or-nothing per filing).
+
+    First groups every ticker's stored rows into filings and checks each
+    one BEFORE any network call, so `on_filing`'s own `total` reflects
+    only filings that actually need a download — a ticker with nothing
+    currently failing costs nothing beyond one query, same as `app.cli`'s
+    original loop.
+
+    `on_filing`, when given, is called after EVERY filing CHECKED with
+    `(index_completed, total_checked, "{ticker} {period_end}")` —
+    mirrors `app.ingestion.security_enrichment.enrich_securities`'s own
+    `on_ticker` convention exactly, including its cooperative-cancel
+    contract: returning `False` stops the sweep after the filing that
+    just completed. Any other return value, including `None`, continues
+    the sweep unchanged.
+    """
+    to_check: list[tuple[str, dt.date, str, str | None]] = []
+    for ticker in tickers:
+        rows = db.scalars(select(Fundamental).where(Fundamental.ticker == ticker)).all()
+        groups: dict[tuple[dt.date, str], list[Fundamental]] = {}
+        for row in rows:
+            groups.setdefault((row.period_end, row.period_type), []).append(row)
+        for (period_end, period_type), group_rows in sorted(groups.items()):
+            values = {r.statement_line: r.value for r in group_rows}
+            if all(c.passed for c in check_extraction_quality(values)):
+                continue
+            source_url = next((r.source_url for r in group_rows if r.source_url), None)
+            to_check.append((ticker, period_end, period_type, source_url))
+
+    total = len(to_check)
+    outcomes: list[StaleSweepOutcome] = []
+    for i, (ticker, period_end, period_type, source_url) in enumerate(to_check, start=1):
+        if source_url is None:
+            outcomes.append(
+                StaleSweepOutcome(ticker, period_end, period_type, "no_source", "no source_url stored")
+            )
+        else:
+            try:
+                pdf_bytes = download_pdf(source_url, user_agent=user_agent or settings.cse_user_agent)
+                result = refresh_stale_fundamentals(db, ticker, period_end, period_type, pdf_bytes)
+            except Exception as exc:  # noqa: BLE001 — one bad filing must not abort the sweep
+                logger.exception("refresh sweep failed for %s %s %s", ticker, period_end, period_type)
+                outcomes.append(StaleSweepOutcome(ticker, period_end, period_type, "error", str(exc)))
+            else:
+                if result.still_failing:
+                    outcomes.append(
+                        StaleSweepOutcome(ticker, period_end, period_type, "still_failing", result.note)
+                    )
+                elif result.updated:
+                    outcomes.append(
+                        StaleSweepOutcome(
+                            ticker, period_end, period_type, "repaired", "", tuple(result.updated)
+                        )
+                    )
+                else:
+                    outcomes.append(
+                        StaleSweepOutcome(
+                            ticker, period_end, period_type, "unchanged",
+                            "fresh extraction matches what's already stored — the check failure is a "
+                            "real, different discrepancy, not a stale-extraction artifact",
+                        )
+                    )
+        if on_filing is not None and on_filing(i, total, f"{ticker} {period_end}") is False:
+            break
+    return outcomes

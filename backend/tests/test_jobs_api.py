@@ -159,6 +159,17 @@ def test_status_reports_no_next_scheduled_time_for_jobs_with_no_cron_equivalent(
     assert entry["next_scheduled_at"] is None
 
 
+def test_status_reports_a_real_next_scheduled_time_for_refresh_stale_fundamentals(client):
+    """refresh_stale_fundamentals mirrors app.jobs.scheduler's real weekly
+    refresh_stale_fundamentals cron (Saturday 07:30 Colombo) — a job with
+    a genuine cron equivalent added after capture_prices's own test above
+    must not silently fall back to None the way a job with no schedule
+    correctly does."""
+    body = client.get("/jobs/status").json()
+    entry = next(e for e in body["jobs"] if e["job"] == "refresh_stale_fundamentals")
+    assert entry["next_scheduled_at"] is not None
+
+
 # --- POST /jobs/{run_id}/cancel --------------------------------------------
 
 

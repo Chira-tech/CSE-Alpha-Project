@@ -56,6 +56,53 @@ def published_market_cap_for(db: Session, ticker: str, as_of: dt.date) -> Decima
     return row.published_market_cap if row else None
 
 
+def bulk_market_cap_for(
+    db: Session, tickers: tuple[str, ...], as_of: dt.date | None = None
+) -> dict[str, Decimal | None]:
+    """R1 T4.6.4's sector drill-down needs every constituent's market cap
+    at once — this is `market_cap_for`'s same real "full-shares-issued
+    price proxy" (see that function's own docstring), but as two bulk
+    queries across the whole ticker set instead of two round trips PER
+    ticker, the same discipline `app.api.routes.securities._bulk_price_
+    changes` already applies. A ticker missing either input is `None`,
+    never a value computed from a partial one."""
+    stamp = as_of or dt.date.today()
+    if not tickers:
+        return {}
+
+    float_rows = db.execute(
+        select(FloatData.ticker, FloatData.as_of, FloatData.shares_issued).where(
+            FloatData.ticker.in_(tickers), FloatData.as_of <= stamp
+        )
+    ).all()
+    latest_shares: dict[str, tuple[dt.date, int]] = {}
+    for ticker, as_of_row, shares in float_rows:
+        current = latest_shares.get(ticker)
+        if current is None or as_of_row > current[0]:
+            latest_shares[ticker] = (as_of_row, shares)
+
+    price_rows = db.execute(
+        select(PriceDaily.ticker, PriceDaily.date, PriceDaily.close).where(
+            PriceDaily.ticker.in_(tickers), PriceDaily.date <= stamp, PriceDaily.close.is_not(None)
+        )
+    ).all()
+    latest_close: dict[str, tuple[dt.date, Decimal]] = {}
+    for ticker, date, close in price_rows:
+        current = latest_close.get(ticker)
+        if current is None or date > current[0]:
+            latest_close[ticker] = (date, close)
+
+    result: dict[str, Decimal | None] = {}
+    for ticker in tickers:
+        shares_entry = latest_shares.get(ticker)
+        price_entry = latest_close.get(ticker)
+        if shares_entry is None or price_entry is None:
+            result[ticker] = None
+        else:
+            result[ticker] = market_cap(shares_entry[1], price_entry[1])
+    return result
+
+
 def market_cap_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Decimal | None:
     """This ticker's own real market cap (a disclosed full-shares-issued
     proxy for free-float market cap — see `app.domain.market_cap`'s own

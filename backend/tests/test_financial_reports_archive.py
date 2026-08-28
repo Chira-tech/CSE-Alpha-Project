@@ -8,13 +8,16 @@ FY2022 period, exactly as the exchange actually returned it.
 from __future__ import annotations
 
 import datetime as dt
+import time
 from decimal import Decimal
 
 import httpx
 import pytest
 
+from app.domain.financial_statement_parsing import ExtractedLine
 from app.ingestion.financial_reports_archive_loader import (
     _already_ingested_by_source,
+    _extract_with_timeout,
     _next_version,
     _resolve_download_url,
     ingest_archived_report,
@@ -454,3 +457,333 @@ class TestMaxPerTypeBreadthFirstMode:
         ingest_report_archive_for_ticker(client, db_session, TICKER)
 
         assert len(ids_downloaded) == 5
+
+
+class TestReconcileAddsMissingLinesWithoutTouchingExisting:
+    """`--reconcile` — the real gap it closes: `_VARIANCE_PCT_RE` (app.
+    domain.financial_statement_parsing) fixed a corrupted-label bug that
+    silently dropped `revenue`/`net_income` on any statement with an
+    embedded "Change %" column, verified on Hikkaduwa Beach Resort PLC's
+    and Amãna Bank PLC's real filings — but every filing already ingested
+    before that fix landed still only has whatever partial set of lines
+    the OLD parser could reach, because the ordinary (non-reconcile) path
+    skips a filing outright the moment it has ANY row on file. These
+    tests simulate exactly that: an old, incomplete first pass, then a
+    reconcile pass with a "fixed" extractor that now finds more."""
+
+    _OLD_PASS_LINE = ExtractedLine(
+        raw_label="Total Assets", statement_line="total_assets",
+        values=(Decimal("100"),), raw_text="Total Assets 100",
+    )
+    _NEW_PASS_LINES = [
+        ExtractedLine(
+            raw_label="Total Assets", statement_line="total_assets",
+            values=(Decimal("100"),), raw_text="Total Assets 100",
+        ),
+        ExtractedLine(
+            raw_label="Revenue from contracts with customers", statement_line="revenue",
+            values=(Decimal("5000"),), raw_text="Revenue from contracts with customers 5000",
+        ),
+    ]
+
+    @pytest.fixture()
+    def db(self, db_session):
+        db_session.add(Security(ticker=TICKER, name="COMMERCIAL BANK", issuer_code="COMB"))
+        db_session.commit()
+        return db_session
+
+    def _report(self):
+        return CompanyArchiveReportFile(
+            id=9, path="cmt/upload_report_file/9.pdf",
+            manualDate=1774895400000, uploadedDate=1779964134895,
+        )
+
+    def _ingest_old_pass(self, db, monkeypatch):
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"%PDF-1.4 fake",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, self._OLD_PASS_LINE)],
+        )
+        inserted = ingest_archived_report(None, db, TICKER, self._report(), period_type="quarterly")
+        assert inserted == 1
+
+    def test_without_reconcile_an_already_ingested_filing_is_still_skipped(self, db, monkeypatch):
+        """The default behaviour is unchanged by this refactor."""
+        self._ingest_old_pass(db, monkeypatch)
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("download_pdf must not be called for an already-ingested filing")
+
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf", fail_if_called
+        )
+        second = ingest_archived_report(None, db, TICKER, self._report(), period_type="quarterly")
+        assert second == 0
+        assert db.query(Fundamental).filter_by(ticker=TICKER).count() == 1
+
+    def test_reconcile_adds_the_newly_extractable_line(self, db, monkeypatch):
+        self._ingest_old_pass(db, monkeypatch)
+        original_row = db.query(Fundamental).filter_by(
+            ticker=TICKER, statement_line="total_assets"
+        ).one()
+        original_id, original_value = original_row.id, original_row.value
+
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, line) for line in self._NEW_PASS_LINES],
+        )
+        inserted = ingest_archived_report(
+            None, db, TICKER, self._report(), period_type="quarterly", reconcile=True
+        )
+        assert inserted == 1  # only the genuinely new line, not total_assets again
+
+        rows = {r.statement_line: r for r in db.query(Fundamental).filter_by(ticker=TICKER).all()}
+        assert set(rows) == {"total_assets", "revenue"}
+
+        # The original row is untouched — same id, same value.
+        assert rows["total_assets"].id == original_id
+        assert rows["total_assets"].value == original_value
+
+        # The new row shares the original's version/restated_flag — this
+        # is a deeper read of the SAME filing, not a new one.
+        assert rows["revenue"].version == rows["total_assets"].version == 1
+        assert rows["revenue"].restated_flag is False
+        assert rows["revenue"].source_url == rows["total_assets"].source_url
+        assert rows["revenue"].value == Decimal("5000")
+
+    def test_reconcile_never_touches_an_already_confirmed_row(self, db, monkeypatch):
+        """The entire point: a human reviewer's confirmation must never
+        be silently discarded just because a parser improvement landed
+        later, even if the "fixed" extractor now reads a DIFFERENT value
+        for that same line (simulating some other, unrelated parser
+        change) — reconcile must still leave it exactly alone."""
+        self._ingest_old_pass(db, monkeypatch)
+        confirmed = db.query(Fundamental).filter_by(
+            ticker=TICKER, statement_line="total_assets"
+        ).one()
+        confirmed.confirmed_by = "reviewer@example.com"
+        confirmed.confirmed_at = dt.datetime.now(tz=dt.timezone.utc)
+        confirmed.provenance_tier = ProvenanceTier.REPORTED
+        db.commit()
+        confirmed_id = confirmed.id
+
+        different_total_assets = ExtractedLine(
+            raw_label="Total Assets", statement_line="total_assets",
+            values=(Decimal("999"),), raw_text="Total Assets 999",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, different_total_assets), (0, self._NEW_PASS_LINES[1])],
+        )
+        inserted = ingest_archived_report(
+            None, db, TICKER, self._report(), period_type="quarterly", reconcile=True
+        )
+        assert inserted == 1  # only revenue — total_assets already exists for this source_url
+
+        still_confirmed = db.get(Fundamental, confirmed_id)
+        assert still_confirmed.value == Decimal("100")  # untouched, not overwritten to 999
+        assert still_confirmed.confirmed_by == "reviewer@example.com"
+        assert still_confirmed.provenance_tier == ProvenanceTier.REPORTED
+        assert db.query(Fundamental).filter_by(ticker=TICKER, statement_line="total_assets").count() == 1
+
+    def test_reconcile_finds_nothing_new_returns_zero_without_duplicating_the_log(self, db, monkeypatch):
+        self._ingest_old_pass(db, monkeypatch)
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, self._OLD_PASS_LINE)],  # same as before, nothing new
+        )
+        inserted = ingest_archived_report(
+            None, db, TICKER, self._report(), period_type="quarterly", reconcile=True
+        )
+        assert inserted == 0
+        assert db.query(IngestedFilingLog).filter_by(ticker=TICKER).count() == 1  # not duplicated
+
+    def test_reconcile_on_a_never_ingested_filing_behaves_like_a_normal_ingest(self, db, monkeypatch):
+        """`--reconcile` on a filing that was never processed at all must
+        not skip or behave any differently from an ordinary first pass."""
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"%PDF-1.4 fake",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, line) for line in self._NEW_PASS_LINES],
+        )
+        inserted = ingest_archived_report(
+            None, db, TICKER, self._report(), period_type="quarterly", reconcile=True
+        )
+        assert inserted == 2
+        assert db.query(Fundamental).filter_by(ticker=TICKER).count() == 2
+
+
+class TestExtractionTimeoutDoesNotHangTheBatch:
+    """A real, live bug, not a hypothetical one: BALA.N0000's actual
+    FY2024 annual report hung a reconcile sweep for 20+ minutes of
+    continuous CPU burn with zero progress — confirmed independently of
+    this pipeline's own code (even a bare pdfplumber `page.extract_text()`
+    call on that exact file hangs). One pathological PDF must not be able
+    to block an entire universe-wide sweep forever."""
+
+    def test_a_hanging_extraction_raises_timeouterror_instead_of_blocking(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader._EXTRACTION_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: time.sleep(1.0) or [],
+        )
+        with pytest.raises(TimeoutError):
+            _extract_with_timeout(b"irrelevant")
+
+    def test_a_fast_extraction_returns_normally(self, monkeypatch):
+        line = ExtractedLine(
+            raw_label="Total Assets", statement_line="total_assets",
+            values=(Decimal("100"),), raw_text="Total Assets 100",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [(0, line)],
+        )
+        result = _extract_with_timeout(b"irrelevant")
+        assert result == [(0, line)]
+
+    def test_a_hanging_filing_is_caught_and_counted_not_fatal_to_the_rest_of_the_sweep(
+        self, db_session, monkeypatch
+    ):
+        """End-to-end, through the same sweep function a real backfill
+        run uses: one stuck filing must not stop the others in the same
+        ticker's archive from being processed."""
+        db_session.add(Security(ticker=TICKER, name="COMMERCIAL BANK", issuer_code="COMB"))
+        db_session.commit()
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader._EXTRACTION_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"%PDF-1.4 fake",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: time.sleep(1.0) or [],
+        )
+
+        class FakeClient:
+            def post_form(self, path, model, data):
+                return model(
+                    infoAnnualData=[
+                        CompanyArchiveReportFile(
+                            id=1, path="stuck.pdf",
+                            manualDate=1356819000000, uploadedDate=1362614400000,
+                        )
+                    ],
+                    infoQuarterlyData=[],
+                )
+
+        summary = ingest_report_archive_for_ticker(FakeClient(), db_session, TICKER)
+        assert summary == {"drafted": 0, "unavailable": 0, "failed": 1}
+
+
+# Real, verbatim first-page text from MAHARAJA FOODS PLC's (MFPE.N0000)
+# real errata filing (https://cdn.cse.lk/cmt/upload_report_file/
+# 3178_1761103331773.pdf, downloaded live 27 Aug 2026) — the exact real
+# case that surfaced this bug: this filing's own catalogue `manualDate`
+# (22 Oct 2025) is the errata's OWN submission date, not the 31 March
+# 2025 period end its own cover letter names, which created a phantom
+# second "annual" period with every figure identical to the original.
+ERRATA_FIRST_PAGE_TEXT_MFPE = """\
+22nd October, 2025
+Ms. Nilupa Perera,
+Chief Regulatory officer,
+Colombo Stock Exchange,
+#04 - 01 West Block,
+World trade Centre, Echelon Square,
+Colombo 01.
+Dear Madam,
+MAHARAJA FOODS PLC (PQ00296080) - ERRATA – CORRECTION TO THE NET
+ASSET VALUE (NAV) RATIOS NEED TO BE INCLUDED UNDER THE BALANCE
+SHEET IN THE FINANCIAL STATEMENTS FOR THE YEAR ENDED 31ST MARCH
+2025.
+This Errata is issued to correct net asset value (NAV) ratios need to be included under the
+balance sheet in the Financial Statements for the year ended 31st March 2025.
+This correction does not impact the financial figures or other"""
+
+
+class TestErrataAnnouncementsAreSkipped:
+    """REAL BUG, found live (27 Aug 2026) tracing MFPE.N0000's real
+    duplicate-period contamination (named but not fixed in
+    docs/audits/R1_VALIDATION.md): a CSE "ERRATA" announcement's own
+    catalogue `manualDate` does not reliably carry the period it's
+    correcting, so ingesting it as an ordinary filing creates a phantom
+    second period with figures identical to the original. Skipped
+    outright rather than guessing the real period from the errata's own
+    free-text explanation — see `ingest_archived_report`'s own comment
+    for why that's a less certain signal than every other date this
+    pipeline already trusts."""
+
+    @pytest.fixture()
+    def db(self, db_session):
+        db_session.add(Security(ticker="MFPE.N0000", name="MAHARAJA FOODS PLC", issuer_code="MFPE"))
+        db_session.commit()
+        return db_session
+
+    def test_a_real_errata_filing_is_skipped_not_ingested(self, db, monkeypatch):
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"irrelevant - _first_page_text is mocked below",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader._first_page_text",
+            lambda pdf_bytes: ERRATA_FIRST_PAGE_TEXT_MFPE,
+        )
+
+        def fail_if_called(pdf_bytes):
+            raise AssertionError("an errata filing must be skipped before real extraction ever runs")
+
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            fail_if_called,
+        )
+
+        report = CompanyArchiveReportFile(
+            id=99001, path="cmt/upload_report_file/3178_1761103331773.pdf",
+            manualDate=1761091200000,  # 2025-10-22 — the errata's OWN date, not the real period
+            uploadedDate=1761103331773,
+        )
+        inserted = ingest_archived_report(None, db, "MFPE.N0000", report, period_type="annual")
+        assert inserted == 0
+        # No phantom period created — neither a Fundamental row nor an
+        # IngestedFilingLog entry, so a LATER, real filing for the true
+        # period is never blocked by this one having been "processed."
+        assert db.query(Fundamental).filter_by(ticker="MFPE.N0000").count() == 0
+        assert db.query(IngestedFilingLog).filter_by(ticker="MFPE.N0000").count() == 0
+
+    def test_an_ordinary_filing_with_no_errata_mention_is_unaffected(self, db, monkeypatch):
+        """The regression guard: this fix must change nothing for the
+        overwhelming majority of filings that are never an errata."""
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.download_pdf",
+            lambda url, *, user_agent, timeout=60.0: b"irrelevant - mocked below",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader._first_page_text",
+            lambda pdf_bytes: "MAHARAJA FOODS PLC\nAnnual Report 2024/2025\n",
+        )
+        monkeypatch.setattr(
+            "app.ingestion.financial_reports_archive_loader.extract_financial_statement_candidates",
+            lambda pdf_bytes: [
+                (10, ExtractedLine(
+                    raw_label="Revenue", statement_line="revenue",
+                    values=(Decimal("630360999"),), raw_text="Revenue 630,360,999",
+                )),
+            ],
+        )
+        report = CompanyArchiveReportFile(
+            id=99002, path="cmt/upload_report_file/3178_1761015331527.pdf",
+            manualDate=1743379800000, uploadedDate=1761015331527,
+        )
+        inserted = ingest_archived_report(None, db, "MFPE.N0000", report, period_type="annual")
+        assert inserted == 1
+        assert db.query(Fundamental).filter_by(ticker="MFPE.N0000", statement_line="revenue").count() == 1

@@ -44,3 +44,8 @@ pytest>=8.3
 pytest-asyncio>=0.24
 respx>=0.21
 freezegun>=1.5
+
+# R1 T4B.1 — automated browser QA capture (scripts/qa_capture.py). Not
+# needed at runtime; a `playwright install chromium` is also required
+# once per environment (not pip-installable, hence not automatic here).
+playwright>=1.62

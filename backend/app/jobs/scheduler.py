@@ -26,7 +26,10 @@ from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_
 from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range as ingest_cbsl_range
 from app.ingestion.cse_client import CseClient
-from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
+from app.ingestion.financial_pdf_extractor import (
+    ingest_financial_statements_for_known_tickers,
+    sweep_stale_fundamentals,
+)
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.jobs.market_cap_reconciliation import run_nightly_market_cap_check
@@ -115,6 +118,48 @@ def _job_repair_price_gaps() -> None:
         logger.info("weekly price-gap repair: %s", summary)
     except Exception:
         logger.exception("price-gap repair failed")
+    finally:
+        db.close()
+
+
+def _job_refresh_stale_fundamentals() -> None:
+    """Re-checks every ticker's ALREADY-STORED fundamentals against
+    `check_extraction_quality` (accounting identities + the magnitude-
+    plausibility floor — `app.domain.financial_statement_parsing`'s own
+    module docstring), and re-extracts any filing still failing — this
+    is the automatic version of `python -m app.cli refresh-stale-
+    fundamentals`, wired up so a since-fixed extraction bug (or a filing
+    that only started failing a check added after it was first ingested,
+    e.g. the magnitude floor itself) gets swept up on its own instead of
+    relying on someone remembering to run that command by hand.
+    `backfill-financials` itself never revisits a filing once it has any
+    stored rows, no matter how wrong — this is the only thing that does.
+
+    Weekly, after price-gap repair — the same "nothing else is
+    contending for the API, and PDFs off CSE's own CDN aren't rate-
+    limited so this can run right after another paced sweep without
+    piling up" reasoning as every other Saturday job. Genuinely
+    unpredictable in RUNTIME rather than call count, unlike its Saturday
+    siblings: the first run against a large newly-backfilled queue can
+    take a long time (one PDF download + re-parse per still-failing
+    filing), but every subsequent week is only whatever newly started
+    failing since the last run — the backlog this job itself works
+    through never grows back on its own.
+    """
+    db = SessionLocal()
+    try:
+        tickers = _all_tickers(db)
+        outcomes = sweep_stale_fundamentals(db, tickers)
+        repaired = sum(1 for o in outcomes if o.status == "repaired")
+        still_failing = sum(1 for o in outcomes if o.status == "still_failing")
+        errored = sum(1 for o in outcomes if o.status == "error")
+        logger.info(
+            "weekly stale-fundamentals refresh: %d filing(s) checked, %d repaired, "
+            "%d still fail after re-extraction, %d errored",
+            len(outcomes), repaired, still_failing, errored,
+        )
+    except Exception:
+        logger.exception("weekly stale-fundamentals refresh failed")
     finally:
         db.close()
 
@@ -424,6 +469,16 @@ def build_scheduler() -> BackgroundScheduler:
         _job_repair_price_gaps,
         CronTrigger(day_of_week="sat", hour=7, minute=0, timezone=MARKET_TZ),
         id="price_gap_repair",
+        replace_existing=True,
+    )
+    # After price-gap repair — PDFs off CSE's own CDN aren't paced through
+    # CseClient, so this doesn't contend with anything else, but it's
+    # genuinely unbounded in runtime on a large backlog (see the job's
+    # own docstring) so it goes last in the Saturday sequence.
+    scheduler.add_job(
+        _job_refresh_stale_fundamentals,
+        CronTrigger(day_of_week="sat", hour=7, minute=30, timezone=MARKET_TZ),
+        id="refresh_stale_fundamentals",
         replace_existing=True,
     )
     scheduler.add_job(

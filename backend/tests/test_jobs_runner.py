@@ -48,6 +48,60 @@ def _seed_run(db, *, job="capture_market", trigger="manual", status="queued", cr
     return run
 
 
+# --- recover_orphaned_runs ---------------------------------------------
+# R1: a worker process that dies mid-job (see `app.worker`'s own
+# top-of-file comment for the real crash this closes — a Unicode
+# character in a log message on this project's real Windows dev
+# environment, whose stdout defaults to cp1252, killed the process
+# outright) leaves its `JobRun` stuck `running` forever, since nothing
+# was left alive to ever mark it terminal — which then blocks every
+# future `enqueue` of that same job via the concurrency guard above,
+# permanently, until something notices and fixes the row by hand.
+
+
+def test_recover_orphaned_runs_marks_stale_running_and_queued_rows_failed(db_session):
+    running = _seed_run(db_session, job="recompute", status="running", started_at=dt.datetime.now(dt.timezone.utc))
+    queued = _seed_run(db_session, job="capture_market", status="queued")
+
+    recovered = runner.recover_orphaned_runs(db_session)
+
+    assert recovered == 2
+    db_session.refresh(running)
+    db_session.refresh(queued)
+    assert running.status == "failed"
+    assert running.finished_at is not None
+    assert "Interrupted" in running.error
+    assert queued.status == "failed"
+    assert queued.finished_at is not None
+
+
+def test_recover_orphaned_runs_leaves_terminal_rows_untouched(db_session):
+    done = _seed_run(db_session, job="capture_market", status="success")
+
+    recovered = runner.recover_orphaned_runs(db_session)
+
+    assert recovered == 0
+    db_session.refresh(done)
+    assert done.status == "success"
+
+
+@freeze_time("2026-08-19 10:00:00")
+def test_recover_orphaned_runs_unblocks_a_real_re_enqueue(db_session):
+    """The actual real-world payoff: after recovery, the same job can be
+    triggered again instead of 409ing forever. `created_at` set outside
+    the 15-minute manual cooldown so this test isolates the concurrency
+    guard specifically, not the unrelated cooldown check."""
+    _seed_run(
+        db_session, job="recompute", status="running",
+        created_at=dt.datetime(2026, 8, 19, 9, 44, 59, tzinfo=dt.timezone.utc),
+    )
+
+    runner.recover_orphaned_runs(db_session)
+    run = runner.enqueue(db_session, "recompute", trigger="manual")
+
+    assert run.status == "queued"
+
+
 # --- enqueue ----------------------------------------------------------
 
 

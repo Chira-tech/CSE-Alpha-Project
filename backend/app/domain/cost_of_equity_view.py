@@ -71,6 +71,7 @@ def cost_of_equity_for(
     *,
     regime: str | None = None,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> CostOfEquityResult:
     """`regime` — one of `"risk_on"`/`"transition"`/`"risk_off"`, or
     `None` — is the caller's job to supply, not this function's to fetch:
@@ -86,16 +87,22 @@ def cost_of_equity_for(
     (no regime adjustment) so every existing caller that doesn't pass
     one keeps its exact prior behaviour.
 
-    `universe_liquidity_ratios` is the identical convention applied to
-    `app.domain.liquidity_view.liquidity_percentile_for`'s own expensive
-    market-wide scan — see that function's docstring for the real,
-    profiled cost this avoids."""
+    `universe_liquidity_ratios`/`universe_liquidity_percentiles` are the
+    identical convention applied to `app.domain.liquidity_view.liquidity_
+    percentile_for`'s own expensive market-wide scan — see that
+    function's docstring for the real, profiled cost each avoids
+    (`universe_liquidity_percentiles` in particular closes the SECOND,
+    O(n²) half of that cost the first fix alone left in place)."""
     stamp = as_of or dt.date.today()
 
     beta_result = beta_for(db, ticker, stamp)
     rf_observation = risk_free_observation(db, stamp)
     spread = current_spread(db, stamp)
-    liquidity_percentile = liquidity_percentile_for(db, ticker, stamp, universe_ratios=universe_liquidity_ratios)
+    liquidity_percentile = liquidity_percentile_for(
+        db, ticker, stamp,
+        universe_ratios=universe_liquidity_ratios,
+        universe_percentiles=universe_liquidity_percentiles,
+    )
 
     return compute_cost_of_equity(
         CostOfEquityInputs(

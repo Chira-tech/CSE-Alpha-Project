@@ -46,9 +46,20 @@ class FundamentalOut(BaseModel):
     source_snippet: str | None
     confirmed_by: str | None
     confirmed_at: dt.datetime | None
+    corroborated: bool
+    """R1 T2.5: `True` when an INDEPENDENTLY-SOURCED (different
+    `source_url`) row already carries `REPORTED` provenance for this same
+    (ticker, period_end, statement_line) with the EXACT same
+    value — e.g. a later annual report's own comparative column reprinting
+    a prior year's figure. This is corroboration, not a guess: two
+    independent documents agreeing on the same number. The only case a
+    bulk confirm may fire on without a human looking at each individual
+    value (see `confirm-batch-corroborated` below) — added directly
+    because the 19 Aug 2026 bulk-confirm pass that caused OI-1 (see
+    ROADMAP.md / docs/audits/R1_OPEN_ISSUES.md) had no such check at all."""
 
     @classmethod
-    def from_model(cls, row: Fundamental) -> "FundamentalOut":
+    def from_model(cls, row: Fundamental, corroborated: bool = False) -> "FundamentalOut":
         return cls(
             id=row.id,
             ticker=row.ticker,
@@ -66,6 +77,7 @@ class FundamentalOut(BaseModel):
             source_snippet=row.source_snippet,
             confirmed_by=row.confirmed_by,
             confirmed_at=row.confirmed_at,
+            corroborated=corroborated,
         )
 
 
@@ -122,6 +134,52 @@ class ConfirmBatchResult(BaseModel):
     rather than silently skipped."""
 
 
+def _corroborated_ids(db: Session, rows: list[Fundamental]) -> set[int]:
+    """R1 T2.5. One bulk query for every REPORTED row matching ANY of
+    these rows' (ticker, period_end, statement_line) keys — not N
+    queries per row, same discipline every other bulk lookup in this
+    codebase already applies — then an in-Python exact-value-and-
+    different-source_url check, since SQLAlchemy has no clean portable
+    "tuple IN (values)" across both SQLite (dev) and Postgres (prod).
+
+    DELIBERATELY NOT keyed on `period_type` too, found live (23 Aug
+    2026, ABAN.N0000's real total_assets for 2019-03-31): the same
+    point-in-time balance-sheet figure is genuinely reported once as
+    `period_type="annual"` (that year's own annual report) and again as
+    `period_type="quarterly"` (a later interim report's own comparative
+    prior-year-end column) — the first version of this function required
+    both to match, which meant it never fired for exactly the shape of
+    corroboration that's most common in this data. Safe to drop: a real
+    flow figure (`revenue`, `net_income`, ...) genuinely measures a
+    different span in each period_type and would essentially never
+    coincidentally match to the exact rupee AND land at a different
+    `source_url` AND land on the same `period_end` — the value+source
+    check below already carries the real safety property, not the
+    period_type match."""
+    if not rows:
+        return set()
+    keys = {(r.ticker, r.period_end, r.statement_line) for r in rows}
+    tickers = {k[0] for k in keys}
+    candidates = db.scalars(
+        select(Fundamental).where(
+            Fundamental.ticker.in_(tickers),
+            Fundamental.provenance_tier == ProvenanceTier.REPORTED,
+        )
+    ).all()
+    reported_by_key: dict[tuple, list[Fundamental]] = {}
+    for c in candidates:
+        reported_by_key.setdefault((c.ticker, c.period_end, c.statement_line), []).append(c)
+
+    corroborated: set[int] = set()
+    for r in rows:
+        key = (r.ticker, r.period_end, r.statement_line)
+        for c in reported_by_key.get(key, ()):
+            if c.value == r.value and c.source_url != r.source_url:
+                corroborated.add(r.id)
+                break
+    return corroborated
+
+
 def _get_or_404(db: Session, fundamental_id: int) -> Fundamental:
     row = db.get(Fundamental, fundamental_id)
     if row is None:
@@ -164,8 +222,10 @@ def list_fundamentals(
         .offset(offset)
     ).all()
 
+    corroborated_ids = _corroborated_ids(db, rows) if pending_only else set()
+
     return FundamentalsPage(
-        items=[FundamentalOut.from_model(r) for r in rows],
+        items=[FundamentalOut.from_model(r, corroborated=r.id in corroborated_ids) for r in rows],
         total=total,
         limit=limit,
         offset=offset,
@@ -239,6 +299,63 @@ def confirm_fundamentals_batch(
         row.confirmed_by = body.actor
         row.confirmed_at = dt.datetime.now(dt.timezone.utc)
         assert can_enter_valuation(row.provenance_tier)  # the whole point of this endpoint
+        confirmed.append(fundamental_id)
+
+    db.commit()
+    return ConfirmBatchResult(confirmed=confirmed, failed=failed)
+
+
+@router.post("/confirm-batch-corroborated", response_model=ConfirmBatchResult)
+def confirm_fundamentals_batch_corroborated(
+    body: ConfirmBatchRequest, db: Session = Depends(get_db)
+) -> ConfirmBatchResult:
+    """R1 T2.5's real, safe bulk-confirm path — the ONE case the brief
+    permits one-click confirmation without a human individually reviewing
+    every value: an INDEPENDENTLY-SOURCED row already carries REPORTED
+    provenance for the exact same figure (see `FundamentalOut.
+    corroborated`'s own docstring for why this is corroboration, not an
+    assumption). Every id is re-verified against the database HERE,
+    server-side — a client claiming a row is corroborated when it isn't
+    gets it rejected into `failed`, exactly like every other validation
+    this batch endpoint already enforces; the corroboration flag returned
+    by `GET /fundamentals` is a UI hint, never trusted as the actual gate.
+    `confirmed_by` is stamped with a distinct, searchable marker so this
+    action is never confused in an audit trail with a genuine per-row
+    human review."""
+    rows = [db.get(Fundamental, i) for i in body.ids]
+    real_rows = [r for r in rows if r is not None and r.provenance_tier == ProvenanceTier.AI_ASSISTED
+                 and r.confirmed_by is None]
+    corroborated_ids = _corroborated_ids(db, real_rows)
+
+    confirmed: list[int] = []
+    failed: list[ConfirmBatchFailure] = []
+
+    for fundamental_id, row in zip(body.ids, rows):
+        if row is None:
+            failed.append(ConfirmBatchFailure(id=fundamental_id, reason="no fundamental with this id"))
+            continue
+        if row.confirmed_by is not None:
+            failed.append(ConfirmBatchFailure(id=fundamental_id, reason="already confirmed"))
+            continue
+        if row.provenance_tier != ProvenanceTier.AI_ASSISTED:
+            failed.append(
+                ConfirmBatchFailure(id=fundamental_id, reason=f"not AI-assisted (tier {row.provenance_tier.value})")
+            )
+            continue
+        if fundamental_id not in corroborated_ids:
+            failed.append(
+                ConfirmBatchFailure(
+                    id=fundamental_id,
+                    reason="no independently-sourced REPORTED row with the same value exists — "
+                    "not corroborated, use the per-row Confirm instead",
+                )
+            )
+            continue
+
+        row.provenance_tier = ProvenanceTier.REPORTED
+        row.confirmed_by = f"{body.actor} (corroborated bulk confirm)"
+        row.confirmed_at = dt.datetime.now(dt.timezone.utc)
+        assert can_enter_valuation(row.provenance_tier)
         confirmed.append(fundamental_id)
 
     db.commit()

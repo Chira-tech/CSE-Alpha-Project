@@ -21,7 +21,7 @@ AS_OF = dt.date(2022, 6, 1)
 
 
 def _fake_ke(ke, rf=Decimal("0.12")):
-    def _fn(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None):
+    def _fn(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None, universe_liquidity_percentiles=None):
         return CostOfEquityResult(
             ke=ke, risk_free_rate=rf, beta=Decimal("1.0"), erp_effective=Decimal("0.07"),
             beta_times_erp=Decimal("0.07"), size_premium=None, illiquidity_premium=None,
@@ -160,3 +160,88 @@ class TestOpportunityRankingFor:
         view = opportunity_ranking_for(db_session, AS_OF)
         assert view.ranked == ()
         assert view.excluded == ()
+
+    def test_a_quarantined_ticker_is_excluded_with_the_quarantine_reason_not_ranked(
+        self, db_session, monkeypatch
+    ):
+        """OI-3 (docs/audits/R1_OPEN_ISSUES.md): `is_quarantined` must
+        actually gate ranking, not just a company-file badge — this is
+        the regression test for that real, previously-unwired gap."""
+        from app.models.data_quality import DataAlert
+
+        _seed_security(db_session, "BAD.N0000", "Quarantined PLC")
+        _seed_confirmed_fundamentals(db_session, "BAD.N0000")
+        _seed_shares(db_session, "BAD.N0000")
+        _seed_price(db_session, "BAD.N0000", Decimal(12))
+        db_session.add(
+            DataAlert(
+                ticker="BAD.N0000", alert_type="reconciliation_mismatch", detail="test",
+                raised_at=dt.datetime.now(dt.timezone.utc), resolved=False,
+            )
+        )
+        db_session.commit()
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = opportunity_ranking_for(db_session, AS_OF)
+        assert view.ranked == ()
+        assert len(view.excluded) == 1
+        assert view.excluded[0].ticker == "BAD.N0000"
+        assert "quarantined" in view.excluded[0].warnings[0]
+        assert view.excluded[0].blended_fair_value_per_share is None
+
+
+class TestOpportunityRankingCache:
+    """R1: this view's own real ~18-25s per-call cost (see `opportunity_
+    ranking_for`'s own module-level comment) is genuinely expensive, real
+    computation — the cache exists only to stop three real callers on one
+    cold page load (Today, Opportunities, Macro's sector drill-down) from
+    each paying it separately for what is, in practice, an identical
+    result. `conftest.py`'s own autouse fixture clears this cache before
+    and after every test — without it, these tests (and several others in
+    this same file, all using the same `AS_OF`) would silently share
+    state, which is exactly the bug that fixture exists to prevent, found
+    live while building the cache, not assumed."""
+
+    def test_a_second_call_for_the_same_as_of_returns_the_same_object_without_recomputing(
+        self, db_session, monkeypatch
+    ):
+        _seed_security(db_session, "COMB.N0000", "Commercial Bank of Ceylon PLC")
+        _seed_confirmed_fundamentals(db_session, "COMB.N0000")
+        _seed_shares(db_session, "COMB.N0000")
+        _seed_price(db_session, "COMB.N0000", Decimal(12))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        first = opportunity_ranking_for(db_session, AS_OF)
+        second = opportunity_ranking_for(db_session, AS_OF)
+
+        assert second is first  # the literal cached object, not just equal data
+
+    def test_a_different_as_of_is_not_served_the_other_date_s_cached_result(self, db_session, monkeypatch):
+        _seed_security(db_session, "COMB.N0000", "Commercial Bank of Ceylon PLC")
+        _seed_confirmed_fundamentals(db_session, "COMB.N0000")
+        _seed_shares(db_session, "COMB.N0000")
+        _seed_price(db_session, "COMB.N0000", Decimal(12))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        first = opportunity_ranking_for(db_session, AS_OF)
+        second = opportunity_ranking_for(db_session, AS_OF + dt.timedelta(days=1))
+
+        assert second is not first
+        assert first.as_of == AS_OF
+        assert second.as_of == AS_OF + dt.timedelta(days=1)
+
+    def test_clear_cache_forces_real_recomputation(self, db_session, monkeypatch):
+        from app.domain.opportunity_ranking_view import clear_cache
+
+        _seed_security(db_session, "COMB.N0000", "Commercial Bank of Ceylon PLC")
+        _seed_confirmed_fundamentals(db_session, "COMB.N0000")
+        _seed_shares(db_session, "COMB.N0000")
+        _seed_price(db_session, "COMB.N0000", Decimal(12))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        first = opportunity_ranking_for(db_session, AS_OF)
+        clear_cache()
+        second = opportunity_ranking_for(db_session, AS_OF)
+
+        assert second is not first
+        assert second.as_of == first.as_of == AS_OF

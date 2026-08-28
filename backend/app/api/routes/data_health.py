@@ -36,6 +36,11 @@ class QuarantinedTicker(BaseModel):
     raised_at: dt.datetime
 
 
+class TickerPendingCount(BaseModel):
+    ticker: str
+    count: int
+
+
 class DataHealth(BaseModel):
     securities_count: int
     issuer_count: int
@@ -66,6 +71,19 @@ class DataHealth(BaseModel):
     fundamentals_confirmed: int
 
     quarantined: list[QuarantinedTicker]
+
+    fundamentals_pending_by_ticker: list[TickerPendingCount]
+    """R1 T4.1.5: top tickers by pending-figure count — a real, cheap
+    proxy for "where confirming pays off most", NOT the brief's own
+    literal "unblocks fair value for N companies" framing. That framing
+    needs a full per-ticker valuation pass (the same ~30s-for-the-
+    universe cost `app.domain.opportunity_ranking_view`'s own docstring
+    already measures) to state truthfully — too slow to run on every
+    load of a screen meant to be readable in under two minutes, and a
+    stale/wrong "unblocks N" claim would be exactly the kind of
+    confident-but-unverified number this project avoids everywhere else.
+    Named here as a real, disclosed scope decision, not silently
+    downgraded."""
 
 
 @router.get("", response_model=DataHealth)
@@ -146,6 +164,14 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         select(DataAlert).where(DataAlert.resolved.is_(False)).order_by(DataAlert.raised_at.desc())
     ).all()
 
+    f_pending_by_ticker = db.execute(
+        select(Fundamental.ticker, func.count())
+        .where(Fundamental.provenance_tier == ProvenanceTier.AI_ASSISTED, Fundamental.confirmed_by.is_(None))
+        .group_by(Fundamental.ticker)
+        .order_by(func.count().desc())
+        .limit(8)
+    ).all()
+
     return DataHealth(
         securities_count=securities_count,
         issuer_count=issuer_count,
@@ -163,6 +189,9 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         fundamentals_total=f_total,
         fundamentals_pending_confirmation=f_pending,
         fundamentals_confirmed=f_confirmed,
+        fundamentals_pending_by_ticker=[
+            TickerPendingCount(ticker=t, count=c) for t, c in f_pending_by_ticker
+        ],
         quarantined=[
             QuarantinedTicker(
                 ticker=a.ticker, alert_type=a.alert_type, detail=a.detail, raised_at=a.raised_at

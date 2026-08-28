@@ -57,6 +57,24 @@ _VALUE_RE = re.compile(r"^\(?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\)?$")
 _NOTE_REF_RE = re.compile(r"^\d{1,3}([./]\d{1,3}){0,3}$")
 _NIL = "-"
 
+# A "Change %"/"Variance %" column between real value columns — verified
+# live on two independent real filings: Hikkaduwa Beach Resort PLC's
+# ("Revenue from contracts with customers 163,267,528 360,646,918 (55%)
+# 1,878,722,846") and Amãna Bank PLC's ("Profit for the Period 1,124,622
+# 901,334 25% 622,661 467,208 33%") real interim statements for the
+# quarter ended 30 June 2026. Genuinely common — both filings are
+# otherwise ordinary IFRS-style statements, not edge cases. Before this
+# pattern existed, `split_label_and_values`'s right-to-left scan hit the
+# first "%"-shaped token and stopped immediately, folding every REAL
+# value to its left into `raw_label` — so `match_canonical_label` was
+# handed a corrupted label like "revenue from contracts with customers
+# 163,267,528 360,646,918 (55%)" instead of "revenue from contracts with
+# customers", and the line silently produced no draft at all. Matched and
+# DROPPED (never kept as a `values` entry, never counted toward
+# `expected_value_columns`) — it is a computed comparison, not one of the
+# statement's own reported figures.
+_VARIANCE_PCT_RE = re.compile(r"^\(?-?\d+(?:\.\d+)?%\)?$")
+
 # pdfplumber sometimes emits a space between a number's leading digit and
 # its first comma group: "4 ,453,103" instead of "4,453,103". Observed on
 # J.F. Packaging PLC's June 2026 interim statements (but NOT on its annual
@@ -70,8 +88,25 @@ _NIL = "-"
 # comma-leading fragments after, closes it from both directions.
 _SPLIT_THOUSANDS_RE = re.compile(r"(\d)\s+(?=,\d{3})")
 
+# A THIRD real pdfplumber space artifact, distinct from both patterns
+# above: a stray space landing right after a negative value's own
+# OPENING parenthesis — "( 84,645)" instead of "(84,645)". REAL BUG THIS
+# CLOSES, found live (28 Aug 2026) tracing Chemanex PLC's real confirmed
+# `cost_of_sales`: left unrepaired, `line.split()` tokenises "( 84,645)"
+# as TWO separate tokens, a bare "(" and "84,645)" — and a lone "("
+# matches none of `split_label_and_values`' own four numeric-token
+# shapes (`_VALUE_RE`, `_NOTE_REF_RE`, `_VARIANCE_PCT_RE`, the nil
+# marker), so the right-to-left numeric-token scan stops dead at that
+# bare "(" and swallows the REST of the real value into the label
+# instead. `(?=\d)` in the lookahead is what keeps this narrow: a
+# genuine label-text parenthetical ("(Loss)", "(Increase)/Decrease in
+# Inventories") is never touched, because a letter, not a digit, follows
+# the opening paren there.
+_SPLIT_OPEN_PAREN_RE = re.compile(r"\(\s+(?=\d)")
+
 
 def _repair_split_thousands(line: str) -> str:
+    line = _SPLIT_OPEN_PAREN_RE.sub("(", line)
     return _SPLIT_THOUSANDS_RE.sub(r"\1", line)
 
 
@@ -313,12 +348,191 @@ def repair_character_doubling(page_text: str) -> str:
 # "13.2" are indistinguishable from real values by shape alone (a note
 # ref and a small value/a decimal EPS figure can look identical), but a
 # line with 5 numeric tokens when exactly 4 are expected almost certainly
-# has a note reference in the extra slot. KNOWN LIMITATION: a company
-# whose statements aren't laid out as a 4-column Group/Company
-# comparative (e.g. a single-entity or single-year presentation) would
-# need a different expected count — not handled generically this session,
-# see README_ENDPOINTS.md / ROADMAP.md.
+# has a note reference in the extra slot. Used only as a FALLBACK now —
+# see `detect_expected_value_columns` below for the real per-page count,
+# read from the page's own header rather than assumed.
 DEFAULT_EXPECTED_VALUE_COLUMNS = 4
+
+# Matches a bare 4-digit year, 1900-2099 — deliberately NOT anchored to a
+# specific date format (CSE filings write the same header date as
+# "31st March 2026", "30-06-2026", "30.06.2026", or just a bare "2026"
+# repeated once per column with the day/month stated only once), since
+# every one of those shapes still leaves the actual YEAR as a standalone
+# token that survives normal whitespace tokenisation. A thousands-grouped
+# monetary figure never collides with this: a comma inside a real value
+# (e.g. "1,025,218") breaks the token into pieces at each comma, so no
+# 4-digit run ever sits at a token's own start/end boundary the way a
+# genuine year does.
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+# A Sri Lankan fiscal-year RANGE label ("2019/2020" — the SL fiscal year
+# runs April-March, so a filing routinely writes it as two calendar years
+# joined by a slash) is ONE column's own header, not two. REAL BUG THIS
+# CLOSES, found live (27 Aug 2026) tracing a currently-live note-
+# reference-as-value corruption on Asia Asset Finance PLC's real FY2019/20
+# annual report: its Statement of Cash Flows header reads "2019/2020
+# 2018/2019" for a genuinely 2-column (current/prior year) statement, but
+# `_YEAR_TOKEN_RE.findall` alone finds FOUR bare 4-digit runs on that one
+# line (2019, 2020, 2018, 2019) — double-counting each range label as two
+# columns instead of one — so `detect_expected_value_columns` returned 4
+# instead of 2, silently falling back to `DEFAULT_EXPECTED_VALUE_COLUMNS`
+# behaviour and letting a genuine 3-numeric-token line ("Acquisition of
+# property, plant and equipment 20 (27,787,206) (57,293,522)" — note ref
+# "20" + 2 real values) pass the `len(numeric_tokens) > expected_value_
+# columns` check as 3 > 4 = False, so the note reference "20" was kept as
+# the real value instead of correctly dropped.
+_YEAR_RANGE_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}/(?:19|20)\d{2}(?!\d)")
+
+
+def _count_year_tokens(line: str) -> int:
+    """Counts year-shaped column headers on one line, treating a
+    `_YEAR_RANGE_TOKEN_RE` match as ONE column (not two) — see that
+    constant's own docstring for the real corruption this closes. Range
+    matches are found and removed FIRST so their own two constituent
+    4-digit runs are never also counted by the plain single-year pattern
+    afterward; every remaining bare year (J.F. Packaging's real "2026
+    2025 2026 2025" plain-calendar-year style, still one column each) is
+    then counted exactly as before — this function changes nothing for a
+    filing that has no `YYYY/YYYY` range label anywhere.
+
+    An immediately-ADJACENT literal duplicate (the exact same 4-digit
+    year, separated from the next match by nothing but whitespace) counts
+    as ONE column, not two. REAL BUG THIS CLOSES, found live (28 Aug 2026)
+    tracing Ownally Holdings PLC's real confirmed `revenue` stored as the
+    literal digit "6": its real income statement header reads "Year ended
+    31 March 2022 2022 2021" — a genuinely 2-column (2022/2021) statement
+    — but pdfplumber has merged the page's title line ("...ended 31 March
+    2022", whose own trailing year is simply completing that sentence, not
+    naming a data column) with the table's real header row ("2022 2021")
+    onto one line of text. J.F. Packaging's real "2026 2025 2026 2025"
+    proves a repeated year is normally exactly as many real columns as
+    times it's printed — no year there is an adjacent literal duplicate of
+    its immediate neighbour — so this narrow, position-aware collapse
+    (only two IDENTICAL year tokens with nothing between them) changes
+    nothing for that shape while fixing Ownally's: "2022 2022 2021" counts
+    as 2 (the second "2022" collapses into the first), matching the real
+    2 value columns instead of the naive 3."""
+    ranges = _YEAR_RANGE_TOKEN_RE.findall(line)
+    # Blanked out with a non-whitespace filler (not a plain " ") so two
+    # bare years that were only adjacent BECAUSE a range sat between them
+    # in the original line ("2019/2020 2025 2018/2019 2025" — the two
+    # "2025"s are genuinely distinct columns) don't get mistaken by the
+    # adjacency check below for a real, position-preserving duplicate —
+    # the filler still breaks up the line the same way the range itself
+    # did, just without contributing its own year-shaped digits.
+    remainder = _YEAR_RANGE_TOKEN_RE.sub(lambda m: "#" * len(m.group()), line)
+    count = 0
+    prev_match = None
+    for m in _YEAR_TOKEN_RE.finditer(remainder):
+        if (
+            prev_match is not None
+            and m.group() == prev_match.group()
+            and remainder[prev_match.end() : m.start()].strip() == ""
+        ):
+            continue  # adjacent literal duplicate — see docstring
+        count += 1
+        prev_match = m
+    return len(ranges) + count
+
+# The unit declaration, counted per OCCURRENCE rather than merely
+# detected once (unlike `_UNIT_THOUSANDS_RE`/`_UNIT_FULL_VALUE_RE` above,
+# which only ever need a yes/no answer for scale) — real filings that
+# repeat their unit once per column (verified: J.F. Packaging's "Notes
+# Rs.000 Rs.000 Rs.000 Rs.000", eChannelling's "LKR LKR") give a real,
+# reliable column count this way; ones that state it once for the whole
+# page (verified: AHPL's "In Rs.'000s Note") don't, which is fine — that
+# case is exactly what `_YEAR_TOKEN_RE` above is for instead.
+_UNIT_TOKEN_RE = re.compile(r"\b(?:rs\.?|lkr)\s*(?:['’]?\s*000s?)?", re.IGNORECASE)
+
+#: How many of the page's own header lines (from the top) to search for
+#: the real column-count signal — verified generous enough for every real
+#: fixture this module has (title/company-name lines, "STATEMENT OF...",
+#: "GROUP COMPANY", then the date row, all within the first ~6 lines on
+#: every filing checked), without scanning so far down the page that a
+#: coincidental 4-digit figure or "%" in the actual DATA rows gets
+#: mistaken for a header.
+_HEADER_SEARCH_LINES = 10
+
+
+def detect_expected_value_columns(page_text: str) -> int | None:
+    """How many real value columns this specific page's statement uses —
+    read from the page's OWN header rather than assumed to always be 4.
+
+    REAL BUG THIS CLOSES, FOUND LIVE (20 Aug 2026): `DEFAULT_EXPECTED_
+    VALUE_COLUMNS`'s own "KNOWN LIMITATION" comment named this gap
+    without fixing it — a company whose real filing isn't a 4-column
+    Group/Company comparative silently got the wrong expected count,
+    which corrupts the "how many numeric tokens are genuinely excess"
+    signal `split_label_and_values` depends on. Confirmed on 4 REAL,
+    INDEPENDENT filings the same day:
+
+      - eChannelling PLC's real interim statement is a genuine 2-column
+        (current period / prior period) single-entity layout with no
+        Group/Company split at all — its own header reads "As at
+        30.06.2026 31.12.2025", two dates, not four.
+      - Tea Smallholder Factories PLC's real income statement is a
+        genuine 3-column layout (current quarter / prior-year quarter /
+        change), with the change column its own separate "%"-headed
+        slot ("RS. '000 RS. '000 %") rather than a fourth Group/Company
+        comparative.
+
+    Both silently corrupted their own real "Total Liabilities"/"Revenue"-
+    style lines under the assumed default of 4.
+
+    Two independent signals, both counted per line, MAX taken across
+    BOTH signals and every one of the page's first `_HEADER_SEARCH_LINES`
+    lines:
+
+      - year-like tokens (`_count_year_tokens`, built on `_YEAR_TOKEN_RE`)
+        — real filings repeat the year once per real value column in
+        their own date header. A `YYYY/YYYY` fiscal-year-RANGE label
+        (Asia Asset Finance PLC's real "2019/2020 2018/2019" — see
+        `_YEAR_RANGE_TOKEN_RE`'s own docstring for the live corruption
+        this closes) counts as ONE column, not two.
+      - unit-declaration occurrences (`_UNIT_TOKEN_RE`) PLUS bare "%"
+        markers on that SAME line — covers both the common case (the
+        unit repeated once per column, e.g. eChannelling's "LKR LKR")
+        and Tea Smallholder's own shape (2 monetary columns, each with
+        its own "RS.'000", plus one separate non-monetary "%" column the
+        year-only signal alone can't see).
+
+    Verified against every real fixture this module already had (J.F.
+    Packaging, Swadeshi, AHPL, PAP, LWL) — every one counts to exactly 4
+    either way, matching `DEFAULT_EXPECTED_VALUE_COLUMNS` precisely, so
+    detecting this changes NOTHING for any of them — as well as the
+    other real filings named above (eChannelling: 2; Muller & Phipps,
+    Swisstek: 4 each; Tea Smallholder: 3; Asia Asset Finance: 2, the
+    fiscal-year-range case `_count_year_tokens` exists for).
+
+    Returns `None` — never a guessed count — when the best line found
+    scores below 2: a single stray year or unit mention isn't a reliable
+    signal, and callers should fall back to `DEFAULT_EXPECTED_VALUE_
+    COLUMNS` in that case exactly as they always have.
+    """
+    best = 0
+    for line in page_text.splitlines()[:_HEADER_SEARCH_LINES]:
+        year_count = _count_year_tokens(line)
+        unit_count = len(_UNIT_TOKEN_RE.findall(line)) + line.count("%")
+        # A bare "%" variance column can share the YEAR/date line itself
+        # instead of the unit-declaration line — REAL BUG THIS CLOSES,
+        # found live (28 Aug 2026) tracing Chemanex PLC's real confirmed
+        # `revenue`: its header reads "2018 2017 Variance %" (years and
+        # the "%" together) on one line, then "(In Rs. '000) Note" (a
+        # single, non-repeated unit declaration — AHPL's already-known
+        # shape) on another. `unit_count` alone is only 1 there (one
+        # bare "%", no "Rs."/"LKR" on that same line), so `max(year_
+        # count, unit_count)` picked year_count=2 and lost the real 3rd
+        # column entirely — a different line arrangement of the exact
+        # same 3-column shape `_HEADER_SEARCH_LINES`'s own Tea
+        # Smallholder case already handles (there the "%" shares the
+        # UNIT line instead, already summed into `unit_count`). Adding
+        # the two signals together when they cooccur on the SAME year
+        # line closes this without touching Tea Smallholder's case at
+        # all (unaffected — its year line carries no "%") or any 4-
+        # column fixture (none has a "%" on its own year line).
+        year_and_percent = year_count + line.count("%") if year_count > 0 else 0
+        best = max(best, year_count, unit_count, year_and_percent)
+    return best if best >= 2 else None
 
 # Canonical statement-line key -> exact normalised label text(s) that map
 # to it. Deliberately EXACT match (post-normalisation), not substring —
@@ -346,9 +560,25 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "total_current_liabilities": ("total current liabilities",),
     "total_non_current_liabilities": ("total non-current liabilities", "total non current liabilities"),
     "total_equity_and_liabilities": ("total equity and liabilities",),
-    "revenue": ("revenue", "turnover"),
+    "revenue": (
+        "revenue",
+        "turnover",
+        # Hikkaduwa Beach Resort PLC's real interim statement for the
+        # quarter ended 30 June 2026 — the standard IFRS 15 contract-
+        # revenue wording, likely to recur across many CSE filings, not
+        # a one-off.
+        "revenue from contracts with customers",
+    ),
     "cost_of_sales": ("cost of sales",),
-    "gross_profit": ("gross profit",),
+    "gross_profit": (
+        "gross profit",
+        # Tea Smallholder Factories PLC's real interim statement for the
+        # quarter ended 30 June 2026 — the loss-period alternative carried
+        # inline in the label itself, the same pattern income_tax_
+        # expense's own "income tax (expense) / reversal" variant below
+        # already established for a different line.
+        "gross profit / (loss)",
+    ),
     "operating_profit": ("operating profit",),
     "profit_before_tax": ("profit before tax",),
     "income_tax_expense": (
@@ -763,6 +993,38 @@ class ExtractedLine:
     statement_line: str | None  # None if the label didn't match any canonical key
     values: tuple[Decimal | None, ...]  # in the order printed, left to right
     raw_text: str
+    alt_values: tuple[Decimal, ...] | None = None
+    """The OTHER real possibility for the FULL values tuple, computed
+    whenever this line had MORE raw numeric tokens than `expected_value_
+    columns` — `None` when there was no excess, or when no plausible
+    alternate reading could be built from it.
+
+    A line with excess tokens is genuinely ambiguous by shape alone: a
+    real note reference (J.F. Packaging PLC's own "Revenue 5 4,504,801
+    4,385,214 2,356,951 2,371,137", where "5" really is a footnote
+    number, correctly dropped) and a real split-off leading digit (e.g.
+    Swisstek (Ceylon) PLC's real "Total liabilities 1 0,216,971 1
+    0,163,128 2,881,063 2,481,861", where TWO of the four columns are
+    really 10,216,971/10,163,128, not 1 and 0,216,971/0,163,128 as
+    separate tokens) produce structurally similar excess-token shapes —
+    there is no way to tell them apart from this one line alone, and a
+    real filing can have EITHER, or even a non-uniform MIX of split and
+    unsplit columns on one line (verified: Swisstek's own line above has
+    two columns split and two not).
+
+    `alt_values` is what the full tuple would read as if EVERY adjacent
+    (note-reference-shaped token, value-shaped token) pair still present
+    after the DEFAULT reading's own excess-token handling were instead a
+    split-off leading digit, rejoined — kept alongside the normal
+    `values` (never substituted here) so a page-level pass with more
+    context (`reconcile_ambiguous_values_via_identities`) can pick
+    whichever one actually balances against the rest of the statement,
+    rather than either guessing or always assuming the more common case
+    (a genuine note reference) is the only one that exists. Only
+    populated when the merge produces EXACTLY `expected_value_columns`
+    values — anything else means the line's shape doesn't cleanly
+    resolve either way, and no alternate is offered instead of a wrong
+    one."""
 
     @property
     def primary_value(self) -> Decimal | None:
@@ -775,6 +1037,94 @@ class ExtractedLine:
         return self.values[0] if self.values else None
 
 
+def _join_split_leading_digit(lead: str, rest: str) -> str:
+    """Reconstructs the single raw value token pdfplumber split into
+    `lead` (the standalone leading digit(s)) and `rest` (the remainder,
+    with its own thousands-grouping and optional parenthesised sign
+    intact) — e.g. `("8", "27,386")` -> `"827,386"`, `("1", "(0,216,971)")`
+    -> `"(10,216,971)"`. Only the digits get concatenated; punctuation
+    (commas, parens) stays exactly where `rest` already has it, since
+    `lead` is only ever the number's true leading digit(s), never a sign
+    or grouping character of its own."""
+    if rest.startswith("(") and rest.endswith(")"):
+        return "(" + lead + rest[1:]
+    return lead + rest
+
+
+def _merge_all_split_pairs(
+    numeric_tokens: list[str], expected_value_columns: int
+) -> tuple[Decimal, ...] | None:
+    """The alternate reading `ExtractedLine.alt_values` needs — see that
+    field's own docstring for the real ambiguity this exists for. Greedy
+    left-to-right scan: every adjacent (note-reference-shaped token,
+    value-shaped token) pair is rejoined into one number, exactly like a
+    single excess leading token would be, but applied uniformly across
+    the WHOLE line rather than only at the front — Swisstek's own real
+    "Total liabilities 1 0,216,971 1 0,163,128 2,881,063 2,481,861" has
+    TWO such pairs (columns 1 and 2), not one, and a single-token
+    restriction (only ever checking the very first token) would miss the
+    second.
+
+    DELIBERATELY NOT applied unconditionally — this is only ever offered
+    as a CANDIDATE (`ExtractedLine.alt_values`), never used to override
+    `values` here. Merging is aggressive on purpose (it would happily
+    "rejoin" a genuine trailing note reference too, exactly the J.F.
+    Packaging case this module has guarded against before) because the
+    real safety check lives one layer up, in `reconcile_ambiguous_values_
+    via_identities`: a candidate only ever gets used when it turns a
+    FAILING accounting identity into a passing one without breaking any
+    identity that already passed — J.F. Packaging's real revenue line
+    already satisfies "revenue - cost of sales = gross profit" under the
+    default reading, so its own alternate (however plausible-looking in
+    isolation) never gets accepted.
+
+    Returns `None` when the merged result doesn't come out to exactly
+    `expected_value_columns` values, or when any merged token fails to
+    parse — a line whose shape doesn't cleanly resolve either way offers
+    no alternate, rather than a guessed one.
+    """
+    def _greedy_merge(tokens: list[str]) -> list[str]:
+        merged: list[str] = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            following = tokens[i + 1] if i + 1 < len(tokens) else None
+            if following is not None and _NOTE_REF_RE.match(token) and _VALUE_RE.match(following):
+                merged.append(_join_split_leading_digit(token, following))
+                i += 2
+            else:
+                merged.append(token)
+                i += 1
+        return merged
+
+    merged = _greedy_merge(numeric_tokens)
+    if len(merged) != expected_value_columns and numeric_tokens and _NOTE_REF_RE.match(numeric_tokens[0]):
+        # A genuine leading note reference can itself sit directly in
+        # front of a split-pair's own leading digit — REAL BUG THIS
+        # CLOSES, found live (28 Aug 2026) tracing Chemanex PLC's real
+        # confirmed `revenue`: "Revenue 1 1 07,573 1 81,246 (41)" is note
+        # reference "1" followed by TWO split pairs ("1"+"07,573" =
+        # 107,573, "1"+"81,246" = 181,246) then a variance value, but the
+        # greedy scan above can't tell the note reference's own "1" apart
+        # from the first split pair's own leading "1" — both are lone
+        # digits, indistinguishable by shape — so it wrongly consumed
+        # them AS a pair ("1"+"1" -> "11"), leaving 4 merged tokens for
+        # an expected 3 and returning no alternate at all. Retrying with
+        # that leading token dropped first resolves it cleanly; this
+        # branch only ever fires when the direct merge above already
+        # failed to hit the target count, so an already-correct merge
+        # (Swisstek's real two-pair line, Tea Smallholder's real single-
+        # pair line, J.F. Packaging's real genuine-note-reference line —
+        # all already covered by existing tests) is never touched.
+        merged = _greedy_merge(numeric_tokens[1:])
+    if len(merged) != expected_value_columns:
+        return None
+    values = tuple(_parse_value_token(t) for t in merged)
+    if any(v is None for v in values):
+        return None
+    return values
+
+
 def split_label_and_values(
     line: str, expected_value_columns: int = DEFAULT_EXPECTED_VALUE_COLUMNS
 ) -> ExtractedLine | None:
@@ -785,7 +1135,12 @@ def split_label_and_values(
     """
     tokens = _repair_split_thousands(line).split()
     i = len(tokens)
-    while i > 0 and (_VALUE_RE.match(tokens[i - 1]) or _NOTE_REF_RE.match(tokens[i - 1]) or tokens[i - 1] == _NIL):
+    while i > 0 and (
+        _VALUE_RE.match(tokens[i - 1])
+        or _NOTE_REF_RE.match(tokens[i - 1])
+        or _VARIANCE_PCT_RE.match(tokens[i - 1])
+        or tokens[i - 1] == _NIL
+    ):
         i -= 1
 
     numeric_tokens = tokens[i:]
@@ -793,7 +1148,57 @@ def split_label_and_values(
     if not numeric_tokens or not label_tokens:
         return None
 
+    # Variance/change-% columns are scanned past above (so they don't
+    # corrupt the label boundary — see _VARIANCE_PCT_RE's own docstring)
+    # but are never a real data value, so they're dropped here, before
+    # digit-repair and before expected_value_columns' count comparison
+    # counts them as one of the statement's own declared value columns.
+    #
+    # REAL BUG THIS CLOSES, found live (28 Aug 2026) tracing JAT Holdings
+    # PLC's real confirmed net_income stored as the literal digit "2":
+    # `expected_value_columns` is a PAGE-level count (`detect_expected_
+    # value_columns`, from the header alone), and a header like "Rs. Rs.
+    # % Rs. Rs. %" is genuinely ambiguous about whether each "%" itself
+    # corresponds to a real, separately-tokenisable data value — Tea
+    # Smallholder's real "%"-column prints a BARE number per row ("...
+    # 731,119 13", no "%" character on the value itself), which the
+    # tokeniser keeps and which genuinely needs counting; JAT's own real
+    # "%"-column prints the value WITH a literal "%" suffix on every row
+    # ("...177% 4 00,051,561... -1991%"), which `_VARIANCE_PCT_RE` above
+    # already correctly strips as never-a-real-value. Both header shapes
+    # look identical from the header alone — the header genuinely cannot
+    # say which behaviour a given DATA ROW will have — so
+    # `expected_value_columns` ends up "budgeting" a slot for each real
+    # "%" column regardless, correct for Tea Smallholder, wrong for JAT
+    # (whose real 6-token-wide header count then exactly matches this
+    # line's own 6 raw tokens even though 2 of those 6 are really a
+    # split-off leading digit, disabling the note-reference-drop/alt-
+    # values logic below entirely — `len(numeric_tokens) > expected_
+    # value_columns` never fires). Adjusting the comparison count by
+    # however many `_VARIANCE_PCT_RE` tokens THIS SPECIFIC LINE actually
+    # had to strip is the per-line signal the header alone can't give:
+    # Tea Smallholder's real line strips zero (its own "13" was never a
+    # variance-shaped token to begin with), so its own count is
+    # unchanged; JAT's real line strips two, correctly un-inflating the
+    # comparison back down to the real 4 monetary columns.
+    stripped = sum(1 for t in numeric_tokens if _VARIANCE_PCT_RE.match(t))
+    numeric_tokens = [t for t in numeric_tokens if not _VARIANCE_PCT_RE.match(t)]
+    if not numeric_tokens:
+        return None
+    effective_expected_value_columns = max(expected_value_columns - stripped, 1)
+
     numeric_tokens = _repair_split_leading_digits(numeric_tokens)
+
+    # See `ExtractedLine.alt_values`'s own docstring for the real
+    # ambiguity this covers — computed from the FULL excess-token list,
+    # before the leading-note-reference drop below ever removes anything,
+    # so a genuine second (or third) split pair further along the line
+    # (Swisstek's real case) is still visible to it.
+    alt_values = (
+        _merge_all_split_pairs(numeric_tokens, effective_expected_value_columns)
+        if len(numeric_tokens) > effective_expected_value_columns
+        else None
+    )
 
     # Drop a leading note-reference token: one more numeric token than the
     # statement's own declared column count, AND that extra leading token
@@ -802,7 +1207,7 @@ def split_label_and_values(
     # count is the signal, not the token's shape alone (a bare "5" or
     # "13.2" is indistinguishable from a real small/decimal value on
     # shape).
-    if len(numeric_tokens) > expected_value_columns and _NOTE_REF_RE.match(numeric_tokens[0]):
+    if len(numeric_tokens) > effective_expected_value_columns and _NOTE_REF_RE.match(numeric_tokens[0]):
         numeric_tokens = numeric_tokens[1:]
 
     values = tuple(_parse_value_token(t) for t in numeric_tokens)
@@ -815,6 +1220,7 @@ def split_label_and_values(
         statement_line=match_canonical_label(label),
         values=values,
         raw_text=line,
+        alt_values=alt_values,
     )
 
 
@@ -930,6 +1336,368 @@ def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityChec
         )
 
     return checks
+
+
+#: A magnitude-plausibility floor, not an accounting identity — nothing
+#: above can catch a value that's simply drastically too SMALL relative
+#: to the rest of its own filing when no identity happens to cover it.
+#: REAL CASE (commit 313afdc, 19 Aug 2026, deliberately left unfixed at
+#: the parsing layer — see `test_aafs_real_odd_count_split_digit_is_a_
+#: named_unfixed_gap`): AAF.N0000's real FY2022 filing prints "Profit
+#: for the year 1 18,561,733 45,196,117" — a pdfplumber split-leading-
+#: digit artifact with an ODD token count, which `_repair_split_leading_
+#: digits`'s own even-count-only guard correctly declines to touch (the
+#: same guard that protects J.F. Packaging's genuine "Revenue 5
+#: 4,504,801 ..." note-reference line from being wrongly merged). The
+#: lone "1" survives as a syntactically valid net_income, and because
+#: this filing's income_tax_expense wasn't also extracted, no identity
+#: above happens to cover net_income at all — the wrong value sails
+#: through check_accounting_identities completely clean. A second,
+#: independent real case (VLL.N0000, FY ended 2012-03-31, found live
+#: running this exact check for the first time): one leg of "pre-tax
+#: profit - tax = net income" reads as the literal value 30 against a
+#: net_income of 59,130,635 on the SAME filing — same failure shape,
+#: different company, different filing.
+#:
+#: This ratio — a flagged value against the LARGEST other value
+#: extracted from the SAME filing — is self-scaling to the company's
+#: own real size rather than a fixed LKR floor that would either miss a
+#: genuinely small line on a large company or false-positive on a
+#: genuinely small company. Both real corrupted values above sit at a
+#: ratio of 5e-7 (VLL) and ~5e-11 (AAF) — orders of magnitude below this
+#: threshold — while even a genuinely thin, real quarter's net income
+#: relative to total assets (checked across every real fixture and
+#: every real filing referenced anywhere in this module) never comes
+#: close to this floor.
+_MAGNITUDE_IMPLAUSIBILITY_RATIO = Decimal("0.000001")
+
+
+def _magnitude_implausible_keys(values: dict[str, Decimal]) -> set[str]:
+    """The set of keys `check_magnitude_plausibility` would flag — pulled
+    out so `reconcile_magnitude_implausible_values` below can ask the
+    identical question (both before AND after a candidate substitution)
+    without parsing that function's own human-readable `IdentityCheck`
+    messages back apart. See `check_magnitude_plausibility`'s own
+    docstring for what this actually measures and why."""
+    if len(values) < 2:
+        return set()
+    largest_key = max(values, key=lambda k: abs(values[k]))
+    largest = abs(values[largest_key])
+    if largest == 0:
+        return set()
+    flagged: set[str] = set()
+    for key, value in values.items():
+        if key == largest_key or value == 0:
+            continue
+        if abs(value) / largest < _MAGNITUDE_IMPLAUSIBILITY_RATIO:
+            flagged.add(key)
+    return flagged
+
+
+def check_magnitude_plausibility(values: dict[str, Decimal]) -> list[IdentityCheck]:
+    """A line item whose magnitude is a millionth (or less) of the
+    largest OTHER value extracted from the same filing is almost
+    certainly a corrupted read — a split-off leading digit, a dropped
+    column, a stray footnote number captured as the value — not a real
+    accounting relationship failing (`check_accounting_identities`
+    already covers that). Exists specifically for the class of wrong
+    value NEITHER an identity check nor `reconcile_ambiguous_values_via_
+    identities` can catch: no computable identity covers the line (a
+    sibling value this filing didn't also extract), and no `alt_values`
+    candidate exists to reconcile against either (this isn't an
+    excess-token-shaped ambiguity — see `ExtractedLine.alt_values`'s own
+    docstring for that, separate, case) — see this function's own
+    `_MAGNITUDE_IMPLAUSIBILITY_RATIO` comment for the two real, live
+    cases this was built from.
+
+    Returned as the SAME `IdentityCheck` shape `check_accounting_
+    identities` returns, deliberately — every caller already treats a
+    non-passing entry from that function as "do not confirm without
+    checking the source PDF"; a plausibility failure earns the identical
+    treatment through `check_extraction_quality` below rather than a
+    parallel, easily-forgotten second code path.
+
+    Needs at least two extracted values to mean anything — a single
+    value has nothing to be implausible relative to — and returns
+    nothing when every extracted value is exactly zero (nothing to scale
+    against either).
+    """
+    # A genuine EXACT zero is never itself flagged — see `_magnitude_
+    # implausible_keys`'s shared logic. REAL BUG THIS CLOSES, found live
+    # (28 Aug 2026) tracing Pan Asia Power PLC's real confirmed `total_
+    # non_current_liabilities`, printed as a literal "0" on 16
+    # independent real filings running back-to-back years ("Total Non
+    # current liabilities 0 922,963" — the company simply repaid all its
+    # long-term debt that year, a completely ordinary accounting
+    # outcome): re-verified as the SAME "0" every time, permanently un-
+    # confirmable, because 0 divided by any positive `largest` is always
+    # 0 and 0 is always below the ratio floor — this check could never
+    # accept a genuine zero subtotal no matter how many times it was re-
+    # extracted. A corrupted read (a split-off leading digit, a stray
+    # footnote number captured as the value) is never itself exactly
+    # zero — those artifacts are always a small but non-zero digit run —
+    # so exempting a literal 0 loses no real detection power.
+    if len(values) < 2:
+        return []
+    largest_key = max(values, key=lambda k: abs(values[k]))
+    largest = abs(values[largest_key])
+    checks: list[IdentityCheck] = []
+    for key in _magnitude_implausible_keys(values):
+        value = values[key]
+        ratio = abs(value) / largest
+        checks.append(
+            IdentityCheck(
+                f"{key} implausibly small vs {largest_key}",
+                False,
+                f"{key} = {value:,} is only {ratio:.2e}x this filing's own largest extracted "
+                f"value ({largest_key} = {largest:,}) — almost certainly a corrupted read, not "
+                "a genuine figure (see check_magnitude_plausibility's own docstring)",
+            )
+        )
+    return checks
+
+
+def reconcile_magnitude_implausible_values(
+    values: dict[str, Decimal], alt_values: dict[str, Decimal]
+) -> dict[str, Decimal]:
+    """A complementary pass to `reconcile_ambiguous_values_via_identities`
+    for the specific gap that function structurally cannot cover: a
+    component line with NO accounting identity mentioning it at all
+    (`inventories`, `trade_receivables` — components of a subtotal this
+    module doesn't itself check, unlike `total_current_assets` or
+    `total_assets`) has nothing for identity-based reconciliation to test
+    a correction against, so its own `alt_values` candidate sits unused
+    forever even when the DEFAULT reading is flagged outright as
+    implausible by `check_magnitude_plausibility`.
+
+    REAL CASE THIS CLOSES, found live (28 Aug 2026) tracing Serendib
+    Hotels PLC's real confirmed `inventories`, stored as the literal
+    digit 3: its real balance sheet line "Inventories 13 3 7,890 33,761
+    8 ,306 7,597" already computes the CORRECT `alt_values` reading
+    (37,890 — the note reference "13" dropped, "3"+"7,890" correctly
+    rejoined) via the exact same split-pair machinery that already fixes
+    every OTHER real case in this module — but `inventories` has no
+    sibling identity ("total_current_assets = inventories + trade_
+    receivables + ..." isn't one `check_accounting_identities`
+    implements), so `reconcile_ambiguous_values_via_identities` never
+    even considers it: nothing to test the correction against, forever.
+
+    Deliberately a SEPARATE, narrower acceptance rule from identity-based
+    reconciliation, not a relaxation of it: a substitution is accepted
+    ONLY when (a) the key was ALREADY flagged implausible under the
+    default reading, (b) an alt candidate exists for it, (c) the alt
+    reading clears ITS OWN flag, and (d) the substitution introduces no
+    NEW implausibility flag on any other key (the corrected value
+    becoming large enough to shrink another key's own ratio below the
+    floor). Each flagged key is evaluated independently against the
+    ORIGINAL flagged set — never chained off a previous substitution in
+    the same pass — so this stays a single, deterministic, order-
+    independent pass, the same discipline `reconcile_ambiguous_values_
+    via_identities` already holds itself to.
+    """
+    originally_flagged = _magnitude_implausible_keys(values)
+    corrections: dict[str, Decimal] = {}
+    for key in originally_flagged:
+        if key not in alt_values:
+            continue
+        candidate = dict(values)
+        candidate[key] = alt_values[key]
+        new_flags = _magnitude_implausible_keys(candidate)
+        if key in new_flags:
+            continue  # the alt itself is still implausible — not a fix
+        if new_flags - originally_flagged:
+            continue  # would newly implicate a key that was fine before
+        corrections[key] = alt_values[key]
+    return corrections
+
+
+def check_extraction_quality(values: dict[str, Decimal]) -> list[IdentityCheck]:
+    """Every automated check this module runs against one filing's
+    extracted values before any of them is trusted — `check_accounting_
+    identities` (exact arithmetic relationships) PLUS `check_magnitude_
+    plausibility` (the self-scaling floor that catches a corrupted value
+    no identity happens to cover). Every real caller — `app.ingestion.
+    financial_pdf_extractor.ingest_financial_statement`, that module's
+    own `refresh_stale_fundamentals`, and `app.cli`'s `refresh-stale-
+    fundamentals` command — calls this instead of either check alone, so
+    a filing gets the same "do not confirm without checking the source
+    PDF" treatment regardless of which of the two checks is what actually
+    caught it. Kept as two separate, single-purpose functions rather
+    than merged into one, matching this module's own established
+    discipline (see e.g. `check_accounting_identities` vs `_identity_
+    diffs` vs `reconcile_ambiguous_values_via_identities` — one real
+    check per function, composed by their callers) — this is that
+    composition.
+    """
+    return check_accounting_identities(values) + check_magnitude_plausibility(values)
+
+
+#: Real filings routinely show a Rs. 1-or-2 discrepancy on an otherwise-
+#: correct identity — ordinary publication rounding, not an extraction
+#: bug (seen throughout this project's own real fixtures and live runs).
+#: `reconcile_ambiguous_values_via_identities` treats a diff at or below
+#: this as "passing" rather than requiring bit-for-bit equality the way
+#: `check_accounting_identities`'s own `IdentityCheck.passed` deliberately
+#: does (that field exists to surface even a tiny real discrepancy to a
+#: human reviewer, which is the opposite job) — every real leading-digit-
+#: drop error found so far is wrong by tens of millions at least, orders
+#: of magnitude past this, so the two error classes never get confused.
+_IDENTITY_ROUNDING_TOLERANCE = Decimal(1000)
+
+
+def _identity_diffs(values: dict[str, Decimal]) -> dict[str, Decimal]:
+    """The SAME relationships `check_accounting_identities` checks,
+    returned as `{name: abs(lhs - rhs)}` instead of a pass/fail — kept as
+    a genuinely separate computation (not derived from that function's
+    own output) because `reconcile_ambiguous_values_via_identities` needs
+    to compare MAGNITUDES with a tolerance (see `_IDENTITY_ROUNDING_
+    TOLERANCE`), not the exact `lhs == rhs` that function's own result is
+    deliberately built on. Keep both in sync by hand if a new identity is
+    ever added to either."""
+    def have(*keys: str) -> bool:
+        return all(k in values for k in keys)
+
+    diffs: dict[str, Decimal] = {}
+    if have("total_assets", "total_equity", "total_liabilities"):
+        diffs["assets = equity + liabilities"] = abs(
+            values["total_assets"] - (values["total_equity"] + values["total_liabilities"])
+        )
+    if have("total_assets", "total_equity_and_liabilities"):
+        diffs["assets = equity and liabilities"] = abs(
+            values["total_assets"] - values["total_equity_and_liabilities"]
+        )
+    if have("total_assets", "total_current_assets", "total_non_current_assets"):
+        held = values.get("assets_held_for_sale", Decimal(0))
+        diffs["assets = current + non-current"] = abs(
+            values["total_assets"]
+            - (values["total_current_assets"] + values["total_non_current_assets"] + held)
+        )
+    if have("total_liabilities", "total_current_liabilities", "total_non_current_liabilities"):
+        held = values.get("liabilities_associated_with_assets_held_for_sale", Decimal(0))
+        diffs["liabilities = current + non-current"] = abs(
+            values["total_liabilities"]
+            - (values["total_current_liabilities"] + values["total_non_current_liabilities"] + held)
+        )
+    if have("revenue", "cost_of_sales", "gross_profit"):
+        diffs["revenue - cost of sales = gross profit"] = abs(
+            (values["revenue"] + values["cost_of_sales"]) - values["gross_profit"]
+        )
+    if have("profit_before_tax", "income_tax_expense", "net_income"):
+        diffs["pre-tax profit - tax = net income"] = abs(
+            (values["profit_before_tax"] + values["income_tax_expense"]) - values["net_income"]
+        )
+    if have(
+        "cash_flow_from_operations", "net_cash_from_investing_activities",
+        "net_cash_from_financing_activities", "net_increase_in_cash",
+    ):
+        diffs["CFO + investing + financing = net change in cash"] = abs(
+            (
+                values["cash_flow_from_operations"]
+                + values["net_cash_from_investing_activities"]
+                + values["net_cash_from_financing_activities"]
+            )
+            - values["net_increase_in_cash"]
+        )
+    return diffs
+
+
+#: A defensive cap, not a real-world limit ever actually approached —
+#: every real filing found so far has 1-2 ambiguous keys on one
+#: statement, never more than a handful. Guards `reconcile_ambiguous_
+#: values_via_identities`'s subset search (2^n) against a pathological
+#: input rather than any case seen in practice.
+_MAX_AMBIGUOUS_KEYS_TO_RECONCILE = 12
+
+
+def reconcile_ambiguous_values_via_identities(
+    values: dict[str, Decimal], alt_values: dict[str, Decimal]
+) -> dict[str, Decimal]:
+    """For every canonical key with a genuinely ambiguous alternate
+    reading (`alt_values` — see `ExtractedLine.alt_values`'s own
+    docstring), decides which of the two the real figure actually is by
+    testing every combination of substitutions against `_identity_diffs`,
+    rather than guessing, always preferring one interpretation, or trying
+    keys one at a time. Returns `{statement_line: corrected_value}` —
+    only for keys this function actually changed its mind about; every
+    key not in the result should keep its original (default) reading.
+
+    A REAL CASE A ONE-KEY-AT-A-TIME VERSION GETS WRONG, FOUND LIVE (20
+    Aug 2026): eChannelling PLC's real "Total Current Liabilities" AND
+    "Total Liabilities" lines are BOTH missing the same leading digit
+    (219,185,791 misread as 19,185,791; 238,125,232 misread as 38,125,232)
+    — and because BOTH the subtotal and one of its own components are
+    wrong by the identical amount, "liabilities = current + non-current"
+    PASSES on the wrong values (the error cancels in that one specific
+    sum) while "assets = equity + liabilities" fails. Correcting EITHER
+    key alone makes the current-vs-non-current identity go from passing
+    to failing (only one side of it would be fixed) — a one-at-a-time
+    rule that never breaks an already-passing identity would reject both
+    individually and end up applying neither. Trying every SUBSET of the
+    ambiguous keys and scoring each by "how many identities that were
+    genuinely failing now pass, given every substitution in this subset
+    applied together" finds that BOTH corrected together fixes "assets =
+    equity + liabilities" while leaving "liabilities = current + non-
+    current" exactly where it started (correct + correct still sums
+    right) — the only subset that breaks nothing and fixes something.
+
+    THE HARD CONSTRAINT, same spirit as before: a subset is only ever
+    considered if it does not turn any identity that was genuinely
+    passing in the ORIGINAL (all-default) values into a failing one.
+    This is what protects J.F. Packaging PLC's real "Revenue 5 4,504,801
+    ..." line (see `_merge_all_split_pairs`'s own docstring) — its
+    default reading already satisfies "revenue - cost of sales = gross
+    profit", so any subset including its alternate is rejected outright,
+    however plausible-looking the alternate is on its own.
+
+    "Passing"/"failing" here means `_identity_diffs`' magnitude compared
+    against `_IDENTITY_ROUNDING_TOLERANCE`, not bit-for-bit equality —
+    see that constant's own docstring for why a real filing's own tiny
+    rounding noise must not be confused with a genuine (and far larger)
+    extraction error.
+    """
+    if not alt_values or len(alt_values) > _MAX_AMBIGUOUS_KEYS_TO_RECONCILE:
+        return {}
+
+    keys = [k for k in alt_values if k in values]
+    if not keys:
+        return {}
+
+    baseline_diffs = _identity_diffs(values)
+    baseline_failing = {n for n, d in baseline_diffs.items() if d > _IDENTITY_ROUNDING_TOLERANCE}
+    baseline_passing = set(baseline_diffs) - baseline_failing
+    if not baseline_failing:
+        return {}  # nothing is actually wrong yet — no substitution can "fix" a clean statement
+
+    best_subset: frozenset[str] = frozenset()
+    best_fixed_count = 0
+    for mask in range(1, 1 << len(keys)):
+        subset = frozenset(keys[i] for i in range(len(keys)) if mask & (1 << i))
+        candidate = dict(values)
+        for key in subset:
+            candidate[key] = alt_values[key]
+        candidate_diffs = _identity_diffs(candidate)
+
+        breaks_something_passing = any(
+            candidate_diffs.get(name, Decimal(0)) > _IDENTITY_ROUNDING_TOLERANCE
+            for name in baseline_passing
+        )
+        if breaks_something_passing:
+            continue
+
+        fixed_count = sum(
+            1
+            for name in baseline_failing
+            if candidate_diffs.get(name, _IDENTITY_ROUNDING_TOLERANCE + 1) <= _IDENTITY_ROUNDING_TOLERANCE
+        )
+        if fixed_count > best_fixed_count or (
+            fixed_count == best_fixed_count and len(subset) < len(best_subset)
+        ):
+            best_fixed_count = fixed_count
+            best_subset = subset
+
+    if best_fixed_count == 0:
+        return {}
+    return {key: alt_values[key] for key in best_subset}
 
 
 #: Canonical keys that get derived by summing OTHER canonical keys, and

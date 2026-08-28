@@ -68,7 +68,27 @@ def compute_cost_of_debt(
         return CostOfDebtResult(
             None, None, "Not meaningful without positive total_interest_bearing_debt."
         )
-    pre_tax = interest_expense / total_interest_bearing_debt
+    # `abs()`, deliberately — REAL BUG THIS CLOSES, found live (27 Aug
+    # 2026) auditing confirmed data for silent errors: `interest_expense`
+    # is extracted from whichever real "Finance Costs"/"Interest Expense"
+    # line matched, and the SAME real company can print it with OPPOSITE
+    # sign conventions across filing types — verified: LGL.N0000's real
+    # FY2013 annual report shows "Finance Costs 6.3 (5,053,018) ..."
+    # (parenthesised, i.e. negative) while its own real Q1 FY2014
+    # quarterly interim shows "Finance Costs 5,053,018 ..." (unparenthesised,
+    # positive) for what both filings agree is the exact same LKR
+    # 5,053,018 figure. Both extractions are individually CORRECT reads
+    # of their own real source text — this is a genuine inconsistency in
+    # how the company itself formats the two document types, not an
+    # extraction bug, so there is no "right" sign to extract; only the
+    # MAGNITUDE is reliable. Without this, a company whose confirmed row
+    # happens to carry the negative-signed reading gets a NEGATIVE cost
+    # of debt, pulling WACC down and OVERSTATING every DCF value built on
+    # it — precisely the dangerous direction this module's own docstring
+    # (see "WHY A MISSING COST OF DEBT IS NEVER TREATED AS ZERO" above)
+    # is already careful to guard against for the missing-value case, now
+    # extended to the wrong-sign case too.
+    pre_tax = abs(interest_expense) / total_interest_bearing_debt
 
     if effective_tax_rate is None:
         return CostOfDebtResult(
@@ -131,6 +151,17 @@ def compute_wacc(
             cost_of_equity, after_tax_cost_of_debt, None, tuple(missing),
             f"Cannot compute WACC — missing: {', '.join(missing)}.",
         )
+
+    # `abs()`, same real bug and same reasoning as `compute_cost_of_
+    # debt`'s own docstring above — a debt BALANCE can never legitimately
+    # be negative, but the same real company can print it parenthesised
+    # in one filing type and not another. This module owns the WACC
+    # safety guarantee (the same way it already refuses to default a
+    # missing cost of debt to zero) rather than trusting every caller to
+    # normalise the sign first — without this, a negative reading here
+    # makes `debt_weight` negative and `equity_weight` exceed 1.0 below,
+    # an uninterpretable weighted average, not just a wrong number.
+    total_interest_bearing_debt = abs(total_interest_bearing_debt)
 
     total_capital = market_value_of_equity + total_interest_bearing_debt
     if total_capital <= 0:

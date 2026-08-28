@@ -47,6 +47,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.domain.factor_series_view import rebuild_factor_series
 from app.domain.valuation_quarantine_view import record_sanity_result
 from app.domain.valuation_view import valuation_summary_for
 from app.ingestion.cbsl_client import CbslClient
@@ -56,7 +57,10 @@ from app.ingestion.corporate_actions_loader import (
     recently_scanned_tickers,
 )
 from app.ingestion.cse_client import CseClient
-from app.ingestion.financial_pdf_extractor import ingest_financial_statements_for_known_tickers
+from app.ingestion.financial_pdf_extractor import (
+    ingest_financial_statements_for_known_tickers,
+    sweep_stale_fundamentals,
+)
 from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.ingestion.security_enrichment import enrich_securities
@@ -89,6 +93,39 @@ class JobCooldown(Exception):
 
 def _all_tickers(db: Session) -> list[str]:
     return [t for (t,) in db.execute(select(Security.ticker)).all()]
+
+
+def recover_orphaned_runs(db: Session) -> int:
+    """Called once, at worker startup, before the scheduler starts.
+
+    REAL BUG, FOUND LIVE (23 Aug 2026): a `JobRun` stuck in `queued`/
+    `running` from a worker process that died mid-job (see `app.worker`'s
+    own top-of-file comment for the real crash this closes) blocks
+    `enqueue`'s own concurrency guard FOREVER — nothing was left alive to
+    ever mark it `failed`, so every future `POST /jobs/{job}/run` for
+    that same job 409s indefinitely, and the sidebar's own "Run Capture"
+    control looks permanently broken for that one job even though the
+    worker itself has since restarted and is healthy. Since this
+    function only ever runs at the START of a fresh worker process — the
+    one thing in this whole system that is ever allowed to move a row
+    out of `queued`/`running` — any row still in either state when this
+    runs was left there by a PREVIOUS process that no longer exists, not
+    a job this new process is already mid-way through (that can't happen
+    yet; the scheduler hasn't started). Marked `failed` with a real,
+    honest error rather than silently deleted or left ambiguous."""
+    stale = db.scalars(
+        select(JobRun).where(JobRun.status.in_(("queued", "running")))
+    ).all()
+    for run in stale:
+        run.status = "failed"
+        run.finished_at = dt.datetime.now(dt.timezone.utc)
+        run.error = (
+            "Interrupted: the worker process running this job exited before it finished "
+            "(crash, forced stop, or host restart) — no result was produced. Safe to re-run."
+        )
+    if stale:
+        db.commit()
+    return len(stale)
 
 
 def enqueue(db: Session, job_key: str, *, trigger: str = "manual") -> JobRun:
@@ -291,6 +328,59 @@ def _run_recompute(db: Session, run: JobRun) -> int:
     return checked
 
 
+def _run_rebuild_factor_series(db: Session, run: JobRun) -> int:
+    """§35's weekly factor return series — `app.domain.factor_series_
+    view.rebuild_factor_series`'s own bulk-loaded builder, run here
+    rather than inline anywhere because even the bulk-loaded path is a
+    real, multi-minute pass over this system's full price history (see
+    that module's own docstring for the ~142,000-call naive alternative
+    this bulk approach avoids) — exactly the "never inline in a request
+    handler" rule this file's own module docstring states."""
+    def on_progress(done: int, total: int, message: str) -> bool:
+        pct = 100 * done / max(total, 1)
+        return _set_progress(db, run, pct, message)
+
+    summary = rebuild_factor_series(db, on_progress=on_progress)
+    for warning in summary.warnings[:20]:
+        logger.warning("rebuild_factor_series: %s", warning)
+    return sum(summary.rows_written.values())
+
+
+def _run_refresh_stale_fundamentals(db: Session, run: JobRun) -> int:
+    """The manual "Run Capture" trigger for `app.ingestion.financial_pdf_
+    extractor.sweep_stale_fundamentals` — re-checks every ticker's
+    already-stored fundamentals against `check_extraction_quality` and
+    re-extracts any filing still failing. Also runs on its own weekly
+    Saturday cron (`app.jobs.scheduler._job_refresh_stale_fundamentals`);
+    this is the same real sweep, just triggerable on demand rather than
+    waiting for Saturday — e.g. right after a `check_extraction_quality`
+    check gets a new rule added, or after fixing a real extractor bug,
+    when a human wants the backlog swept NOW rather than at the next
+    scheduled run.
+
+    Progress is reported per FILING CHECKED (`sweep_stale_fundamentals`'s
+    own `on_filing` — mirrors `_run_enrich_securities`'s per-ticker
+    convention), not per ticker: the count that actually matters here is
+    how many filings still need a real download, which is usually far
+    fewer than the ticker count and only known once every ticker's stored
+    rows have been grouped and checked.
+    """
+    tickers = _all_tickers(db)
+
+    def on_filing(i: int, total: int, label: str) -> bool:
+        return _set_progress(db, run, 100 * i / max(total, 1), f"Stale fundamentals · {i} / {total} ({label})")
+
+    outcomes = sweep_stale_fundamentals(db, tickers, on_filing=on_filing)
+    repaired = sum(1 for o in outcomes if o.status == "repaired")
+    still_failing = sum(1 for o in outcomes if o.status == "still_failing")
+    if outcomes:
+        logger.info(
+            "refresh_stale_fundamentals: %d filing(s) checked, %d repaired, %d still fail",
+            len(outcomes), repaired, still_failing,
+        )
+    return repaired
+
+
 _RUNNERS = {
     "capture_prices": _run_capture_prices,
     "capture_market": _run_capture_market,
@@ -299,6 +389,8 @@ _RUNNERS = {
     "capture_corporate_actions": _run_capture_corporate_actions,
     "enrich_securities": _run_enrich_securities,
     "recompute": _run_recompute,
+    "rebuild_factor_series": _run_rebuild_factor_series,
+    "refresh_stale_fundamentals": _run_refresh_stale_fundamentals,
 }
 
 

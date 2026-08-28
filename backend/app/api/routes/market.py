@@ -54,6 +54,7 @@ from app.domain.johansen_vecm_view import johansen_vecm_for
 from app.domain.factor_library_view import hml_hard_for
 from app.domain.liquidity import illiquidity_premium_from_percentile, percentile_rank
 from app.domain.liquidity_view import universe_amihud_ratios
+from app.domain.sector_drilldown_view import sector_drilldown_for
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.domain.stationarity_view import stationarity_for_series
 from app.domain.var_differences_view import var_in_differences_for
@@ -324,6 +325,58 @@ def sector_sensitivity(db: Session = Depends(get_db)) -> SectorSensitivityOut:
         thin_sectors=[[sector, count] for sector, count in view.thin_sectors],
         shocks_used=list(view.shocks_used),
         warnings=list(view.warnings),
+    )
+
+
+class SectorCompanyOut(BaseModel):
+    ticker: str
+    name: str
+    market_cap: Decimal | None
+    market_cap_reason: str | None
+    pct_of_sector: Decimal | None
+    fair_value_gap_pct: Decimal | None
+    gap_reason: str | None
+
+
+class SectorDrilldownOut(BaseModel):
+    """R1 T4.6.4's sector drill-down panel: market-share treemap data,
+    a ranked table, and (client-side, from the sensitivity matrix
+    already fetched by the same screen) the sector's macro
+    sensitivities. See `app.domain.sector_drilldown_view`'s own module
+    docstring for why composite score is deliberately not a column
+    here — a real, measured cost, not an oversight."""
+
+    sector: str
+    as_of: dt.date
+    companies: list[SectorCompanyOut]
+    total_market_cap: Decimal | None
+    excluded_from_market_cap_pct: int
+    composite_score_omitted_reason: str
+
+
+@router.get("/sector/{sector}", response_model=SectorDrilldownOut)
+def sector_drilldown(sector: str, db: Session = Depends(get_db)) -> SectorDrilldownOut:
+    view = sector_drilldown_for(db, sector)
+    if view is None:
+        raise HTTPException(status_code=404, detail=f"No real constituents recorded for sector '{sector}'.")
+    return SectorDrilldownOut(
+        sector=view.sector,
+        as_of=view.as_of,
+        companies=[
+            SectorCompanyOut(
+                ticker=c.ticker,
+                name=c.name,
+                market_cap=c.market_cap,
+                market_cap_reason=c.market_cap_reason,
+                pct_of_sector=c.pct_of_sector,
+                fair_value_gap_pct=c.fair_value_gap_pct,
+                gap_reason=c.gap_reason,
+            )
+            for c in view.companies
+        ],
+        total_market_cap=view.total_market_cap,
+        excluded_from_market_cap_pct=view.excluded_from_market_cap_pct,
+        composite_score_omitted_reason=view.composite_score_omitted_reason,
     )
 
 

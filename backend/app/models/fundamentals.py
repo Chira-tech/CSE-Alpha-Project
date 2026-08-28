@@ -39,6 +39,18 @@ class Fundamental(Base):
         # first_available_date <= t, never period_end <= t).
         Index("ix_fundamentals_ticker_first_available", "ticker", "first_available_date"),
         Index("ix_fundamentals_ticker_source_url", "ticker", "source_url"),
+        # The database-level backstop behind every ingestion path's own
+        # application-level idempotency check — see migration 0019 for
+        # the real (if narrow) concurrent-run race this closes, and why
+        # this exact 5-tuple (not e.g. (ticker, source_url)) is the right
+        # uniqueness key: every legitimate code path already guarantees
+        # it on its own, so this has never fired and is not expected to
+        # under normal operation.
+        Index(
+            "uq_fundamentals_ticker_period_type_line_version",
+            "ticker", "period_end", "period_type", "statement_line", "version",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

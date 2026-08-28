@@ -38,6 +38,7 @@ WEEKLY_JOBS = {
     "issuer_registry_refresh": ("sat", 6, 20),
     "sector_refresh": ("sat", 6, 40),
     "price_gap_repair": ("sat", 7, 0),
+    "refresh_stale_fundamentals": ("sat", 7, 30),
 }
 
 # P1.1: the manual "Run Capture" queue poller — deliberately NOT weekday/

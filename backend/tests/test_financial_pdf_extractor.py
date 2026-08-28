@@ -23,6 +23,7 @@ import respx
 from app.domain.financial_statement_parsing import check_accounting_identities
 from app.ingestion.cse_client import CseClient
 from app.ingestion.financial_pdf_extractor import (
+    _is_primary_statement_page,
     announcements_for_ticker,
     build_derived_fundamental_drafts,
     build_fundamental_drafts,
@@ -32,6 +33,7 @@ from app.ingestion.financial_pdf_extractor import (
     fetch_recent_financial_announcements,
     ingest_financial_statement,
     ingest_financial_statements_for_known_tickers,
+    refresh_stale_fundamentals,
     resolve_first_available_date,
 )
 from app.ingestion.schemas import FinancialAnnouncementRow
@@ -40,12 +42,14 @@ from app.models.fundamentals import Fundamental
 from app.models.securities import Security
 from tests.test_financial_statement_parsing import (
     BALANCE_SHEET_TEXT,
+    BALANCE_SHEET_TEXT_ECL,
     BALANCE_SHEET_TEXT_NTB_DOUBLED,
     BALANCE_SHEET_TEXT_PAP,
     BALANCE_SHEET_TEXT_SWAD,
     CASH_FLOW_STATEMENT_TEXT,
     CASH_FLOW_STATEMENT_TEXT_SWAD,
     INCOME_STATEMENT_TEXT,
+    SHOT_BALANCE_SHEET_TEXT,
 )
 
 REAL_FEED_ROW = {
@@ -178,6 +182,171 @@ def test_extract_financial_statement_candidates_only_reads_statement_pages():
     assert page_numbers_used == {1, 3, 4}
 
 
+def test_a_real_split_leading_digit_pair_is_reconciled_end_to_end():
+    """eChannelling PLC's real genuinely-2-column filing — see
+    `BALANCE_SHEET_TEXT_ECL`'s own docstring for the live bug. Proves the
+    full pipeline (per-page column-count detection, the alt-values
+    candidate, and the accounting-identity reconciliation) works
+    together through the actual public entry point, not just each piece
+    in isolation."""
+    fake_pages = [_FakePage(BALANCE_SHEET_TEXT_ECL)]
+
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    by_key = {line.statement_line: line.primary_value for _page, line in candidates}
+    assert by_key["total_current_liabilities"] == Decimal("219185791")
+    assert by_key["total_liabilities"] == Decimal("238125232")
+    # unaffected lines still read exactly as printed
+    assert by_key["total_assets"] == Decimal("789451516")
+    assert by_key["total_equity"] == Decimal("551326283")
+
+
+def test_a_component_line_with_no_sibling_identity_is_reconciled_via_magnitude_plausibility():
+    """Serendib Hotels PLC's real genuine balance sheet — see
+    `SHOT_BALANCE_SHEET_TEXT`'s own docstring for the live bug. `total_
+    assets` has an accounting identity to reconcile against (already
+    proven end-to-end by the eChannelling test above); `inventories` and
+    `trade_receivables` do not — no identity in this module sums current-
+    asset components — so this proves the SECOND, complementary pass
+    (`reconcile_magnitude_implausible_values`) through the actual public
+    entry point, not just in isolation."""
+    fake_pages = [_FakePage(SHOT_BALANCE_SHEET_TEXT)]
+
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    by_key = {line.statement_line: line.primary_value for _page, line in candidates}
+    # scaled to real LKR ("Rs.'000" declared on this real page, ×1,000):
+    assert by_key["inventories"] == Decimal("37890000")
+    assert by_key["trade_receivables"] == Decimal("306895000")
+    # identity-reconciled lines on the SAME page still work too:
+    assert by_key["total_assets"] == Decimal("4995225000")
+
+
+def _seed_jfp_security(db_session):
+    if db_session.get(Security, "JFP.N0000") is None:
+        db_session.add(Security(ticker="JFP.N0000", name="JF PACKAGING PLC"))
+        db_session.commit()
+
+
+def test_refresh_stale_fundamentals_repairs_a_row_a_since_fixed_bug_left_wrong(db_session):
+    """The real HNB/CALH/COCR shape, reproduced with a controlled
+    fixture: a `total_assets` row stored wrong (as if a since-fixed
+    split-leading-digit bug had dropped its own leading digit — 807,110
+    instead of the real 3,807,110, thousands), sitting next to correct
+    total_equity/total_liabilities rows. Today's extractor, re-run
+    against the identical statement text, reads `total_assets` correctly
+    (3,807,110,000 — see BALANCE_SHEET_TEXT's own real J.F. Packaging
+    figures), and the fresh reading now balances the identity that the
+    stale stored value failed — so it should be applied."""
+    _seed_jfp_security(db_session)
+    period_end = dt.date(2026, 3, 31)
+    stale = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_assets",
+        value=Decimal("807110000"), provenance_tier=ProvenanceTier.AI_ASSISTED,
+        source_url="https://cdn.example.test/jfp.pdf", source_snippet="stale, wrong",
+    )
+    equity = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_equity",
+        value=Decimal("1643031000"), provenance_tier=ProvenanceTier.AI_ASSISTED,
+    )
+    liabilities = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_liabilities",
+        value=Decimal("2164079000"), provenance_tier=ProvenanceTier.AI_ASSISTED,
+    )
+    db_session.add_all([stale, equity, liabilities])
+    db_session.commit()
+    stale_id = stale.id
+
+    fake_pages = [_FakePage(BALANCE_SHEET_TEXT)]
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
+        result = refresh_stale_fundamentals(db_session, "JFP.N0000", period_end, "annual", b"irrelevant-bytes")
+
+    assert result.still_failing is False
+    assert result.updated == ("total_assets",)
+    assert result.unchanged == 2  # equity and liabilities already matched
+    assert result.skipped_confirmed == 0
+
+    db_session.expire_all()
+    refreshed = db_session.get(Fundamental, stale_id)
+    assert refreshed.value == Decimal("3807110000")
+    assert "RE-EXTRACTED" in refreshed.source_snippet
+    assert refreshed.provenance_tier == ProvenanceTier.AI_ASSISTED  # still needs human confirmation
+    assert refreshed.confirmed_by is None
+
+
+def test_refresh_stale_fundamentals_never_touches_an_already_confirmed_row(db_session):
+    """§8's confirm-queue discipline, extended to this new write path: a
+    row a human already promoted to Reported must never be silently
+    rewritten by an automated re-extraction, even one that's actually
+    correct — a restatement pathway is a different, separate concern."""
+    _seed_jfp_security(db_session)
+    period_end = dt.date(2026, 3, 31)
+    confirmed_wrong = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_assets",
+        value=Decimal("807110000"), provenance_tier=ProvenanceTier.REPORTED,
+        confirmed_by="analyst", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+    equity = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_equity",
+        value=Decimal("1643031000"), provenance_tier=ProvenanceTier.AI_ASSISTED,
+    )
+    liabilities = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_liabilities",
+        value=Decimal("2164079000"), provenance_tier=ProvenanceTier.AI_ASSISTED,
+    )
+    db_session.add_all([confirmed_wrong, equity, liabilities])
+    db_session.commit()
+    confirmed_id = confirmed_wrong.id
+
+    fake_pages = [_FakePage(BALANCE_SHEET_TEXT)]
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
+        result = refresh_stale_fundamentals(db_session, "JFP.N0000", period_end, "annual", b"irrelevant-bytes")
+
+    assert result.updated == ()
+    assert result.skipped_confirmed == 1
+
+    db_session.expire_all()
+    untouched = db_session.get(Fundamental, confirmed_id)
+    assert untouched.value == Decimal("807110000")  # still wrong, deliberately not fixed here
+
+
+def test_refresh_stale_fundamentals_refuses_to_apply_a_fresh_reading_that_still_fails(db_session):
+    """Re-extracting is a candidate, not a fix in itself — if the fresh
+    reading STILL doesn't balance (a different bug, or the same one not
+    actually fixed for this filing), nothing gets written, matching the
+    same acceptance bar `reconcile_ambiguous_values_via_identities`
+    already established elsewhere in this module."""
+    _seed_jfp_security(db_session)
+    period_end = dt.date(2026, 3, 31)
+    stale = Fundamental(
+        ticker="JFP.N0000", period_end=period_end, period_type="annual",
+        first_available_date=period_end, version=1, statement_line="total_assets",
+        value=Decimal("807110000"), provenance_tier=ProvenanceTier.AI_ASSISTED,
+    )
+    db_session.add(stale)
+    db_session.commit()
+    stale_id = stale.id
+
+    # No statement pages at all in this "PDF" — nothing to re-extract.
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf([])):
+        result = refresh_stale_fundamentals(db_session, "JFP.N0000", period_end, "annual", b"irrelevant-bytes")
+
+    assert result.still_failing is True
+    assert result.updated == ()
+
+    db_session.expire_all()
+    untouched = db_session.get(Fundamental, stale_id)
+    assert untouched.value == Decimal("807110000")  # unchanged
+
+
 def test_a_statement_page_with_no_detectable_unit_declaration_is_skipped_entirely():
     """A REAL bug fix's own regression test: a page that otherwise looks
     exactly like a real statement page (right marker text, right label/
@@ -230,6 +399,95 @@ def test_a_notes_page_whose_own_subheading_names_a_primary_statement_is_still_ex
     assert len(debt_candidates) == 2  # only the balance sheet's own two, not the note's reprint too
     page_numbers_used = {page for page, _ in candidates}
     assert 1 not in page_numbers_used  # the notes page (index 1) must be fully excluded
+
+
+def test_a_joint_venture_summarised_statement_note_is_excluded_not_read_as_the_real_one():
+    """A REAL bug, found live tracing HNB.N0000's real ~15x net_income
+    error (27 Aug 2026, docs/audits/R1_VALIDATION.md's own named, unfixed
+    finding): HNB's real FY2024 annual report has a note — "34 (d)
+    Summarised Statement Of Profit Or Loss Of Joint Venture - Acuity
+    Partners (Pvt) Ltd and its Subsidiaries" (real page 403, trimmed
+    below to the part that reproduces the trap) — printing a miniature
+    income statement for its OWN joint venture, using the exact same
+    canonical labels ("Profit for the year", "Revenue", ...) HNB's real
+    consolidated statement uses. It does NOT contain "notes to the" (a
+    continuation page deep inside note 34, not the notes section's own
+    opening header) and appears BEFORE HNB's real income statement in
+    page order, so before this fix, "first occurrence wins" kept the
+    joint venture's own (much smaller) net_income as if it were HNB's."""
+    real_jv_note_excerpt = (
+        "34 (d) Summarised Statement Of Profit Or Loss Of Joint Venture - Acuity Partners "
+        "(Pvt) Ltd and its Subsidiaries\n"
+        "For the year ended 31st December 2024 2023\n"
+        "Rs 000 Rs 000\n"
+        "Revenue 6,591,946 4,637,650\n"
+        "Profit before tax 4,295,411 2,291,697\n"
+        "Profit for the year 3,179,557 2,016,451\n"
+    )
+    fake_pages = [_FakePage(real_jv_note_excerpt), _FakePage(INCOME_STATEMENT_TEXT)]
+
+    with patch("app.ingestion.financial_pdf_extractor.pdfplumber.open", return_value=_FakePdf(fake_pages)):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    net_income_candidates = [line for _page, line in candidates if line.statement_line == "net_income"]
+    assert len(net_income_candidates) == 1  # only the real income statement's own, not the JV note's
+    page_numbers_used = {page for page, _ in candidates}
+    assert 0 not in page_numbers_used  # the JV note page (index 0) must be fully excluded
+
+
+def test_a_real_primary_statement_pages_own_footer_does_not_exclude_it():
+    """A REAL bug, found live in the SAME HNB.N0000 investigation
+    (27 Aug 2026) as the joint-venture note above, tracing why fixing
+    that alone still wasn't enough: HNB's own REAL primary income
+    statement page (its genuine "STATEMENT OF PROFIT OR LOSS AND OTHER
+    COMPREHENSIVE INCOME") was ALSO being excluded — by the original
+    "notes to the" marker firing on this completely ordinary FOOTER line
+    every real primary statement page in this filing carries (verified:
+    real page 290, line 39 of 41 — the real page's last real line before
+    a trailing blank one): "The notes to the financial statements from
+    pages 298 to 466 form an integral part of these financial
+    statements." That's routine boilerplate on a genuine primary
+    statement page, not a notes-section header — the fix scopes the
+    `_NOTES_PAGE_MARKERS` check to the page's own first `_NOTES_MARKER_
+    SEARCH_LINES` lines, where a real notes-section header (or a real
+    "Summarised Statement of..." sub-schedule heading) always actually
+    lives, so this footer sentence deep in the page body no longer
+    counts."""
+    real_hnb_income_statement_excerpt = (
+        "STATEMENT OF PROFIT OR LOSS AND\n"
+        "OTHER COMPREHENSIVE INCOME\n"
+        "Bank Group\n"
+        "For the year ended 31st December 2024 2023 2024 2023\n"
+        "Note Rs 000 Rs 000 Rs 000 Rs 000\n"
+        "PROFIT FOR THE YEAR 41,341,793 20,353,118 44,839,632 23,606,491\n"
+        "Other comprehensive income that will not be reclassified to profit or loss\n"
+        "in subsequent periods\n"
+        "Change in fair value of investments in equity instruments 3,043,986 3,398,710 3,042,939 3,399,392\n"
+        "Total comprehensive income for the year 44,560,831 23,755,335 48,459,534 26,986,121\n"
+        "The notes to the financial statements from pages 298 to 466 form an integral "
+        "part of these financial statements.\n"
+    )
+    with patch(
+        "app.ingestion.financial_pdf_extractor.pdfplumber.open",
+        return_value=_FakePdf([_FakePage(real_hnb_income_statement_excerpt)]),
+    ):
+        candidates = extract_financial_statement_candidates(b"irrelevant-bytes")
+
+    net_income_candidates = [line for _page, line in candidates if line.statement_line == "net_income"]
+    assert len(net_income_candidates) == 1
+    assert net_income_candidates[0].primary_value == Decimal("41341793000")  # scaled from Rs'000
+
+
+def test_a_genuine_notes_section_header_is_still_excluded_by_the_scoped_check():
+    """Regression guard: scoping the check to the page's own first lines
+    must not weaken the ORIGINAL real case this marker exists for — a
+    genuine notes-section header still sits well within that window on
+    every real fixture checked."""
+    assert not _is_primary_statement_page(
+        "142 J.F. PACKAGING PLC Annual Report 2025/26\n"
+        "NOTES TO THE CONSOLIDATED FINANCIAL STATEMENTS\n"
+        "25. FINANCIAL INSTRUMENTS\n"
+    )
 
 
 def test_build_fundamental_drafts_are_ai_assisted_and_unconfirmed():

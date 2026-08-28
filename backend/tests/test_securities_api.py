@@ -104,6 +104,95 @@ def test_list_includes_return_on_equity_for_the_screener(db_session, client):
     no_fundamentals = next(r for r in rows if r["ticker"] == "AAF.N0000")
     assert no_fundamentals["return_on_equity"] is None
     assert no_fundamentals["return_on_equity_provenance"] is None
+    # Only one ticker in the whole seed has a computable ROE at all, so
+    # there is nothing to rank it against — no fabricated percentile.
+    assert jkh["return_on_equity_sector_percentile"] is None
+
+
+def test_list_ranks_roe_sector_percentile_once_enough_peers_exist(db_session, client):
+    """§12's sector-relative percentile on the screener column — real
+    once MIN_CONSTITUENTS_FOR_SECTOR_PERCENTILE peers share a sector."""
+    _seed(db_session)
+    db_session.query(Security).filter(Security.ticker == "JKH.N0000").update({"cse_sector": "Banks"})
+    db_session.query(Security).filter(Security.ticker == "AAF.N0000").update({"cse_sector": "Banks"})
+    db_session.add(Security(ticker="THIRD.N0000", name="THIRD BANK PLC", cse_sector="Banks"))
+    db_session.add_all(
+        [
+            Fundamental(
+                ticker=t, period_end=dt.date(2025, 12, 31), period_type="annual",
+                first_available_date=dt.date(2026, 3, 1), version=1, statement_line=line,
+                value=Decimal(value), provenance_tier=ProvenanceTier.REPORTED,
+            )
+            for t, line, value in [
+                ("JKH.N0000", "net_income", 200), ("JKH.N0000", "total_equity", 1000),  # ROE 20%
+                ("AAF.N0000", "net_income", 100), ("AAF.N0000", "total_equity", 1000),  # ROE 10%
+                ("THIRD.N0000", "net_income", 300), ("THIRD.N0000", "total_equity", 1000),  # ROE 30%
+            ]
+        ]
+    )
+    db_session.commit()
+
+    rows = {r["ticker"]: r for r in client.get("/securities").json()}
+    assert Decimal(rows["THIRD.N0000"]["return_on_equity_sector_percentile"]) == Decimal(100)
+    assert Decimal(rows["AAF.N0000"]["return_on_equity_sector_percentile"]) == Decimal(0)
+    assert Decimal(rows["JKH.N0000"]["return_on_equity_sector_percentile"]) == Decimal(50)
+
+
+def test_detail_includes_ratio_percentiles(db_session, client):
+    _seed(db_session)
+    db_session.query(Security).filter(Security.ticker == "JKH.N0000").update({"cse_sector": "Banks"})
+    db_session.query(Security).filter(Security.ticker == "AAF.N0000").update({"cse_sector": "Banks"})
+    db_session.add(Security(ticker="THIRD.N0000", name="THIRD BANK PLC", cse_sector="Banks"))
+    db_session.add_all(
+        [
+            Fundamental(
+                ticker=t, period_end=dt.date(2025, 12, 31), period_type="annual",
+                first_available_date=dt.date(2026, 3, 1), version=1, statement_line=line,
+                value=Decimal(value), provenance_tier=ProvenanceTier.REPORTED,
+            )
+            for t, line, value in [
+                ("JKH.N0000", "net_income", 200), ("JKH.N0000", "total_equity", 1000),
+                ("AAF.N0000", "net_income", 100), ("AAF.N0000", "total_equity", 1000),
+                ("THIRD.N0000", "net_income", 300), ("THIRD.N0000", "total_equity", 1000),
+            ]
+        ]
+    )
+    db_session.commit()
+
+    detail = client.get("/securities/JKH.N0000").json()
+    roe_pct = next(p for p in detail["ratio_percentiles"] if p["ratio_key"] == "return_on_equity")
+    assert Decimal(roe_pct["percentile"]) == Decimal(50)
+    assert roe_pct["group_label"] == "Banks"
+    assert roe_pct["group_size"] == 3
+    assert roe_pct["used_wider_sector"] is False
+
+
+def test_detail_includes_ratio_series_for_the_company_file_ratio_card_path(db_session, client):
+    """R1 T4.3.1: the ratio card grid draws a real numeric path where >=3
+    periods exist — this is the raw `(period_end, value)` history that
+    path is built from, oldest first."""
+    _seed(db_session)
+    db_session.add_all(
+        [
+            Fundamental(
+                ticker="JKH.N0000", period_end=period_end, period_type="annual",
+                first_available_date=period_end, version=1, statement_line=line,
+                value=Decimal(value), provenance_tier=ProvenanceTier.REPORTED,
+            )
+            for period_end, line, value in [
+                (dt.date(2023, 12, 31), "net_income", 100), (dt.date(2023, 12, 31), "total_equity", 1000),
+                (dt.date(2024, 12, 31), "net_income", 140), (dt.date(2024, 12, 31), "total_equity", 1000),
+                (dt.date(2025, 12, 31), "net_income", 200), (dt.date(2025, 12, 31), "total_equity", 1000),
+            ]
+        ]
+    )
+    db_session.commit()
+
+    detail = client.get("/securities/JKH.N0000").json()
+    roe_series = detail["ratio_series"]["return_on_equity"]
+    assert [p["period_end"] for p in roe_series] == ["2023-12-31", "2024-12-31", "2025-12-31"]
+    assert Decimal(roe_series[0]["value"]) == Decimal("0.1")
+    assert Decimal(roe_series[-1]["value"]) == Decimal("0.2")
 
 
 def test_list_search_matches_ticker_or_name_case_insensitively(db_session, client):
@@ -177,14 +266,20 @@ def test_detail_includes_corporate_actions_and_fundamentals(db_session, client):
 
 
 def test_detail_never_exposes_a_score_or_fair_value(db_session, client):
-    """The engines that would compute these don't exist yet. The UI spec
-    forbids placeholder numbers outright, so the fields must be ABSENT,
-    not null — a null is too easy to render as "0"."""
+    """`fair_value`/`buy_below`/`coverage_tier` genuinely have no engine
+    behind them on THIS response yet (`coverage_tier`'s engine exists but
+    isn't wired to real data anywhere — see `_NOT_YET_BUILT`). `composite_
+    score` DOES have a real, live engine now, just on its own endpoint
+    (`GET /composite-score/{ticker}`) rather than flattened onto
+    `SecurityDetail` — so its absence here is a deliberate response-shape
+    choice, not a "doesn't exist" claim. The UI spec forbids placeholder
+    numbers outright either way, so any of these fields must be ABSENT
+    from this response, not null — a null is too easy to render as "0"."""
     _seed(db_session)
     detail = client.get("/securities/JKH.N0000").json()
     for forbidden in ("composite_score", "fair_value", "buy_below", "coverage_tier"):
         assert forbidden not in detail
-    assert len(detail["not_yet_built"]) >= 4
+    assert len(detail["not_yet_built"]) >= 3
 
 
 def test_detail_unknown_ticker_404s(client):
@@ -243,3 +338,33 @@ def test_prices_endpoint_rejects_page_sizes_outside_the_ui_options(client):
 
 def test_prices_endpoint_unknown_ticker_404s(client):
     assert client.get("/securities/NOPE.X0000/prices").status_code == 404
+
+
+def test_list_includes_real_price_change_windows(db_session, client):
+    """R1 T4.4.1 — real session-count price appreciation, not calendar
+    days. Seeds real closes at known session offsets from today and
+    checks the computed % change against hand math."""
+    db_session.add(Security(ticker="TREND.N0000", name="Trend PLC"))
+    today = dt.date.today()
+    # 6 real sessions: today, and 5/10/... days back is approximated by
+    # just seeding one row per calendar day for the last 12 days — the
+    # function counts SESSIONS (stored rows), not calendar gaps, so this
+    # gives an exact, hand-computable 5-session-ago reference.
+    closes = {}
+    for i in range(12):
+        d = today - dt.timedelta(days=i)
+        close = Decimal(100 + i)  # oldest ago -> smallest date -> largest i -> close = 100+i
+        closes[d] = close
+        db_session.add(PriceDaily(ticker="TREND.N0000", date=d, close=close, fetched_at=NOW))
+    db_session.commit()
+
+    body = {r["ticker"]: r for r in client.get("/securities").json()}
+    row = body["TREND.N0000"]
+    latest_close = closes[today]  # 100
+    five_sessions_ago_close = closes[today - dt.timedelta(days=5)]  # 105
+    expected_5d = float((latest_close - five_sessions_ago_close) / five_sessions_ago_close * 100)
+    assert row["price_change_5d_pct"] is not None
+    assert abs(float(row["price_change_5d_pct"]) - expected_5d) < 0.01
+    # Only 12 sessions of real history exist — a 30-session window must
+    # be None, never a change computed from fewer real sessions than claimed.
+    assert row["price_change_30d_pct"] is None

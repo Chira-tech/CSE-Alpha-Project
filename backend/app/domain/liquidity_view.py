@@ -89,6 +89,7 @@ def liquidity_percentile_for(
     *,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     universe_ratios: dict[str, Decimal] | None = None,
+    universe_percentiles: dict[str, Decimal] | None = None,
 ) -> Decimal | None:
     """This ticker's own real liquidity percentile within the real
     universe (0-100, HIGHER = MORE liquid — see `app.domain.liquidity`'s
@@ -107,7 +108,24 @@ def liquidity_percentile_for(
     across one 9-position real portfolio view — over 89 seconds total
     for what should be one real computation. Defaults to `None` (compute
     fresh) so every existing caller that doesn't pass one keeps its
-    exact prior behaviour."""
+    exact prior behaviour.
+
+    `universe_percentiles` — A SECOND, SEPARATE REAL BUG THE FIRST FIX
+    DIDN'T CLOSE, FOUND LIVE (20 Aug 2026): sharing `universe_ratios`
+    stopped `universe_amihud_ratios` itself from being recomputed, but
+    every call here still ran `percentile_rank(ratios)` — an O(n²) full
+    universe-wide RE-RANKING — from scratch every time, on the exact same
+    `ratios` dict. Profiled live: 1,526 calls in one `/opportunities`
+    request (6 per ticker × 254 confirmed tickers), 61+ million inner
+    comparisons, ~24 of the endpoint's ~25 real seconds. `percentile_rank`
+    is a pure function of `ratios` alone — identical across every one of
+    those 1,526 calls — so the fix is the same shape as `universe_ratios`
+    itself: the caller computes `percentile_rank` ONCE and threads the
+    RESULT through here, skipping the O(n²) work entirely when supplied.
+    Defaults to `None` (compute fresh) so every existing caller that
+    doesn't pass one keeps its exact prior behaviour."""
     stamp = as_of or dt.date.today()
+    if universe_percentiles is not None:
+        return universe_percentiles.get(ticker)
     ratios = universe_ratios if universe_ratios is not None else universe_amihud_ratios(db, stamp, lookback_days)
     return percentile_rank(ratios).get(ticker)

@@ -38,6 +38,21 @@ JOBS: dict[str, JobDefinition] = {
     "capture_corporate_actions": JobDefinition("capture_corporate_actions", "Corporate actions scan", 600),
     "enrich_securities": JobDefinition("enrich_securities", "Security enrichment (shares, market cap)", 600),
     "recompute": JobDefinition("recompute", "Rebuild valuations", 60),
+    "rebuild_factor_series": JobDefinition(
+        "rebuild_factor_series", "Rebuild §35 weekly factor return series", 180
+    ),
+    # `est_seconds` for refresh_stale_fundamentals below is a rough,
+    # disclosed guess, NOT the same kind of real per-call arithmetic every
+    # other estimate here is — runtime depends entirely on how many
+    # currently-stored filings fail `check_extraction_quality` right now,
+    # which shrinks over time as this job (or its Saturday cron twin,
+    # `app.jobs.scheduler._job_refresh_stale_fundamentals`) works through
+    # the backlog. A large backlog (e.g. right after a breadth-first
+    # `backfill-financials` run) can genuinely take much longer than this;
+    # see that job's own docstring.
+    "refresh_stale_fundamentals": JobDefinition(
+        "refresh_stale_fundamentals", "Repair stale fundamentals (re-check math)", 1800
+    ),
     "capture_all": JobDefinition(
         "capture_all", "Full capture", 900,
         sub_jobs=(

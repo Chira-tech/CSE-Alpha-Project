@@ -6,22 +6,33 @@ an actual fair value rather than routing metadata or a discount rate.
 that fair values and buy-below prices are "deliberately absent... Phase
 2/3 (§12-26) and the engines that compute them do not exist yet." That's
 now largely closed: the engines exist (`app/domain/dcf.py` through
-`price_ladder.py`) and three of them — justified P/B, residual income
-and, as of this session, the full multi-year FCFF DCF (`dcf`) — are
-wired to live data as real triangulation anchors (`app.domain.valuation_
-view`). `current_period_fcff` and `wacc` stay separate, deliberately
-informational-only numbers (§18.1's FCFF formula on one undiscounted
-confirmed period, and the DCF's own discount rate) — see `app.domain.
-valuation_view`'s own module docstring and `dcf_for`'s docstring for the
-full picture of what's real versus a named policy default within the
-DCF specifically. A fourth informational number, `gordon_growth_ddm`
-(§19.1), is wired the same way for a distinct reason: it runs against
-genuinely real `CorporateAction` dividend rows that are, for essentially
-every ticker today, real but unconfirmed — see `app.domain.valuation_
-view.gordon_growth_ddm_for`'s own docstring. This endpoint is that
-wiring's front door. It is still an honest partial answer, not the full
-§24 triangulation: see `CompanyValuationOut.note` and ROADMAP.md's Phase
-3 section for exactly which anchors are missing and why.
+`price_ladder.py`) and five of them — justified P/B, residual income,
+the full multi-year FCFF DCF, and, as of 23 Aug 2026, justified P/E and
+justified P/S — are wired to live data as real triangulation anchors
+(`app.domain.valuation_view`). `current_period_fcff` and `wacc` stay
+separate, deliberately informational-only numbers (§18.1's FCFF formula
+on one undiscounted confirmed period, and the DCF's own discount rate)
+— see `app.domain.valuation_view`'s own module docstring and `dcf_for`'s
+docstring for the full picture of what's real versus a named policy
+default within the DCF specifically. A fourth informational number,
+`gordon_growth_ddm` (§19.1), is wired the same way, running against
+genuinely real, now genuinely CONFIRMED `CorporateAction` dividend rows
+(a bulk corroborated-confirm pass, 23 Aug 2026, gave this system its
+first confirmed dividend rows anywhere — see `app.domain.valuation_view.
+gordon_growth_ddm_for`'s own docstring) — `relative_valuation`'s justified
+P/E and P/S below reuse that exact same trailing-dividend data for their
+own `payout_ratio`. `GET /{ticker}/scenarios`, `/tornado` and
+`/monte-carlo` below expose §23's Bear/Base/Bull set, sensitivity
+tornado and Monte Carlo overlay, all built on `dcf`'s own base-case
+assumptions (`app.domain.scenarios_view`) — kept as separate endpoints
+from the summary above rather than bundled into every page load, since
+Monte Carlo alone is 10,000 real DCF re-runs. This endpoint (and its
+three scenario siblings) is that wiring's front door. It is still an
+honest partial answer, not the full §24 triangulation: see
+`CompanyValuationOut.note` and ROADMAP.md's Phase 3 section for exactly
+which anchors are missing for a given company and why, and `app.domain.
+valuation_view`'s own module docstring for the one §18-26 model — SOTP —
+still blocked on a genuinely missing data source rather than a wiring gap.
 
 Returns 404 for an unknown ticker, same convention as `securities.py`'s
 company-file route. Does NOT require `archetype` to be set on the
@@ -40,6 +51,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.domain.scenarios_view import monte_carlo_for, scenario_set_for, sensitivity_tornado_for
 from app.domain.valuation_quarantine_view import record_sanity_result
 from app.domain.valuation_view import CompanyValuationSummary, valuation_summary_for
 from app.models.prices import PriceDaily
@@ -200,6 +212,48 @@ class HardBookOut(BaseModel):
     warnings: list[str]
 
 
+class TradingMultiplesOut(BaseModel):
+    price_to_earnings: Decimal | None
+    price_to_book: Decimal | None
+    ev_to_ebit: Decimal | None
+    """Always `None` today — see `RelativeValuationOut`'s own docstring
+    for why (no live EV figure exists; cash isn't extracted anywhere)."""
+
+    price_to_sales: Decimal | None
+
+
+class JustifiedVsTradingOut(BaseModel):
+    justified: Decimal | None
+    trading: Decimal | None
+    discount_to_justified_pct: Decimal | None
+    read_as_cheap: bool | None
+
+
+class RelativeValuationOut(BaseModel):
+    """§20.2's justified P/E and justified P/S — real "relative"
+    triangulation anchors (see `app.domain.valuation_view.RelativeValuation
+    View`'s own docstring) as of 23 Aug 2026, once this system had its
+    first confirmed dividend rows anywhere to derive a real payout ratio
+    from. Justified EV/EBIT stays `None` — needs ROIC, which nothing in
+    this project can compute yet (no NOPAT/debt/cash extraction)."""
+
+    period_end: dt.date | None
+    eps: Decimal | None
+    sales_per_share: Decimal | None
+    net_margin: Decimal | None
+    payout_ratio: Decimal | None
+    trailing_dividend_per_share: Decimal | None
+    justified_price_to_earnings: Decimal | None
+    justified_price_to_sales: Decimal | None
+    fair_value_per_share_pe: Decimal | None
+    fair_value_per_share_ps: Decimal | None
+    trading: TradingMultiplesOut
+    pe_vs_trading: JustifiedVsTradingOut | None
+    ps_vs_trading: JustifiedVsTradingOut | None
+    pb_vs_trading: JustifiedVsTradingOut | None
+    warnings: list[str]
+
+
 class MacroSignalOut(BaseModel):
     name: str
     reading: str
@@ -240,6 +294,7 @@ class CompanyValuationOut(BaseModel):
     dcf: DCFOut
     gordon_growth_ddm: DDMOut
     hard_book: HardBookOut
+    relative_valuation: RelativeValuationOut
     regime: RegimeOut
     triangulation: TriangulationOut
     margin_of_safety: MarginOfSafetyOut
@@ -328,6 +383,59 @@ class CompanyValuationOut(BaseModel):
                 hard_book_value=s.hard_book.result.hard_book_value if s.hard_book.result else None,
                 hard_book_per_share=s.hard_book.result.hard_book_per_share if s.hard_book.result else None,
                 warnings=list(s.hard_book.warnings),
+            ),
+            relative_valuation=RelativeValuationOut(
+                period_end=s.relative_valuation.period_end,
+                eps=s.relative_valuation.eps,
+                sales_per_share=s.relative_valuation.sales_per_share,
+                net_margin=s.relative_valuation.net_margin,
+                payout_ratio=s.relative_valuation.payout_ratio,
+                trailing_dividend_per_share=s.relative_valuation.trailing_dividend_per_share,
+                justified_price_to_earnings=(
+                    s.relative_valuation.justified_pe.value if s.relative_valuation.justified_pe else None
+                ),
+                justified_price_to_sales=(
+                    s.relative_valuation.justified_ps.value if s.relative_valuation.justified_ps else None
+                ),
+                fair_value_per_share_pe=s.relative_valuation.fair_value_pe,
+                fair_value_per_share_ps=s.relative_valuation.fair_value_ps,
+                trading=TradingMultiplesOut(
+                    price_to_earnings=s.relative_valuation.trading.price_to_earnings,
+                    price_to_book=s.relative_valuation.trading.price_to_book,
+                    ev_to_ebit=s.relative_valuation.trading.ev_to_ebit,
+                    price_to_sales=s.relative_valuation.trading.price_to_sales,
+                ),
+                pe_vs_trading=(
+                    JustifiedVsTradingOut(
+                        justified=s.relative_valuation.pe_vs_trading.justified,
+                        trading=s.relative_valuation.pe_vs_trading.trading,
+                        discount_to_justified_pct=s.relative_valuation.pe_vs_trading.discount_to_justified_pct,
+                        read_as_cheap=s.relative_valuation.pe_vs_trading.read_as_cheap,
+                    )
+                    if s.relative_valuation.pe_vs_trading is not None
+                    else None
+                ),
+                ps_vs_trading=(
+                    JustifiedVsTradingOut(
+                        justified=s.relative_valuation.ps_vs_trading.justified,
+                        trading=s.relative_valuation.ps_vs_trading.trading,
+                        discount_to_justified_pct=s.relative_valuation.ps_vs_trading.discount_to_justified_pct,
+                        read_as_cheap=s.relative_valuation.ps_vs_trading.read_as_cheap,
+                    )
+                    if s.relative_valuation.ps_vs_trading is not None
+                    else None
+                ),
+                pb_vs_trading=(
+                    JustifiedVsTradingOut(
+                        justified=s.relative_valuation.pb_vs_trading.justified,
+                        trading=s.relative_valuation.pb_vs_trading.trading,
+                        discount_to_justified_pct=s.relative_valuation.pb_vs_trading.discount_to_justified_pct,
+                        read_as_cheap=s.relative_valuation.pb_vs_trading.read_as_cheap,
+                    )
+                    if s.relative_valuation.pb_vs_trading is not None
+                    else None
+                ),
+                warnings=list(s.relative_valuation.warnings),
             ),
             regime=RegimeOut(
                 as_of=s.regime.as_of,
@@ -421,3 +529,130 @@ def get_valuation(ticker: str, db: Session = Depends(get_db)) -> CompanyValuatio
         # every row of a multi-ticker screen.
         record_sanity_result(db, ticker, summary.sanity)
     return CompanyValuationOut.from_summary(summary)
+
+
+def _latest_price(db: Session, ticker: str) -> Decimal | None:
+    return db.scalar(
+        select(PriceDaily.close)
+        .where(PriceDaily.ticker == ticker, PriceDaily.close.is_not(None))
+        .order_by(PriceDaily.date.desc())
+        .limit(1)
+    )
+
+
+class ScenarioOut(BaseModel):
+    bear_value_per_share: Decimal
+    base_value_per_share: Decimal
+    bull_value_per_share: Decimal
+    note: str
+
+
+class ScenarioSetOut(BaseModel):
+    """§23's Bear/Base/Bull set, built directly on top of `dcf`'s own
+    base-case assumptions above — see `app.domain.scenarios_view`'s own
+    module docstring for exactly how the growth/margin percentile
+    dispersion is derived (real when enough confirmed history exists,
+    honestly collapsed to a point estimate otherwise, in which case
+    dispersion still comes from the real WACC/terminal-growth shifts)."""
+
+    period_end: dt.date | None
+    scenarios: ScenarioOut | None
+    distribution_note: str | None
+    warnings: list[str]
+
+
+@router.get("/{ticker}/scenarios", response_model=ScenarioSetOut)
+def get_scenarios(ticker: str, db: Session = Depends(get_db)) -> ScenarioSetOut:
+    security = db.get(Security, ticker)
+    if security is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ticker {ticker!r}")
+    view = scenario_set_for(db, ticker, _latest_price(db, ticker))
+    return ScenarioSetOut(
+        period_end=view.period_end,
+        scenarios=(
+            ScenarioOut(
+                bear_value_per_share=view.result.bear_value_per_share,
+                base_value_per_share=view.result.base_value_per_share,
+                bull_value_per_share=view.result.bull_value_per_share,
+                note=view.result.note,
+            )
+            if view.result is not None
+            else None
+        ),
+        distribution_note=view.distribution_note,
+        warnings=list(view.warnings),
+    )
+
+
+class TornadoBarOut(BaseModel):
+    assumption_name: str
+    low_value_per_share: Decimal
+    high_value_per_share: Decimal
+    spread: Decimal
+
+
+class TornadoOut(BaseModel):
+    period_end: dt.date | None
+    bars: list[TornadoBarOut]
+    warnings: list[str]
+
+
+@router.get("/{ticker}/tornado", response_model=TornadoOut)
+def get_tornado(ticker: str, db: Session = Depends(get_db)) -> TornadoOut:
+    """§23: "always displayed. Which single assumption moves the
+    valuation most?" — see `app.domain.scenarios_view.TORNADO_DELTAS`
+    for the shock sizes each bar perturbs by."""
+    security = db.get(Security, ticker)
+    if security is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ticker {ticker!r}")
+    view = sensitivity_tornado_for(db, ticker, _latest_price(db, ticker))
+    return TornadoOut(
+        period_end=view.period_end,
+        bars=[
+            TornadoBarOut(
+                assumption_name=bar.assumption_name,
+                low_value_per_share=bar.low_value_per_share,
+                high_value_per_share=bar.high_value_per_share,
+                spread=bar.spread,
+            )
+            for bar in view.bars
+        ],
+        warnings=list(view.warnings),
+    )
+
+
+class MonteCarloOut(BaseModel):
+    period_end: dt.date | None
+    draws: int | None
+    p10: Decimal | None
+    p25: Decimal | None
+    p50: Decimal | None
+    p75: Decimal | None
+    p90: Decimal | None
+    probability_fair_value_exceeds_price: Decimal | None
+    note: str | None
+    warnings: list[str]
+
+
+@router.get("/{ticker}/monte-carlo", response_model=MonteCarloOut)
+def get_monte_carlo(ticker: str, db: Session = Depends(get_db)) -> MonteCarloOut:
+    """§23's 10,000-draw bootstrap overlay — a heavier, opt-in call
+    (10,000 real DCF re-runs), deliberately its own endpoint rather than
+    bundled into every `/valuation/{ticker}` page load."""
+    security = db.get(Security, ticker)
+    if security is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ticker {ticker!r}")
+    view = monte_carlo_for(db, ticker, _latest_price(db, ticker))
+    r = view.result
+    return MonteCarloOut(
+        period_end=view.period_end,
+        draws=r.draws if r else None,
+        p10=r.p10 if r else None,
+        p25=r.p25 if r else None,
+        p50=r.p50 if r else None,
+        p75=r.p75 if r else None,
+        p90=r.p90 if r else None,
+        probability_fair_value_exceeds_price=r.probability_fair_value_exceeds_price if r else None,
+        note=r.note if r else None,
+        warnings=list(view.warnings),
+    )

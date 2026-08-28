@@ -21,14 +21,29 @@ valuation here at all — `excluded_unconfirmed_lines` says which lines
 were held back and why, rather than the output quietly using them anyway.
 
 WHICH OF §18-26'S NINE MODELS THIS ACTUALLY WIRES UP, AND WHY. Justified
-P/B (§20.2), residual income (§19.3) AND, as of this session, the full
-multi-year FCFF DCF (§18.1/§18.2, `dcf_for`) all run as real "intrinsic"/
-"relative" triangulation anchors against live data — see
+P/B (§20.2), residual income (§19.3), the full multi-year FCFF DCF
+(§18.1/§18.2, `dcf_for`), AND, as of 23 Aug 2026, justified P/E and
+justified P/S (§20.2, `relative_valuation_for`) all run as real
+"intrinsic"/"relative" triangulation anchors against live data — see
 `app.domain.dividend_residual_income`, `app.domain.relative_valuation`
-and `app.domain.dcf`'s own module docstrings, and `dcf_for`'s own
-docstring below for exactly which of the DCF's many assumptions are real
-extracted figures versus named, disclosed "no view" defaults (never a
-silent guess). `current_period_fcff_for` stays a separate,
+and `app.domain.dcf`'s own module docstrings, and `dcf_for`'s/
+`relative_valuation_for`'s own docstrings below for exactly which
+assumptions are real extracted figures versus named, disclosed "no view"
+defaults (never a silent guess). Justified P/E and P/S both became
+live-computable the same day a real bulk-confirm pass (see
+`docs/audits/R1_FIX_LOG.md`) gave this system its first confirmed
+`CorporateAction` dividend rows anywhere — `relative_valuation_for`
+reuses that exact same trailing-dividend machinery `gordon_growth_ddm_
+for` already built, deriving `payout_ratio` from it rather than
+inventing a second, separate dividend query. Justified EV/EBIT is the
+one sub-multiple of §20.2 that stays genuinely uncomputed — see `relative_
+valuation_for`'s own docstring for why fabricating a ROIC to unblock it
+would be exactly the false-precision problem §15 exists to prevent.
+`app.domain.scenarios`' Bear/Base/Bull set, sensitivity tornado and Monte
+Carlo overlay (§23) are wired the same day too, in the sibling module
+`app.domain.scenarios_view`, built directly on top of this module's own
+`dcf_for` rather than re-deriving a second DCF assumption set — see that
+module's own docstring. `current_period_fcff_for` stays a separate,
 informational-only number — §18.1's FCFF formula applied to one real
 confirmed period without any discounting — genuinely useful for
 inspecting one period's raw cash generation, but never a triangulation
@@ -73,6 +88,24 @@ category as `erp_effective_pct`. It is clamped below the live risk-free
 rate before use, per §18.2's own discipline ("never exceeds the
 risk-free rate — a company growing faster than the risk-free rate
 forever is worth infinity"), rather than trusted as already-safe.
+
+WHAT'S LEFT OF §18-26'S NINE, AS OF THIS PASS. SOTP (§21) is the one
+model that stays entirely unwired, and it is a genuinely different class
+of gap from everything above: every other model went from "real code, no
+live caller" to "real code, live caller, honestly disclosed inputs" by
+writing plumbing against data this project already extracts somewhere.
+SOTP needs a segment-level breakdown (which subsidiaries a holding
+company owns, at what ownership %, unlisted or listed, with what
+EBITDA/multiple) that no ingestion source in this project produces at
+all — not a confirmation-workflow gap like Gordon-growth DDM's dividends
+were, an actual missing data source, needing either segment-reporting
+extraction from annual-report notes (well beyond the extractor's
+verified total/subtotal-level scope, PARAMETERS.md #9) or a maintained
+group-structure register this project has never had. See
+`app.domain.sotp`'s own module docstring for the full picture; wiring it
+for real, rather than hand-entering one company's segment data as a
+demo (which would misrepresent a single hand-typed example as live
+coverage), is separate follow-on work, tracked in ROADMAP.md.
 """
 from __future__ import annotations
 
@@ -94,6 +127,7 @@ from app.domain.dividend_residual_income import (
     compute_residual_income,
     gordon_growth_value,
 )
+from app.domain.liquidity import percentile_rank
 from app.domain.liquidity_view import liquidity_percentile_for, universe_amihud_ratios
 from app.domain.macro_engine_view import RegimeView, regime_for
 from app.domain.market_cap_view import latest_shares_issued
@@ -103,7 +137,15 @@ from app.domain.point_in_time import fundamentals_as_of
 from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
 from app.domain.provenance import can_enter_valuation
 from app.domain.ratios import LineItem, compute_all
-from app.domain.relative_valuation import JustifiedMultipleResult, justified_price_to_book
+from app.domain.relative_valuation import (
+    JustifiedMultipleResult,
+    JustifiedVsTradingComparison,
+    TradingMultiples,
+    compare_to_justified,
+    justified_price_to_book,
+    justified_price_to_earnings,
+    justified_price_to_sales,
+)
 from app.domain.sanity import SanityCheckResult, SanityContext, run_sanity_checks
 from app.domain.market_cap_view import published_market_cap_for
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
@@ -280,6 +322,7 @@ def _gather_inputs(
     *,
     regime: str | None = None,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> LiveValuationInputs:
     warnings: list[str] = []
 
@@ -305,7 +348,9 @@ def _gather_inputs(
             )
 
     ke_result = cost_of_equity_for(
-        db, ticker, as_of, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, as_of, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
     if ke_result.ke is None:
         warnings.append(f"Cost of equity not computable: {ke_result.note}")
@@ -351,10 +396,13 @@ def justified_price_to_book_for(
     *,
     regime: str | None = None,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> JustifiedPBView:
     stamp = as_of or dt.date.today()
     inputs = _gather_inputs(
-        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
 
     if inputs.roe is None or inputs.cost_of_equity is None:
@@ -382,10 +430,13 @@ def residual_income_for(
     *,
     regime: str | None = None,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> ResidualIncomeView:
     stamp = as_of or dt.date.today()
     inputs = _gather_inputs(
-        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
 
     if inputs.roe is None or inputs.cost_of_equity is None or inputs.book_value_per_share is None:
@@ -485,6 +536,7 @@ class WACCView:
 def wacc_for(
     db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None,
     *, regime: str | None = None, universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> WACCView:
     """§18.1's discount rate for an FCFF projection — see
     `app.domain.wacc`'s own module docstring for why this must never be
@@ -526,7 +578,9 @@ def wacc_for(
     )
 
     ke_result = cost_of_equity_for(
-        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
     shares = latest_shares_issued(db, ticker, stamp)
 
@@ -639,6 +693,7 @@ def gordon_growth_ddm_for(
     *,
     regime: str | None = None,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> DDMView:
     """§19.1's Gordon-growth DDM (`V0 = D1 / (Ke - g)`) wired to real —
     if, for essentially every ticker today, currently EMPTY — confirmed
@@ -715,7 +770,9 @@ def gordon_growth_ddm_for(
         )
 
     ke_result = cost_of_equity_for(
-        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
     if ke_result.ke is None:
         warnings.append(f"Cost of equity not computable: {ke_result.note}")
@@ -736,11 +793,22 @@ class DCFView:
     fair_value_per_share: Decimal | None
     excluded_unconfirmed_lines: tuple[str, ...]
     warnings: tuple[str, ...]
+    assumptions: DCFAssumptions | None = None
+    """The exact §18.2 base-case `DCFAssumptions` this view built and fed
+    to `dcf_equity_value` — `None` whenever `result` is `None` (nothing
+    was built). Carried here, rather than only inside `result`, so
+    `app.domain.scenarios_view` can build real Bear/Base/Bull variants of
+    THIS SAME assumption set (§23: "Base = assumptions as derived in
+    §18.2") without re-deriving every ratio and growth rate a second
+    time — a second derivation could drift from this one and produce a
+    "base" scenario that silently disagrees with the DCF anchor already
+    shown elsewhere on the same company file."""
 
 
 def dcf_for(
     db: Session, ticker: str, current_price: Decimal | None, as_of: dt.date | None = None,
     *, regime: str | None = None, universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
 ) -> DCFView:
     """§18's full three-stage FCFF DCF (`app.domain.dcf.dcf_equity_value`),
     finally wired to live data — the multi-year forecast wiring that
@@ -834,7 +902,9 @@ def dcf_for(
         missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
 
     wacc_view = wacc_for(
-        db, ticker, current_price, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, current_price, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
     if wacc_view.result is None or wacc_view.result.wacc is None:
         missing.append(
@@ -842,7 +912,9 @@ def dcf_for(
         )
 
     ke_result = cost_of_equity_for(
-        db, ticker, stamp, regime=regime, universe_liquidity_ratios=universe_liquidity_ratios
+        db, ticker, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
     if ke_result.risk_free_rate is None:
         missing.append("risk_free_rate (needed to cap terminal/stage-2 growth)")
@@ -863,7 +935,17 @@ def dcf_for(
     # already applies.
     capex = abs(required["capital_expenditure"].value)
     nwc = required["net_working_capital"].value
-    debt = required["total_interest_bearing_debt"].value
+    # abs(), same reasoning as capex above and app.domain.wacc.compute_
+    # cost_of_debt's own docstring: a debt BALANCE can never legitimately
+    # be negative, but the same company can print this line parenthesised
+    # in one filing type and not another (verified live, 27 Aug 2026:
+    # LVEF.N0000's real FY2025 annual report prints its debt maturity
+    # split parenthesised while its own quarterly filing prints the
+    # identical figure unparenthesised). Without this, a negative reading
+    # here would INCREASE `equity_value` below (subtracting a negative
+    # `total_debt` from enterprise value), the same overstate-the-
+    # dangerous-direction consequence the capex sign-flip guard exists for.
+    debt = abs(required["total_interest_bearing_debt"].value)
 
     operating_margin_current = ebit / revenue
 
@@ -943,7 +1025,7 @@ def dcf_for(
         diluted_shares_outstanding=Decimal(shares),
     )
     result = dcf_equity_value(assumptions)
-    return DCFView(period_end, result, result.value_per_share, excluded, tuple(warnings))
+    return DCFView(period_end, result, result.value_per_share, excluded, tuple(warnings), assumptions)
 
 
 @dataclass(frozen=True)
@@ -1055,6 +1137,171 @@ def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Har
 
 
 @dataclass(frozen=True)
+class RelativeValuationView:
+    """§20.2's justified P/E and justified P/S — the two sub-multiples of
+    relative valuation beyond justified P/B (which already runs, above,
+    as its own dedicated view/anchor) that this system can honestly
+    compute live. Both reuse `payout_ratio` derived from the SAME
+    trailing-twelve-month confirmed dividend sum `gordon_growth_ddm_for`
+    already built (`_trailing_dividend_per_share`) — this is real,
+    genuinely confirmed `CorporateAction` data as of 23 Aug 2026 (a bulk
+    corroborated-confirm pass gave this system its first confirmed
+    dividend rows anywhere), not the "real but empty" state that function
+    started in.
+
+    JUSTIFIED EV/EBIT IS DELIBERATELY NOT COMPUTED HERE. §20.2's fourth
+    multiple needs ROIC, which `app.domain.ratios.NOT_YET_COMPUTABLE`
+    already lists as unavailable system-wide (needs NOPAT, total debt,
+    cash — none extracted anywhere in this project). `justified_ev_to_
+    ebit` itself is real, tested code (`app.domain.relative_valuation`)
+    that already returns a correctly-reasoned `None` when handed
+    `roic=None` — but calling it with a fabricated ROIC just to produce a
+    non-`None` number would be exactly the "confident, precise, entirely
+    fictional number" §15 exists to prevent. This is the one honestly
+    remaining sub-multiple gap inside relative valuation, narrower than
+    "relative valuation has zero live caller" (it does not, as of this
+    view) — `trading.ev_to_ebit` is likewise left `None` for the same
+    reason (no live EV figure either, since cash isn't extracted).
+    """
+
+    inputs: LiveValuationInputs
+    period_end: dt.date | None
+    eps: Decimal | None
+    sales_per_share: Decimal | None
+    net_margin: Decimal | None
+    payout_ratio: Decimal | None
+    trailing_dividend_per_share: Decimal | None
+    justified_pe: JustifiedMultipleResult | None
+    justified_ps: JustifiedMultipleResult | None
+    fair_value_pe: Decimal | None
+    fair_value_ps: Decimal | None
+    trading: TradingMultiples
+    pe_vs_trading: JustifiedVsTradingComparison | None
+    ps_vs_trading: JustifiedVsTradingComparison | None
+    pb_vs_trading: JustifiedVsTradingComparison | None
+    warnings: tuple[str, ...]
+
+
+def relative_valuation_for(
+    db: Session,
+    ticker: str,
+    current_price: Decimal | None,
+    as_of: dt.date | None = None,
+    *,
+    regime: str | None = None,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
+) -> RelativeValuationView:
+    stamp = as_of or dt.date.today()
+    inputs = _gather_inputs(
+        db, ticker, stamp, regime=regime,
+        universe_liquidity_ratios=universe_liquidity_ratios,
+        universe_liquidity_percentiles=universe_liquidity_percentiles,
+    )
+    warnings: list[str] = []
+
+    period_end, items, _excluded = _confirmable_line_items(db, ticker, stamp)
+    shares = inputs.shares_issued
+
+    net_income_item = items.get("net_income")
+    revenue_item = items.get("revenue")
+
+    eps = net_income_item.value / Decimal(shares) if net_income_item is not None and shares else None
+    sales_per_share = revenue_item.value / Decimal(shares) if revenue_item is not None and shares else None
+
+    net_margin = None
+    if items:
+        margin_result = next((r for r in compute_all(items) if r.key == "net_margin"), None)
+        if margin_result is not None and margin_result.computable:
+            net_margin = margin_result.value
+        else:
+            warnings.append(
+                "net_margin not computable from confirmed fundamentals"
+                + (f" ({margin_result.note})" if margin_result and margin_result.note else ".")
+            )
+
+    dividends = _confirmed_dividends_as_of(db, ticker, stamp)
+    trailing_dps, _dividend_count = _trailing_dividend_per_share(dividends, stamp)
+
+    payout_ratio = None
+    if trailing_dps is None:
+        warnings.append(
+            "payout_ratio not available — no confirmed DIVIDEND_CASH corporate action falls "
+            "within the trailing twelve months of this date (same trailing-dividend source "
+            "gordon_growth_ddm_for uses for its own D0; see that function's own docstring)."
+        )
+    elif eps is None:
+        warnings.append("payout_ratio not available — EPS not computable (net_income or shares_issued missing).")
+    elif eps <= 0:
+        warnings.append("payout_ratio undefined — trailing EPS is not positive (loss-making period).")
+    else:
+        payout_ratio = trailing_dps / eps
+
+    justified_pe = None
+    fair_value_pe = None
+    if payout_ratio is not None and inputs.cost_of_equity is not None:
+        justified_pe = justified_price_to_earnings(payout_ratio, inputs.growth_rate, inputs.cost_of_equity)
+        if justified_pe.value is not None and eps is not None:
+            fair_value_pe = justified_pe.value * eps
+
+    justified_ps = None
+    fair_value_ps = None
+    if payout_ratio is not None and net_margin is not None and inputs.cost_of_equity is not None:
+        justified_ps = justified_price_to_sales(net_margin, payout_ratio, inputs.growth_rate, inputs.cost_of_equity)
+        if justified_ps.value is not None and sales_per_share is not None:
+            fair_value_ps = justified_ps.value * sales_per_share
+
+    warnings.append(
+        "justified EV/EBIT not computed — needs ROIC, which app.domain.ratios."
+        "NOT_YET_COMPUTABLE already lists as unavailable system-wide (needs NOPAT, total "
+        "debt, cash, none of which are extracted anywhere in this project yet)."
+    )
+
+    trading_pe = current_price / eps if current_price is not None and eps is not None and eps > 0 else None
+    trading_pb = (
+        current_price / inputs.book_value_per_share
+        if current_price is not None
+        and inputs.book_value_per_share is not None
+        and inputs.book_value_per_share > 0
+        else None
+    )
+    trading_ps = (
+        current_price / sales_per_share
+        if current_price is not None and sales_per_share is not None and sales_per_share > 0
+        else None
+    )
+    trading = TradingMultiples(
+        price_to_earnings=trading_pe, price_to_book=trading_pb, ev_to_ebit=None, price_to_sales=trading_ps,
+    )
+
+    pe_vs_trading = compare_to_justified(justified_pe, trading_pe) if justified_pe is not None else None
+    ps_vs_trading = compare_to_justified(justified_ps, trading_ps) if justified_ps is not None else None
+    pb_vs_trading = None
+    if inputs.roe is not None and inputs.cost_of_equity is not None:
+        jpb_result = justified_price_to_book(inputs.roe, inputs.growth_rate, inputs.cost_of_equity)
+        pb_vs_trading = compare_to_justified(jpb_result, trading_pb)
+
+    return RelativeValuationView(
+        inputs=inputs,
+        period_end=period_end,
+        eps=eps,
+        sales_per_share=sales_per_share,
+        net_margin=net_margin,
+        payout_ratio=payout_ratio,
+        trailing_dividend_per_share=trailing_dps,
+        justified_pe=justified_pe,
+        justified_ps=justified_ps,
+        fair_value_pe=fair_value_pe,
+        fair_value_ps=fair_value_ps,
+        trading=trading,
+        pe_vs_trading=pe_vs_trading,
+        ps_vs_trading=ps_vs_trading,
+        pb_vs_trading=pb_vs_trading,
+        warnings=tuple(warnings),
+    )
+
+
+@dataclass(frozen=True)
 class CompanyValuationSummary:
     ticker: str
     as_of: dt.date
@@ -1106,6 +1353,15 @@ class CompanyValuationSummary:
     would weight it heavily for a property/plantation/hotel archetype
     once it is."""
 
+    relative_valuation: RelativeValuationView
+    """§20.2's justified P/E and justified P/S — see `relative_valuation_
+    for`'s own docstring. Both are genuine "relative" triangulation
+    anchors below when computable (same category as justified P/B, which
+    is why all three average into ONE relative-category bucket in
+    `triangulation.category_averages` rather than being weighted
+    separately — see `app.domain.triangulation.triangulate`'s own
+    by-category averaging)."""
+
     regime: RegimeView
     """§29-33's regime read — market-wide, not company-specific, shown
     here so a caller can see exactly what fed `margin_of_safety.regime_
@@ -1142,7 +1398,10 @@ class CompanyValuationSummary:
 def valuation_summary_for(
     db: Session, ticker: str, archetype: str | None, current_price: Decimal | None,
     as_of: dt.date | None = None,
-    *, universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    *,
+    universe_liquidity_ratios: dict[str, Decimal] | None = None,
+    universe_liquidity_percentiles: dict[str, Decimal] | None = None,
+    regime_view: RegimeView | None = None,
 ) -> CompanyValuationSummary:
     """The full, real, end-to-end Phase 3 pipeline for one company: route
     → the two live-wireable anchors → triangulate → margin of safety →
@@ -1151,22 +1410,53 @@ def valuation_summary_for(
     stage silently; `note` on the result, and each sub-result's own
     fields, say what ran and what didn't.
 
-    `universe_liquidity_ratios` — like `regime` below, the caller's job
-    to supply when it already has one, not this function's to fetch
-    unconditionally. Left `None` (computed once here, exactly as before)
-    for a single-company call; a caller valuing several companies against
-    the same `as_of` — `app.domain.portfolio_valuation_view.
-    value_portfolio` is the real one — computes `app.domain.liquidity_
-    view.universe_amihud_ratios` ONCE and passes it to every call
-    instead, since it is market-wide and identical across every one of
-    them. See `app.domain.liquidity_view.liquidity_percentile_for`'s own
-    docstring for the real, profiled cost this avoids: 89 seconds for 9
-    positions before this was threaded through, on a real portfolio."""
+    `universe_liquidity_ratios` and `regime_view` — the caller's job to
+    supply when it already has one, not this function's to fetch
+    unconditionally. Both left `None` (computed once here, exactly as
+    before) for a single-company call; a caller valuing several companies
+    against the same `as_of` — `app.domain.portfolio_valuation_view.
+    value_portfolio` and `app.domain.opportunity_ranking_view.
+    opportunity_ranking_for` are the real ones — computes `app.domain.
+    liquidity_view.universe_amihud_ratios` and `app.domain.macro_engine_
+    view.regime_for` ONCE EACH and passes both to every call instead,
+    since both are market-wide and identical across every one of them.
+    See `app.domain.liquidity_view.liquidity_percentile_for`'s own
+    docstring for the real, profiled cost skipping this avoids: 89
+    seconds for 9 positions on a real portfolio, from the liquidity scan
+    alone. `universe_liquidity_percentiles` closes a SECOND, independent
+    half of that same cost class, found live later (20 Aug 2026):
+    `universe_ratios` being shared stopped the O(n) universe SCAN from
+    repeating, but `percentile_rank(universe_ratios)` — an O(n²) full
+    universe RE-RANKING — still ran fresh on every one of the ~6 calls
+    into `cost_of_equity_for` this function's own anchors make per
+    ticker, identical result every time. Left `None` here falls back to
+    computing it once per call to THIS function (still far cheaper than
+    the ~6x-per-call cost before this fix) — but a caller valuing many
+    tickers against the same universe, exactly like `universe_liquidity_
+    ratios` above, should compute it ONCE up front and share it the same
+    way; `opportunity_ranking_for`/`value_portfolio` both do.
+
+    `regime_view` is the same class of cost for the same reason —
+    `fit_markov_regime_read`'s MLE fit is expensive and was, until this
+    parameter existed, being recomputed once per ticker in both
+    `opportunity_ranking_for` (every confirmed ticker in the whole
+    universe — genuinely unusable once that set grew past a couple of
+    dozen names) and `value_portfolio` (once per held position) for an
+    identical, market-wide, `as_of`-only answer each time."""
     stamp = as_of or dt.date.today()
     universe_ratios = (
         universe_liquidity_ratios
         if universe_liquidity_ratios is not None
         else universe_amihud_ratios(db, stamp)
+    )
+    # See this function's own docstring on `universe_liquidity_percentiles`
+    # for why this is computed here rather than left for each of the ~6
+    # calls below to redo independently (the O(n²) half of the liquidity-
+    # scan cost the `universe_ratios` sharing above didn't close).
+    universe_percentiles = (
+        universe_liquidity_percentiles
+        if universe_liquidity_percentiles is not None
+        else percentile_rank(universe_ratios)
     )
     routing = route_valuation(archetype)
 
@@ -1184,26 +1474,35 @@ def valuation_summary_for(
     # across companies is genuine separate work, not a correctness
     # issue — but it is no longer N-times-per-call the way it would be
     # without this.
-    regime_view = regime_for(db, stamp)
+    regime_view = regime_view if regime_view is not None else regime_for(db, stamp)
     regime_label = regime_view.result.label if regime_view.result is not None else None
 
     jpb = justified_price_to_book_for(
-        db, ticker, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+        db, ticker, stamp, regime=regime_label,
+        universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
     ri = residual_income_for(
-        db, ticker, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+        db, ticker, stamp, regime=regime_label,
+        universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
     fcff_view = current_period_fcff_for(db, ticker, stamp)
     wacc_view = wacc_for(
-        db, ticker, current_price, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+        db, ticker, current_price, stamp, regime=regime_label,
+        universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
     dcf_view = dcf_for(
-        db, ticker, current_price, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+        db, ticker, current_price, stamp, regime=regime_label,
+        universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
     ddm_view = gordon_growth_ddm_for(
-        db, ticker, stamp, regime=regime_label, universe_liquidity_ratios=universe_ratios
+        db, ticker, stamp, regime=regime_label,
+        universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
     hard_book_view = hard_book_for(db, ticker, stamp)
+    rel_view = relative_valuation_for(
+        db, ticker, current_price, stamp, regime=regime_label,
+        universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
+    )
 
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
@@ -1212,13 +1511,17 @@ def valuation_summary_for(
         anchors.append(ValuationAnchor("Residual income", "intrinsic", ri.result.value_per_share))
     if dcf_view.fair_value_per_share is not None:
         anchors.append(ValuationAnchor("FCFF DCF", "intrinsic", dcf_view.fair_value_per_share))
+    if rel_view.fair_value_pe is not None:
+        anchors.append(ValuationAnchor("Justified P/E", "relative", rel_view.fair_value_pe))
+    if rel_view.fair_value_ps is not None:
+        anchors.append(ValuationAnchor("Justified P/S", "relative", rel_view.fair_value_ps))
 
     triangulation = triangulate(routing, tuple(anchors))
 
     mos = compute_margin_of_safety(
         dispersion_pct=triangulation.dispersion_pct,
         liquidity_percentile=liquidity_percentile_for(
-            db, ticker, stamp, universe_ratios=universe_ratios
+            db, ticker, stamp, universe_ratios=universe_ratios, universe_percentiles=universe_percentiles
         ),  # real Amihud percentile, live 18 Aug 2026
         regime=regime_label,  # §29-33's regime read, live — see regime_for's own docstring
         integrity_score=None,  # no continuous integrity score exists anywhere in this system, by design — see margin_of_safety.py
@@ -1275,11 +1578,14 @@ def valuation_summary_for(
                 ladder = None
 
     note = (
-        f"{len(anchors)} of 9 §18-26 valuation anchors were live-computable for this "
-        f"company ({', '.join(a.method for a in anchors) or 'none'}) — the rest need "
-        "data this system does not extract yet (see ROADMAP.md's Phase 3 section). "
-        "This is real math on real stored data, not a placeholder, but it is a partial "
-        "triangulation, not the full 3-5-anchor blend §24 describes."
+        f"{len(anchors)} of §18-26's real triangulation anchors were live-computable for "
+        f"this company ({', '.join(a.method for a in anchors) or 'none'}) — any missing "
+        "ones above need data this system doesn't have for THIS company yet (a confirmed "
+        "dividend, enough revenue history, etc. — see each anchor's own view for the "
+        "specific reason). Justified P/B, Residual income, FCFF DCF, Justified P/E and "
+        "Justified P/S are all genuine, live-wireable anchors as of 23 Aug 2026; SOTP is "
+        "the one §18-26 model still blocked on a real missing data source rather than a "
+        "wiring gap (see this module's own docstring)."
     )
     if sanity_result is not None and sanity_result.blocked:
         note += (
@@ -1290,7 +1596,7 @@ def valuation_summary_for(
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
-        gordon_growth_ddm=ddm_view, hard_book=hard_book_view, regime=regime_view,
-        triangulation=triangulation, margin_of_safety=mos, sanity=sanity_result,
+        gordon_growth_ddm=ddm_view, hard_book=hard_book_view, relative_valuation=rel_view,
+        regime=regime_view, triangulation=triangulation, margin_of_safety=mos, sanity=sanity_result,
         price_ladder=ladder, note=note,
     )

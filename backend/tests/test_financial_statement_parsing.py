@@ -15,12 +15,18 @@ from decimal import Decimal
 import pytest
 
 from app.domain.financial_statement_parsing import (
+    _count_year_tokens,
     check_accounting_identities,
+    check_extraction_quality,
+    check_magnitude_plausibility,
     derive_additional_line_items,
+    detect_expected_value_columns,
     detect_unit_scale,
     extract_candidate_lines,
     match_canonical_label,
     normalize_label,
+    reconcile_ambiguous_values_via_identities,
+    reconcile_magnitude_implausible_values,
     repair_character_doubling,
     split_label_and_values,
 )
@@ -971,6 +977,52 @@ def test_dual_note_reference_with_slash_is_dropped():
     assert result.values == (Decimal("111039"), Decimal("90999"), Decimal("69986"), Decimal("71765"))
 
 
+def test_a_variance_pct_column_is_dropped_not_folded_into_the_label():
+    """Real regression, found live: Hikkaduwa Beach Resort PLC's interim
+    statement for the quarter ended 30 June 2026 prints a "Change %"
+    column between real value columns — "Revenue from contracts with
+    customers 163,267,528 360,646,918 (55%) 1,878,722,846". Before
+    `_VARIANCE_PCT_RE` existed, the right-to-left scan hit "(55%)" (not
+    value-shaped) and stopped immediately, folding every real value to
+    its left into `raw_label` — `match_canonical_label` was then handed
+    "revenue from contracts with customers 163,267,528 360,646,918 (55%)"
+    instead of the clean label, and the line silently produced no draft
+    at all despite `revenue` already being a canonical key."""
+    result = split_label_and_values(
+        "Revenue from contracts with customers 163,267,528 360,646,918 (55%) 1,878,722,846"
+    )
+    assert result is not None
+    assert result.raw_label == "Revenue from contracts with customers"
+    assert result.statement_line == "revenue"
+    assert result.values == (Decimal("163267528"), Decimal("360646918"), Decimal("1878722846"))
+
+
+def test_a_variance_pct_column_between_two_pairs_of_values_is_dropped():
+    """Same real gap, independently verified on Amãna Bank PLC's interim
+    statement for the quarter ended 30 June 2026, which prints TWO
+    variance-% columns on one line (six-months change, then quarter
+    change): "Profit for the Period 1,124,622 901,334 25% 622,661 467,208
+    33%". Both must be dropped, leaving exactly the four real value
+    columns the statement's own six-months/quarter comparative layout
+    declares."""
+    result = split_label_and_values(
+        "Profit for the Period 1,124,622 901,334 25% 622,661 467,208 33%"
+    )
+    assert result is not None
+    assert result.raw_label == "Profit for the Period"
+    assert result.statement_line == "net_income"
+    assert result.values == (
+        Decimal("1124622"), Decimal("901334"), Decimal("622661"), Decimal("467208"),
+    )
+
+
+def test_a_line_that_is_only_a_variance_pct_column_returns_none():
+    """A line with a "%"-shaped trailing token but no real value at all
+    (e.g. a stray "Change %" sub-header repeated mid-page) must not
+    produce a bogus all-None-value draft."""
+    assert split_label_and_values("Change % (55%) 18%") is None
+
+
 @pytest.mark.parametrize(
     ("raw", "normalized"),
     [
@@ -1200,6 +1252,162 @@ def test_assets_held_for_sale_identity_is_a_pure_addition_not_a_behaviour_change
     assert "held for sale" not in identity.detail
 
 
+# --- magnitude plausibility ----------------------------------------------
+
+
+def test_magnitude_plausibility_catches_aafs_real_failure_shape():
+    """The exact failure shape named (but deliberately left unfixed at the
+    parsing layer) in commit 313afdc: AAF.N0000's real FY2022 net_income
+    read as the literal digit "1" against a total_assets of ~19.3bn on
+    the same filing — no accounting identity happened to cover net_income
+    for this filing (income_tax_expense wasn't also extracted), so it
+    passed check_accounting_identities completely clean. This is the gap
+    check_magnitude_plausibility exists to close."""
+    values = {"total_assets": Decimal("19300000000"), "net_income": Decimal("1")}
+    checks = check_magnitude_plausibility(values)
+    assert len(checks) == 1
+    assert not checks[0].passed
+    assert checks[0].name == "net_income implausibly small vs total_assets"
+
+
+def test_magnitude_plausibility_catches_vlls_real_failure_shape():
+    """A second, independent real case, found live running this check for
+    the first time against VLL.N0000's real FY ended 2012-03-31 filing:
+    one leg of "pre-tax profit - tax = net income" reads as the literal
+    value 30 against a net_income of 59,130,635 on the same filing —
+    same shape as AAF, a different company and a different filing."""
+    values = {"net_income": Decimal("59130635"), "income_tax_expense": Decimal("30")}
+    checks = check_magnitude_plausibility(values)
+    assert len(checks) == 1
+    assert not checks[0].passed
+    assert checks[0].name == "income_tax_expense implausibly small vs net_income"
+
+
+def test_magnitude_plausibility_does_not_flag_a_genuinely_thin_real_margin():
+    """A real, thin-but-genuine net income relative to total assets (here
+    ~1 part in 10,000 — far tighter than any real filing checked so far)
+    must NOT be flagged; this is a plausibility floor self-scaled to the
+    filing's own size, not a guess at what a "normal" margin looks like."""
+    values = {"total_assets": Decimal("5000000000"), "net_income": Decimal("500000")}
+    assert check_magnitude_plausibility(values) == []
+
+
+def test_magnitude_plausibility_needs_at_least_two_values():
+    assert check_magnitude_plausibility({"total_assets": Decimal("100")}) == []
+    assert check_magnitude_plausibility({}) == []
+
+
+def test_a_genuine_exact_zero_subtotal_is_never_flagged():
+    """REAL BUG THIS CLOSES, found live (28 Aug 2026) tracing Pan Asia
+    Power PLC's real confirmed `total_non_current_liabilities`, printed
+    as a literal "0" on 16 independent real filings across consecutive
+    years ("Total Non current liabilities 0 922,963" — the company
+    simply repaid all its long-term debt that year): before this fix,
+    `ratio = abs(0) / largest` is always 0, always below the floor, so a
+    genuine zero subtotal could NEVER pass this check no matter how many
+    times it was re-verified against the live source PDF — permanently,
+    falsely un-confirmable. A corrupted read (a split-off leading digit,
+    a stray footnote number) is never itself exactly zero, so exempting
+    a literal 0 loses no real detection power."""
+    values = {"total_assets": Decimal("8033527"), "total_non_current_liabilities": Decimal("0")}
+    assert check_magnitude_plausibility(values) == []
+    # A genuinely corrupted near-zero (not exactly 0) must still be caught:
+    values_corrupted = {"total_assets": Decimal("8033527"), "total_non_current_liabilities": Decimal("1")}
+    checks = check_magnitude_plausibility(values_corrupted)
+    assert len(checks) == 1
+    assert not checks[0].passed
+
+
+def test_magnitude_plausibility_does_not_flag_real_filings():
+    """Regression guard: every real fixture this module already trusts
+    (J.F. Packaging's real balance sheet, income statement, cash-flow
+    statement) must produce zero magnitude-plausibility flags — this
+    check must never second-guess a filing that genuinely balances and
+    was never in question."""
+    for text in (BALANCE_SHEET_TEXT, INCOME_STATEMENT_TEXT, CASH_FLOW_STATEMENT_TEXT):
+        checks = check_magnitude_plausibility(_values(text))
+        assert checks == [], checks
+
+
+class TestReconcileMagnitudeImplausibleValues:
+    """REAL BUG THIS CLOSES, found live (28 Aug 2026) tracing Serendib
+    Hotels PLC's real confirmed `inventories`, stored as the literal
+    digit 3: its real balance sheet line ("Inventories 13 3 7,890 33,761
+    8 ,306 7,597") already computes the correct `alt_values` reading
+    (37,890) via the exact same split-pair machinery every other real
+    case in this module already relies on — but `inventories` has no
+    sibling accounting identity, so `reconcile_ambiguous_values_via_
+    identities` never even considers it. See `reconcile_magnitude_
+    implausible_values`'s own docstring for the full real case and the
+    narrower acceptance rule this pass uses instead of an identity."""
+
+    def test_serendibs_real_inventories_line_is_corrected(self):
+        values = {"total_assets": Decimal("4340271000"), "inventories": Decimal("3")}
+        alt_values = {"inventories": Decimal("37890")}
+        assert reconcile_magnitude_implausible_values(values, alt_values) == {
+            "inventories": Decimal("37890"),
+        }
+
+    def test_a_key_with_no_alt_candidate_is_left_alone(self):
+        """Flagged but nothing to substitute — no correction offered,
+        same as the flag standing untouched for a human to check."""
+        values = {"total_assets": Decimal("4340271000"), "inventories": Decimal("3")}
+        assert reconcile_magnitude_implausible_values(values, {}) == {}
+
+    def test_an_alt_that_is_still_implausible_is_not_accepted(self):
+        """The alt itself must actually clear the floor — a partial fix
+        (still implausibly small) is not treated as good enough."""
+        values = {"total_assets": Decimal("4340271000"), "inventories": Decimal("3")}
+        alt_values = {"inventories": Decimal("30")}  # still ~7.6x below the floor
+        assert reconcile_magnitude_implausible_values(values, alt_values) == {}
+
+    def test_a_key_that_was_never_flagged_is_never_touched_even_with_an_alt(self):
+        """`alt_values` is offered for every excess-token line regardless
+        of plausibility (see `ExtractedLine.alt_values`'s own docstring)
+        — this pass must ignore an alt for a key that wasn't already
+        flagged, exactly like identity-based reconciliation already does
+        for J.F. Packaging's own genuine note-reference line."""
+        values = {"total_assets": Decimal("4340271000"), "revenue": Decimal("4504801")}
+        alt_values = {"revenue": Decimal("54504801")}
+        assert reconcile_magnitude_implausible_values(values, alt_values) == {}
+
+    def test_a_correction_that_would_newly_implicate_another_key_is_rejected(self):
+        """Accepting a correction can change WHICH key is the filing's
+        own "largest" value, shrinking some other key's ratio below the
+        floor for the first time — this pass must not trade one flagged
+        key for a different one."""
+        values = {"total_assets": Decimal("10000000"), "inventories": Decimal("3")}
+        # inventories/10,000,000 = 3e-7, flagged; substituting inventories
+        # -> 1e14 would make it the new largest, and total_assets' own
+        # ratio against THAT (1e-7) would newly drop below the floor —
+        # correction rejected even though inventories' own flag clears.
+        alt_values = {"inventories": Decimal("100000000000000")}
+        assert reconcile_magnitude_implausible_values(values, alt_values) == {}
+
+
+def test_check_extraction_quality_combines_identities_and_magnitude():
+    """A filing that fails ONLY the magnitude floor (no accounting
+    identity is even computable — matching AAF's real case, where the
+    missing income_tax_expense meant no identity covered net_income
+    either) must still come back as a failure from the combined
+    function, not silently pass because check_accounting_identities
+    alone had nothing to check."""
+    values = {"total_assets": Decimal("19300000000"), "net_income": Decimal("1")}
+    assert check_accounting_identities(values) == []  # nothing computable — the real AAF gap
+    checks = check_extraction_quality(values)
+    assert any(not c.passed for c in checks)
+
+
+def test_check_extraction_quality_passes_cleanly_on_real_filings():
+    """Every real fixture that already passes check_accounting_identities
+    cleanly must also pass the combined check cleanly — adding the
+    magnitude floor must never turn a real, correct filing into a
+    false positive."""
+    for text in (BALANCE_SHEET_TEXT, INCOME_STATEMENT_TEXT, CASH_FLOW_STATEMENT_TEXT):
+        checks = check_extraction_quality(_values(text))
+        assert all(c.passed for c in checks), [c for c in checks if not c.passed]
+
+
 class TestDetectUnitScale:
     """A REAL bug, found live (18 Aug 2026): every value this module ever
     extracted was stored exactly as printed, with no unit-scale
@@ -1382,3 +1590,568 @@ class TestRepairCharacterDoubling:
         EVERY character, not just some."""
         page = f"{word} REPORT\nSome ordinary body text about the {word.lower()} below.\n"
         assert repair_character_doubling(page) == page
+
+
+# Real text from page 2 of Tea Smallholder Factories PLC's (TSML.N0000)
+# real interim statement for the quarter ended 30 June 2026, downloaded
+# fresh (20 Aug 2026) from https://cdn.cse.lk/cmt/upload_report_file/
+# 490_1786628491802.pdf — sought out specifically because this filing's
+# own "Revenue from Contracts with Customers" line reads "... 8 27,386
+# 731,119 13": pdfplumber splits the real value 827,386 into a standalone
+# "8" and "27,386", and this statement's real 3-column layout (current
+# quarter / prior-year quarter / change, no Group/Company split at all)
+# meant the OLD hardcoded 4-column assumption masked the split entirely
+# rather than flagging it as excess. Proven live: 827,386 - 791,413 =
+# 35,973, exactly the real printed Gross Profit.
+INCOME_STATEMENT_TEXT_TSML = """\
+TEA SMALLHOLDER FACTORIES PLC
+INCOME STATEMENT
+Three months ended
+30.06.2026 30.06.2025 Change
+Unaudited Unaudited
+RS. '000 RS. '000 %
+Continuing Operations
+Revenue from Contracts with Customers 8 27,386 731,119 13
+Cost of Sales (791,413) (700,296) 13
+Gross Profit / (Loss) 35,973 30,823 17
+"""
+
+# Real text from page 2 of eChannelling PLC's (ECL.N0000) real interim
+# statement for the quarter ended 30 June 2026, downloaded fresh (20 Aug
+# 2026) from https://cdn.cse.lk/cmt/upload_report_file/374_1786701666452
+# .pdf — a genuine 2-column (current period / prior period) single-
+# entity layout with NO Group/Company split at all ("As at 30.06.2026
+# 31.12.2025", two dates, not four), sought out specifically because two
+# of its own real subtotal lines split their leading digit: "Total
+# Current Liabilities 2 19,185,791 148,727,991" (real: 219,185,791) and
+# "Total Liabilities 2 38,125,232 162,155,722" (real: 238,125,232) — and
+# because BOTH the subtotal and one of its own components are wrong by
+# the identical missing digit, "liabilities = current + non-current"
+# PASSES on the wrong values (the error cancels in that one sum), which
+# is exactly why fixing either alone (rather than both together) was the
+# real, live bug `reconcile_ambiguous_values_via_identities` closes — see
+# that function's own docstring.
+BALANCE_SHEET_TEXT_ECL = """\
+eChannelling PLC
+STATEMENT OF FINANCIAL POSITION
+As at 30.06.2026 31.12.2025
+LKR LKR
+Non Current Assets
+Total Non Current Assets 3 3,730,618 2 1,886,752
+Current Assets
+Total Current Assets 7 55,720,897 6 56,674,427
+Total Assets 7 89,451,516 6 78,561,179
+EQUITY AND LIABILITIES
+Equity
+Total Equity 5 51,326,283 5 16,405,457
+Non Current Liabilities
+Total Non Current Liabilities 1 8,939,441 1 3,427,731
+Current Liabilities
+Total Current Liabilities 2 19,185,791 148,727,991
+Total Liabilities 2 38,125,232 162,155,722
+Total Equity & Liabilities 7 89,451,516 678,561,179
+"""
+
+# Asia Asset Finance PLC's real Statement of Cash Flows header (FY2019/20
+# annual report, downloaded live 27 Aug 2026) — genuinely 2 columns
+# (current/prior year), but written as Sri Lankan fiscal-year RANGES
+# ("2019/2020 2018/2019") rather than plain single years. See
+# `_YEAR_RANGE_TOKEN_RE`'s own docstring for the real corruption this
+# closes: `_YEAR_TOKEN_RE` alone double-counts each range as two year
+# tokens, so this header used to detect as 4 columns instead of 2.
+CASH_FLOW_HEADER_TEXT_AAF = """\
+Asia Asset Finance PLC | Annual Report 2019/20
+Statement Of Cash Flows
+2019/2020 2018/2019
+Note Rs. Rs.
+Cash flows from operating activities
+Profit before income tax 93,316,292 93,907,039
+Acquisition of property, plant and equipment 20 (27,787,206) (57,293,522)
+"""
+
+# Ownally Holdings PLC's real Statement of Profit or Loss (FY2021/22
+# annual report, downloaded live 28 Aug 2026, page 43) — genuinely 2
+# columns (2022/2021), but pdfplumber has merged the page's own title
+# line ("Year ended 31 March 2022", whose trailing year just completes
+# that sentence) with the table's real header row ("2022 2021") onto one
+# line: "Year ended 31 March 2022 2022 2021". `_count_year_tokens` used
+# to double-count the title's own year, detecting 3 columns instead of 2,
+# which let this statement's real "Revenue from contracts with customers
+# 6 213,037,864 181,702,922" line (note reference "6" + 2 real values)
+# pass the `len(numeric_tokens) > expected_value_columns` check as
+# 3 > 3 = False, so the note reference "6" was kept as the value instead
+# of correctly dropped — confirmed live as `revenue` stored as the
+# literal digit 6.
+ONAL_INCOME_STATEMENT_TEXT = """\
+STATEMENT OF PROFIT OR LOSS
+Year ended 31 March 2022 2022 2021
+Note Rs. Rs.
+Revenue from contracts with customers 6 213,037,864 181,702,922
+Other operating income 7 11,921,652 12,518,396
+Other operating expense (77,554,904) (61,186,266)
+Operating profit 147,404,612 133,035,052
+Fair value gain on investment property 13 674,010,544 19,793,375
+Finance income 8 48,381,853 49,093,946
+Profit/(Loss) before Tax 9 869,797,009 201,922,373
+Income tax expense 10 (210,902,487) 39,796,074
+Profit/(Loss) for the year 658,894,522 241,718,447
+"""
+
+# Chemanex PLC's real Statement of Profit or Loss (quarterly report for
+# the period ended 30 June 2018, downloaded live 28 Aug 2026, page 2) —
+# genuinely 3 columns (current, prior, variance %), with the "%" sharing
+# the YEAR line itself ("2018 2017 Variance %") rather than the unit-
+# declaration line the way Tea Smallholder's real header does ("RS.'000
+# RS.'000 %") — a different real arrangement of the same 3-column shape.
+# `unit_count` alone only ever sees 1 there (a single, non-repeated "(In
+# Rs. '000) Note" declaration — AHPL's already-known shape), and
+# `max(year_count, unit_count)` picked year_count=2, losing the real 3rd
+# column and corrupting the real `revenue` line — confirmed live as
+# `revenue` stored as the literal digit 1. `Revenue`'s own real line
+# additionally has a genuine 2-digit-note-reference-immediately-before-
+# a-split-pair shape ("1 1 07,573 1 81,246 (41)" — note "1", then two
+# split pairs "1"+"07,573" and "1"+"81,246"), the second real bug this
+# fixture pins (see `_merge_all_split_pairs`'s own docstring).
+CHEMANEX_INCOME_STATEMENT_TEXT = """\
+CHEMANEX PLC
+STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME
+Three months ended 30 June
+2018 2017 Variance %
+(In Rs. '000) Note
+Revenue 1 1 07,573 1 81,246 (41)
+Cost of sales ( 84,645) ( 142,516) (41)
+Gross profit 2 2,928 3 8,730 (41)
+Other income 2 3 9,995 1 ,775 2 ,153
+Net finance income 3 9 ,088 8 ,440 (8)
+Administrative expenses ( 11,598) ( 30,595) (62)
+Distribution expenses ( 3,494) ( 14,474) (76)
+Profit before tax 5 6,269 3 ,595 1 ,465
+Income tax expense ( 11,018) ( 4,580) 1 41
+"""
+
+# Serendib Hotels PLC's real Statement of Financial Position (annual
+# report for the year ended 31 March 2020, downloaded live 28 Aug 2026,
+# page 5) — the split-leading-digit artifact ("4 ,340,271" already fixed
+# by `_repair_split_thousands`, "3 7,890" needing `_repair_split_leading_
+# digits`/`_merge_all_split_pairs` instead) runs through nearly every
+# line on this page. `inventories` and `trade_receivables` are the real
+# case `reconcile_magnitude_implausible_values` exists for: genuine
+# BALANCE-SHEET COMPONENT lines with no sibling identity in this module
+# (`check_accounting_identities` never sums current-asset components),
+# so their own correct `alt_values` reading sat unused even though
+# `check_magnitude_plausibility` already flags the default outright.
+SHOT_BALANCE_SHEET_TEXT = """\
+Serendib Hotels PLC
+STATEMENT OF FINANCIAL POSITION
+Group Company
+As at Note 31.03.2020 31.03.2019 31.03.2020 31.03.2019
+Rs.'000 Audited Audited
+ASSETS
+Non-Current Assets
+Property, Plant & Equipment 10 3 ,908,853 4,016,721 6 77,922 708,955
+Leasehold Property 11 - 25,572 - 23,824
+Intangible Assets 12 1 46,840 160,114 8 ,666 14,139
+Other Non Current Financial Assets 12 1 29,588 212,202 1 24,622 206,741
+4 ,340,271 4,414,609 1 ,858,662 1,906,926
+Current Assets
+Inventories 13 3 7,890 33,761 8 ,306 7,597
+Trade and Other Receivables 14 3 06,895 341,671 1 03,988 75,196
+Cash and Cash Equivalents 24 2 93,497 442,357 6 8,632 56,550
+6 54,954 836,966 2 90,119 145,280
+Total Assets 4 ,995,225 5 ,251,575 2 ,148,780 2,052,206
+"""
+
+
+class TestDetectExpectedValueColumns:
+    """See `detect_expected_value_columns`'s own docstring for the real,
+    live bug this closes. Every already-verified real fixture in this
+    file is checked here too — the whole point is that detecting the
+    real count changes NOTHING for any filing that already assumed the
+    right default."""
+
+    @pytest.mark.parametrize(
+        ("real_text", "expected"),
+        [
+            (BALANCE_SHEET_TEXT, 4),  # J.F. Packaging PLC — Group/Company x this-year/last-year
+            (INCOME_STATEMENT_TEXT, 4),
+            (CASH_FLOW_STATEMENT_TEXT, 4),
+            (INCOME_STATEMENT_TEXT_SWAD, 4),
+            (BALANCE_SHEET_TEXT_SWAD, 4),
+            (BALANCE_SHEET_TEXT_AHPL, 4),
+            (BALANCE_SHEET_TEXT_PAP, 4),
+            (BALANCE_SHEET_TEXT_LWL, 4),
+            (BALANCE_SHEET_TEXT_ECL, 2),  # genuinely 2-column, no Group/Company split
+            (INCOME_STATEMENT_TEXT_TSML, 3),  # 2 monetary columns + 1 separate change-% column
+            (CASH_FLOW_HEADER_TEXT_AAF, 2),  # genuinely 2-column, written as fiscal-year RANGES
+        ],
+    )
+    def test_real_filings_detect_their_own_real_column_count(self, real_text, expected):
+        assert detect_expected_value_columns(real_text) == expected
+
+    def test_a_page_with_no_reliable_signal_returns_none(self):
+        """A single stray year mention (or none at all) isn't a reliable
+        column-count signal — callers fall back to the existing default
+        in this case, exactly as they always have."""
+        assert detect_expected_value_columns("NOTES TO THE FINANCIAL STATEMENTS\n2026\n") is None
+        assert detect_expected_value_columns("Nothing date-like on this page at all.\n") is None
+
+    def test_fiscal_year_range_label_counts_as_one_column_not_two(self):
+        """The exact regression this fix targets, isolated from the rest
+        of AAF's real header: a bare `_YEAR_TOKEN_RE.findall` over
+        "2019/2020 2018/2019" finds FOUR 4-digit runs for what is
+        genuinely two columns — `_count_year_tokens` must not."""
+        assert _count_year_tokens("2019/2020 2018/2019") == 2
+        # A mix of range and plain years (hypothetical but worth pinning):
+        # each range still counts once, each plain year still counts once.
+        assert _count_year_tokens("2019/2020 2025 2018/2019 2025") == 4
+
+    def test_plain_year_headers_are_unaffected_by_the_range_fix(self):
+        """J.F. Packaging's real style — four bare, non-range years, one
+        per real column — must still count as 4, unchanged."""
+        assert _count_year_tokens("2026 2025 2026 2025") == 4
+
+    def test_adjacent_duplicate_year_from_a_merged_title_and_header_line_counts_once(self):
+        """Ownally Holdings PLC's real income-statement header (see
+        `ONAL_INCOME_STATEMENT_TEXT`'s own docstring) — pdfplumber merges
+        the page's title line, whose own trailing year just completes the
+        sentence "Year ended 31 March 2022", with the table's real header
+        row "2022 2021" onto one line of text: "Year ended 31 March 2022
+        2022 2021". A bare `_YEAR_TOKEN_RE.findall` finds THREE 4-digit
+        runs for what is genuinely a 2-column (2022/2021) statement;
+        `_count_year_tokens` must not."""
+        assert _count_year_tokens("Year ended 31 March 2022 2022 2021") == 2
+        # Non-adjacent repeats (J.F. Packaging's real shape) must NOT collapse:
+        assert _count_year_tokens("2022 2021 2022 2021") == 4
+
+    def test_real_filings_detect_their_own_real_column_count_for_onal(self):
+        assert detect_expected_value_columns(ONAL_INCOME_STATEMENT_TEXT) == 2
+
+    def test_a_bare_percent_sharing_the_year_line_itself_still_counts(self):
+        """Chemanex PLC's real header shape — "2018 2017 Variance %", the
+        "%" sharing the YEAR line rather than a dedicated unit line (Tea
+        Smallholder's own shape). `year_count` alone (2) and `unit_count`
+        alone (1, from a single non-repeated "%") each undercount; the
+        two signals must be summed when they cooccur on the same line."""
+        assert detect_expected_value_columns(CHEMANEX_INCOME_STATEMENT_TEXT) == 3
+        # J.F. Packaging's real 4-column header (no "%" on its year line
+        # at all) is already covered above and stays exactly 4 — this
+        # fix only adds a signal, never removes one.
+
+
+class TestAafsRealFiscalYearRangeCapexExtraction:
+    """End-to-end regression for the live bug this fix closes — not just
+    the column-count detector in isolation, but the actual downstream
+    consequence: AAF.N0000's real "Acquisition of property, plant and
+    equipment 20 (27,787,206) (57,293,522)" line (a genuine note
+    reference "20" immediately before two real values) used to store the
+    note reference itself (`primary_value == 20`) because the page's
+    mis-detected 4-column count made `len(numeric_tokens) > expected_
+    value_columns` (3 > 4) false, so the note-reference-drop rule never
+    fired. Verified against the real filing live (27 Aug 2026,
+    https://cdn.cse.lk/cmt/upload_report_file/1108_1608806151470.pdf,
+    page 106) before this fix landed — this pins that same real shape as
+    a permanent regression test."""
+
+    def test_note_reference_is_dropped_not_kept_as_the_value(self):
+        result = split_label_and_values(
+            "Acquisition of property, plant and equipment 20 (27,787,206) (57,293,522)",
+            expected_value_columns=detect_expected_value_columns(CASH_FLOW_HEADER_TEXT_AAF),
+        )
+        assert result is not None
+        assert result.statement_line == "capital_expenditure"
+        assert result.primary_value == Decimal("-27787206")
+
+
+class TestOnalsRealAdjacentDuplicateYearRevenueExtraction:
+    """End-to-end regression for the live bug the adjacent-duplicate-year
+    fix closes — not just the column-count detector in isolation, but the
+    actual downstream consequence: Ownally Holdings PLC's real confirmed
+    `revenue` stored as the literal digit 6. See `ONAL_INCOME_STATEMENT_
+    TEXT`'s own docstring for the real header shape that caused it."""
+
+    def test_note_reference_is_dropped_not_kept_as_the_value(self):
+        result = split_label_and_values(
+            "Revenue from contracts with customers 6 213,037,864 181,702,922",
+            expected_value_columns=detect_expected_value_columns(ONAL_INCOME_STATEMENT_TEXT),
+        )
+        assert result is not None
+        assert result.statement_line == "revenue"
+        assert result.primary_value == Decimal("213037864")
+
+
+class TestSplitOpenParenRepair:
+    """`_SPLIT_OPEN_PAREN_RE`'s own narrow repair, isolated from the rest
+    of Chemanex's real line — see its own docstring for the real bug."""
+
+    def test_a_stray_space_after_an_opening_paren_before_a_digit_is_repaired(self):
+        result = split_label_and_values("Cost of sales ( 84,645) ( 142,516) (41)", expected_value_columns=3)
+        assert result is not None
+        assert result.statement_line == "cost_of_sales"
+        assert result.values == (Decimal("-84645"), Decimal("-142516"), Decimal("-41"))
+
+    def test_a_genuine_label_parenthetical_is_never_touched(self):
+        """"(Loss)"/"(Increase)/Decrease" style label text — a LETTER,
+        not a digit, follows the opening paren — must be completely
+        unaffected: the repair's `(?=\\d)` lookahead is what keeps it
+        narrow."""
+        result = split_label_and_values(
+            "Profit/(Loss) after tax from continuing operations 45,251 (985)"
+        )
+        assert result is not None
+        assert result.raw_label == "Profit/(Loss) after tax from continuing operations"
+        assert result.values == (Decimal("45251"), Decimal("-985"))
+
+
+class TestChemanexsRealNoteReferenceAdjacentToASplitPairExtraction:
+    """End-to-end regression for THREE combined real bugs, all found live
+    (28 Aug 2026) tracing Chemanex PLC's real confirmed `revenue` (stored
+    as the literal digit 1) and `gross_profit` (stored as 2,928 instead
+    of 22,928): (1) `detect_expected_value_columns` undercounting a "%"
+    that shares the YEAR line rather than the unit line (see
+    `CHEMANEX_INCOME_STATEMENT_TEXT`'s own docstring), (2)
+    `_merge_all_split_pairs` unable to offer an alternate at all when a
+    genuine leading note reference sits directly in front of a split
+    pair's own leading digit, and (3) a stray space after a negative
+    value's own opening parenthesis ("( 84,645)") breaking `cost_of_
+    sales`'s extraction entirely, which the accounting-identity
+    reconciliation that fixes (1) and (2) actually depends on being
+    right. Fixing all three together lets the ALREADY-EXISTING
+    `reconcile_ambiguous_values_via_identities` machinery do what it was
+    built for — no new reconciliation logic needed, just three blocked
+    inputs to it, unblocked."""
+
+    def test_revenue_and_gross_profit_both_resolve_correctly_via_the_existing_identity_check(self):
+        cols = detect_expected_value_columns(CHEMANEX_INCOME_STATEMENT_TEXT)
+        lines = extract_candidate_lines(CHEMANEX_INCOME_STATEMENT_TEXT, expected_value_columns=cols)
+        values = {l.statement_line: l.primary_value for l in lines if l.statement_line}
+        alt_values = {
+            l.statement_line: l.alt_values[0] for l in lines if l.statement_line and l.alt_values
+        }
+        # Before any of the three fixes, `values["revenue"] == 1` and
+        # `values["cost_of_sales"]` wasn't even extracted (swallowed into
+        # the label — see `_SPLIT_OPEN_PAREN_RE`'s own docstring):
+        assert values["cost_of_sales"] == Decimal("-84645")
+        corrected = reconcile_ambiguous_values_via_identities(values, alt_values)
+        assert corrected["revenue"] == Decimal("107573")
+        assert corrected["gross_profit"] == Decimal("22928")
+
+
+class TestAltValuesForAmbiguousExcessTokens:
+    """`ExtractedLine.alt_values` — the alternate reading offered for a
+    line whose excess numeric tokens are genuinely ambiguous (a real
+    note reference vs. a real split-off leading digit — see that field's
+    own docstring). Never applied here; only ever offered as a candidate
+    for `reconcile_ambiguous_values_via_identities` to accept or reject."""
+
+    def test_jf_packagings_genuine_note_reference_gets_an_alt_too(self):
+        """The alt-computation itself is deliberately AGGRESSIVE (it
+        would happily "rejoin" a genuine trailing note reference) — the
+        real protection against misusing this for J.F. Packaging's own
+        real line lives in `reconcile_ambiguous_values_via_identities`,
+        not here. This test documents that `alt_values` is offered
+        regardless; the next class proves it never gets ACCEPTED for
+        this line."""
+        result = split_label_and_values("Revenue 5 4,504,801 4,385,214 2,356,951 2,371,137")
+        assert result is not None
+        assert result.values == (
+            Decimal("4504801"), Decimal("4385214"), Decimal("2356951"), Decimal("2371137"),
+        )
+        assert result.alt_values == (
+            Decimal("54504801"), Decimal("4385214"), Decimal("2356951"), Decimal("2371137"),
+        )
+
+    def test_tea_smallholders_real_split_digit_produces_the_correct_alt(self):
+        result = split_label_and_values(
+            "Revenue from Contracts with Customers 8 27,386 731,119 13",
+            expected_value_columns=3,
+        )
+        assert result is not None
+        assert result.values == (Decimal("27386"), Decimal("731119"), Decimal("13"))
+        assert result.alt_values == (Decimal("827386"), Decimal("731119"), Decimal("13"))
+
+    def test_swisstek_real_two_independent_splits_on_one_line_both_merge(self):
+        """Swisstek (Ceylon) PLC's real "Total liabilities" line — TWO of
+        its four columns split independently (columns 1 and 2, not just
+        the first), which a single-leading-token restriction would miss
+        entirely."""
+        result = split_label_and_values(
+            "Total liabilities 1 0,216,971 1 0,163,128 2,881,063 2,481,861",
+            expected_value_columns=4,
+        )
+        assert result is not None
+        assert result.alt_values == (
+            Decimal("10216971"), Decimal("10163128"), Decimal("2881063"), Decimal("2481861"),
+        )
+
+    def test_no_excess_tokens_means_no_alt_offered(self):
+        result = split_label_and_values("Total Assets 3,807,110 3,722,727 3,559,834 3,453,018")
+        assert result is not None
+        assert result.alt_values is None
+
+    def test_a_leading_excess_token_immediately_before_a_split_pair_still_gets_the_right_alt(self):
+        """A genuine leading note reference sitting directly in front of
+        a split-pair's own leading digit — REAL BUG THIS PINS, found live
+        (28 Aug 2026) tracing Chemanex PLC's real confirmed `revenue`
+        (see `TestChemanexsRealNoteReferenceAdjacentToASplitPairExtraction`
+        for the full end-to-end case): "11" (a genuine 2-digit note
+        reference) then "22" — itself the split-off leading digits of
+        "22" + "4,504,801" = "224,504,801" — is exactly this shape one
+        level more excess than J.F. Packaging's own single-note-reference
+        line. `_merge_all_split_pairs` must retry with the leading token
+        dropped when the direct greedy scan overshoots, not give up."""
+        result = split_label_and_values(
+            "Some Line 11 22 4,504,801 4,385,214 2,356,951 2,371,137", expected_value_columns=4,
+        )
+        assert result is not None
+        assert result.alt_values == (
+            Decimal("224504801"), Decimal("4385214"), Decimal("2356951"), Decimal("2371137"),
+        )
+
+    def test_a_merge_that_does_not_land_on_the_expected_count_even_with_the_leading_token_dropped_offers_no_alt(self):
+        """Excess tokens that DON'T resolve to a clean merge either way —
+        neither the direct scan nor the leading-token-dropped retry lands
+        on the expected count — must not produce a guessed alternate:
+        `None`, not a wrong one."""
+        result = split_label_and_values(
+            "Some Line 11 22 33 4,504,801 4,385,214 2,356,951 2,371,137", expected_value_columns=4,
+        )
+        assert result is not None
+        assert result.alt_values is None
+
+    def test_jat_holdings_real_percent_suffixed_variance_columns_unlock_the_correct_alt(self):
+        """REAL BUG, found live (28 Aug 2026): JAT Holdings PLC's real
+        confirmed net_income was stored as the literal digit "2" — this
+        is that exact real line (page 2 of https://cdn.cse.lk/cmt/
+        upload_report_file/2353_1635392277137.pdf). The page's own
+        header ("Rs. Rs. % Rs. Rs. %") makes `detect_expected_value_
+        columns` return 6, budgeting one slot per "%" the same way it
+        correctly does for Tea Smallholder's real bare-number "%"-column
+        above — but JAT's OWN real "%"-column values carry a literal "%"
+        suffix on every row ("177%", "-1991%"), which `_VARIANCE_PCT_RE`
+        already strips as never-a-real-value, leaving only 4 real
+        monetary tokens after strip-and-split — the effective-column
+        adjustment (subtracting however many `_VARIANCE_PCT_RE` tokens
+        THIS line actually stripped) is what un-inflates the comparison
+        back down to 4, unlocking the correct alt_values here."""
+        result = split_label_and_values(
+            "Profit for the Period 2 38,401,649 85,982,747 177% 4 00,051,561 (21,150,114) -1991%",
+            expected_value_columns=6,
+        )
+        assert result is not None
+        assert result.values == (
+            Decimal("38401649"), Decimal("85982747"), Decimal("4"), Decimal("51561"), Decimal("-21150114"),
+        )
+        assert result.alt_values == (
+            Decimal("238401649"), Decimal("85982747"), Decimal("400051561"), Decimal("-21150114"),
+        )
+
+    def test_amanas_real_percent_suffixed_line_with_no_split_is_unaffected(self):
+        """Regression guard, using the SAME real fixture `_VARIANCE_PCT_
+        RE`'s own docstring already cites (Amãna Bank PLC's real interim
+        statement): a "%"-suffixed variance line with NO split-digit
+        artifact at all must still read cleanly, both before and after
+        the effective-column adjustment — the two real "%" tokens get
+        stripped either way, correctly leaving 2 real monetary columns
+        for a 2-column statement (no Group/Company split), and no excess
+        remains to trigger alt_values at all."""
+        result = split_label_and_values(
+            "Profit for the Period 1,124,622 901,334 25% 622,661 467,208 33%",
+            expected_value_columns=4,
+        )
+        assert result is not None
+        assert result.values == (Decimal("1124622"), Decimal("901334"), Decimal("622661"), Decimal("467208"))
+        assert result.alt_values is None
+
+
+class TestReconcileAmbiguousValuesViaIdentities:
+    """See `reconcile_ambiguous_values_via_identities`'s own docstring
+    for the real cases this closes and the hard constraint it never
+    violates."""
+
+    def test_jf_packagings_real_revenue_alt_is_rejected_not_applied(self):
+        """The default reading already satisfies "revenue - cost of
+        sales = gross profit" — the alternate (however plausible-looking
+        on its own) must never be accepted, since doing so would BREAK
+        an identity that already held."""
+        values = {
+            "revenue": Decimal("4504801"), "cost_of_sales": Decimal("-3335742"),
+            "gross_profit": Decimal("1169059"),
+        }
+        alt_values = {"revenue": Decimal("54504801")}
+        assert reconcile_ambiguous_values_via_identities(values, alt_values) == {}
+
+    def test_echannellings_real_confounded_pair_is_resolved_only_together(self):
+        """Real, live case: correcting EITHER `total_current_liabilities`
+        or `total_liabilities` alone turns "liabilities = current + non-
+        current" from passing (on the wrong values, which happen to
+        cancel) to failing — only accepting BOTH together fixes "assets =
+        equity + liabilities" while leaving the current/non-current
+        identity exactly where it started."""
+        values = {
+            "total_assets": Decimal("789451516"),
+            "total_current_assets": Decimal("755720897"),
+            "total_non_current_assets": Decimal("33730618"),
+            "total_equity": Decimal("551326283"),
+            "total_non_current_liabilities": Decimal("18939441"),
+            "total_current_liabilities": Decimal("19185791"),  # wrong: missing leading "2"
+            "total_liabilities": Decimal("38125232"),  # wrong: missing leading "2"
+        }
+        alt_values = {
+            "total_current_liabilities": Decimal("219185791"),
+            "total_liabilities": Decimal("238125232"),
+        }
+        corrections = reconcile_ambiguous_values_via_identities(values, alt_values)
+        assert corrections == {
+            "total_current_liabilities": Decimal("219185791"),
+            "total_liabilities": Decimal("238125232"),
+        }
+
+    def test_tea_smallholders_real_single_key_correction(self):
+        values = {
+            "revenue": Decimal("27386"), "cost_of_sales": Decimal("-791413"),
+            "gross_profit": Decimal("35973"),
+        }
+        alt_values = {"revenue": Decimal("827386")}
+        assert reconcile_ambiguous_values_via_identities(values, alt_values) == {
+            "revenue": Decimal("827386"),
+        }
+
+    def test_no_alt_values_returns_no_corrections(self):
+        assert reconcile_ambiguous_values_via_identities({"total_assets": Decimal(100)}, {}) == {}
+
+    def test_an_already_clean_statement_gets_no_corrections_even_with_an_alt_offered(self):
+        """If nothing is actually wrong, there is nothing to "fix" — an
+        alt_value present for a key that isn't causing any identity to
+        fail must not be applied just because it exists."""
+        values = {
+            "total_assets": Decimal("100"), "total_equity": Decimal("60"),
+            "total_liabilities": Decimal("40"),
+        }
+        alt_values = {"total_liabilities": Decimal("99999")}
+        assert reconcile_ambiguous_values_via_identities(values, alt_values) == {}
+
+
+def test_end_to_end_echannellings_real_filing_reconciles_correctly():
+    """`extract_candidate_lines` (page-level, no reconciliation applied
+    yet — that's `app.ingestion.financial_pdf_extractor`'s own job) still
+    produces the WRONG default values for both split subtotal lines here
+    — proving the reconciliation step is a genuinely separate stage, not
+    something `extract_candidate_lines` already does on its own."""
+    lines = extract_candidate_lines(BALANCE_SHEET_TEXT_ECL, expected_value_columns=2)
+    by_key = {line.statement_line: line for line in lines if line.statement_line}
+    assert by_key["total_current_liabilities"].primary_value == Decimal("19185791")
+    assert by_key["total_current_liabilities"].alt_values == (
+        Decimal("219185791"), Decimal("148727991"),
+    )
+    assert by_key["total_liabilities"].primary_value == Decimal("38125232")
+    assert by_key["total_liabilities"].alt_values == (Decimal("238125232"), Decimal("162155722"))
+
+    values = {k: v.primary_value for k, v in by_key.items() if v.primary_value is not None}
+    alt_values = {
+        k: v.alt_values[0] for k, v in by_key.items() if v.alt_values is not None
+    }
+    corrections = reconcile_ambiguous_values_via_identities(values, alt_values)
+    assert corrections == {
+        "total_current_liabilities": Decimal("219185791"),
+        "total_liabilities": Decimal("238125232"),
+    }

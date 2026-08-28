@@ -17,6 +17,22 @@ from app import models  # noqa: F401 — populates Base.metadata
 from app.db.base import Base
 
 
+@pytest.fixture(autouse=True)
+def _clear_opportunity_ranking_cache():
+    """R1: `app.domain.opportunity_ranking_view.opportunity_ranking_for`
+    caches its own real, expensive result in a module-level dict shared
+    across the whole process — exactly right for one real dev server,
+    exactly wrong left unguarded across a test suite, where two tests
+    seeding the same `as_of` date into two different in-memory databases
+    would otherwise share a stale cache entry. Caught live: this fixture
+    exists because tests genuinely failed without it, not on suspicion."""
+    from app.domain.opportunity_ranking_view import clear_cache
+
+    clear_cache()
+    yield
+    clear_cache()
+
+
 @pytest.fixture()
 def db_session():
     # StaticPool + check_same_thread=False: SQLAlchemy's default pooling

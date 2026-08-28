@@ -40,15 +40,16 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 _SCHEDULE_LOOKUP = build_scheduler()
 
 # Only jobs with a real cron equivalent in app.jobs.scheduler get a next-
-# scheduled time; enrich_securities, recompute and capture_all have none
-# (see that module's own job list) and correctly report None rather than
-# a guessed time.
+# scheduled time; enrich_securities, recompute, rebuild_factor_series and
+# capture_all have none (see that module's own job list) and correctly
+# report None rather than a guessed time.
 _JOB_TO_SCHEDULER_ID = {
     "capture_prices": "eod_snapshot",
     "capture_market": "capture_market_internals",
     "capture_macro": "cbsl_indicators",
     "capture_filings": "financial_statement_scan",
     "capture_corporate_actions": "corporate_actions_scan",
+    "refresh_stale_fundamentals": "refresh_stale_fundamentals",
 }
 
 

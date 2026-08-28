@@ -32,7 +32,7 @@ from app.domain.portfolio_import_view import (
     store_portfolio_snapshot,
     unrecognized_tickers,
 )
-from app.domain.portfolio_valuation_view import value_portfolio
+from app.domain.portfolio_valuation_view import portfolio_value_trend, value_portfolio
 from app.ingestion.portfolio_import import read_portfolio_workbook
 from app.models.portfolio import PortfolioSnapshot
 
@@ -143,6 +143,12 @@ def snapshot_detail(snapshot_id: int, db: Session = Depends(get_db)) -> Snapshot
     return _detail_out(db, snapshot)
 
 
+class AttentionFlagOut(BaseModel):
+    key: str
+    label: str
+    detail: str
+
+
 class ValuedPositionOut(BaseModel):
     ticker: str
     quantity: Decimal
@@ -157,9 +163,11 @@ class ValuedPositionOut(BaseModel):
     blended_fair_value_per_share: Decimal | None
     price_ladder_zone: str | None
     buy_below_price: Decimal | None
+    sell_above_price: Decimal | None
     margin_of_safety_pct: Decimal | None
     dispersion_pct: Decimal | None
     warnings: list[str]
+    attention_flags: list[AttentionFlagOut]
 
 
 class ValuedPortfolioOut(BaseModel):
@@ -176,6 +184,12 @@ class ValuedPortfolioOut(BaseModel):
     total_cost: Decimal
     total_live_market_value: Decimal | None
     positions_missing_a_live_price: list[str]
+    value_trend_pct: dict[str, Decimal | None]
+    """R1 T4.1.6/T4.5.1's `TrendChip` data — keyed "15d"/"30d"/"45d"/"60d".
+    See `app.domain.portfolio_valuation_view.portfolio_value_trend`'s own
+    docstring for the real, disclosed assumption (today's exact holdings
+    priced at each past date, not a real historical portfolio replay —
+    this system has no transaction log yet)."""
 
 
 @router.get("/holdings/valued", response_model=ValuedPortfolioOut | None)
@@ -187,6 +201,7 @@ def current_holdings_valued(db: Session = Depends(get_db)) -> ValuedPortfolioOut
     if snapshot is None:
         return None
     result = value_portfolio(db, snapshot)
+    trend = portfolio_value_trend(db, snapshot, result.as_of, (15, 30, 45, 60))
     return ValuedPortfolioOut(
         snapshot_id=result.snapshot_id, as_of=result.as_of,
         positions=[
@@ -198,11 +213,16 @@ def current_holdings_valued(db: Session = Depends(get_db)) -> ValuedPortfolioOut
                 live_unrealized_gain_loss=p.live_unrealized_gain_loss,
                 blended_fair_value_per_share=p.blended_fair_value_per_share,
                 price_ladder_zone=p.price_ladder_zone, buy_below_price=p.buy_below_price,
+                sell_above_price=p.sell_above_price,
                 margin_of_safety_pct=p.margin_of_safety_pct, dispersion_pct=p.dispersion_pct,
                 warnings=list(p.warnings),
+                attention_flags=[
+                    AttentionFlagOut(key=f.key, label=f.label, detail=f.detail) for f in p.attention_flags
+                ],
             )
             for p in result.positions
         ],
         total_cost=result.total_cost, total_live_market_value=result.total_live_market_value,
         positions_missing_a_live_price=list(result.positions_missing_a_live_price),
+        value_trend_pct={f"{days}d": trend[days] for days in (15, 30, 45, 60)},
     )

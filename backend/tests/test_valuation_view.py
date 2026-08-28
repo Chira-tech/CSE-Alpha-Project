@@ -28,6 +28,7 @@ from app.domain.valuation_view import (
     gordon_growth_ddm_for,
     hard_book_for,
     justified_price_to_book_for,
+    relative_valuation_for,
     residual_income_for,
     valuation_summary_for,
     wacc_for,
@@ -51,7 +52,10 @@ AS_OF = dt.date(2022, 6, 1)
 
 
 def _fake_ke(ke: Decimal | None, rf: Decimal | None = Decimal("0.12")):
-    def _fn(db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None):
+    def _fn(
+        db, ticker, as_of=None, *,
+        regime=None, universe_liquidity_ratios=None, universe_liquidity_percentiles=None,
+    ):
         return CostOfEquityResult(
             ke=ke, risk_free_rate=rf, beta=Decimal("1.0"), erp_effective=Decimal("0.07"),
             beta_times_erp=Decimal("0.07"), size_premium=None, illiquidity_premium=None,
@@ -924,3 +928,114 @@ class TestValuationSummaryFor:
         assert summary.price_ladder is None
         assert "TASK 0.1" in summary.note
         assert "share_count_reconciles" in summary.note
+
+
+def _seed_relative_valuation_fundamentals(db, ticker="COMB.N0000"):
+    """total_equity=1000, net_income=200, revenue=2000, all REPORTED — no
+    unconfirmed collision line, unlike `_seed_confirmed_fundamentals`
+    (which deliberately seeds `revenue` AI-assisted for a DIFFERENT
+    test's purposes). ROE=0.20, net_margin=0.10, EPS=2 and sales/share=20
+    once 100 shares are also seeded."""
+    db.add_all(
+        Fundamental(
+            ticker=ticker, period_end=PERIOD_END, period_type="annual",
+            first_available_date=FIRST_AVAILABLE, version=1, statement_line=line,
+            value=value, provenance_tier=ProvenanceTier.REPORTED,
+        )
+        for line, value in {
+            "total_equity": Decimal(1000), "net_income": Decimal(200), "revenue": Decimal(2000),
+        }.items()
+    )
+    db.commit()
+
+
+class TestRelativeValuationFor:
+    def test_hand_worked_justified_pe_and_ps(self, db_session, monkeypatch):
+        _seed_security(db_session)
+        _seed_relative_valuation_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        _seed_confirmed_dividend(db_session, cash_amount=Decimal("1.00"))  # D0 = 1.00
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = relative_valuation_for(db_session, "COMB.N0000", current_price=Decimal(8), as_of=AS_OF)
+
+        assert view.eps == Decimal(2)  # 200/100
+        assert view.sales_per_share == Decimal(20)  # 2000/100
+        assert view.net_margin == Decimal("0.1000")  # 200/2000
+        # payout = D0/EPS = 1.00/2 = 0.5
+        assert view.payout_ratio == Decimal("0.5")
+        # justified P/E = payout*(1+g)/(Ke-g) = 0.5*1.05/0.10 = 5.25
+        assert abs(view.justified_pe.value - Decimal("5.25")) < Decimal("0.0001")
+        # fair value = 5.25 * EPS(2) = 10.5
+        assert abs(view.fair_value_pe - Decimal("10.5")) < Decimal("0.0001")
+        # justified P/S = net_margin*payout*(1+g)/(Ke-g) = 0.10*0.5*1.05/0.10 = 0.525
+        assert abs(view.justified_ps.value - Decimal("0.525")) < Decimal("0.0001")
+        # fair value = 0.525 * sales/share(20) = 10.5
+        assert abs(view.fair_value_ps - Decimal("10.5")) < Decimal("0.0001")
+
+        assert view.trading.price_to_earnings == Decimal(4)  # 8/2
+        assert view.trading.price_to_book == Decimal("0.8")  # 8/10
+        assert view.trading.price_to_sales == Decimal("0.4")  # 8/20
+        assert view.trading.ev_to_ebit is None  # cash isn't extracted anywhere — no live EV
+
+        assert view.pe_vs_trading.read_as_cheap is True  # 4 < 5.25
+        assert view.ps_vs_trading.read_as_cheap is True  # 0.4 < 0.525
+
+        # EV/EBIT is real code, deliberately not invoked with a fabricated ROIC.
+        assert any("justified EV/EBIT not computed" in w for w in view.warnings)
+
+    def test_no_confirmed_dividend_gives_no_payout_ratio_and_no_justified_multiples(
+        self, db_session, monkeypatch
+    ):
+        _seed_security(db_session)
+        _seed_relative_valuation_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = relative_valuation_for(db_session, "COMB.N0000", current_price=Decimal(8), as_of=AS_OF)
+
+        assert view.payout_ratio is None
+        assert view.justified_pe is None
+        assert view.justified_ps is None
+        assert view.fair_value_pe is None
+        assert view.fair_value_ps is None
+        assert any("payout_ratio not available" in w for w in view.warnings)
+        # Trading multiples are still real and independent of payout_ratio.
+        assert view.trading.price_to_earnings == Decimal(4)
+
+    def test_unconfirmed_dividend_does_not_feed_payout_ratio(self, db_session, monkeypatch):
+        """§8/§9's gate, applied to relative valuation the same way `gordon_
+        growth_ddm_for`'s own test suite already checks for the DDM."""
+        _seed_security(db_session)
+        _seed_relative_valuation_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        _seed_unconfirmed_dividend(db_session)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = relative_valuation_for(db_session, "COMB.N0000", current_price=Decimal(8), as_of=AS_OF)
+        assert view.payout_ratio is None
+
+
+class TestValuationSummaryForRelativeAnchors:
+    def test_justified_pe_and_ps_join_the_relative_triangulation_bucket(self, db_session, monkeypatch):
+        """The whole point of wiring these in: not just that `relative_
+        valuation_for` computes a number in isolation, but that
+        `valuation_summary_for` actually feeds it into triangulation
+        alongside justified P/B — averaged into ONE 'relative' bucket
+        (`app.domain.triangulation.triangulate`'s own by-category
+        averaging), not silently dropped."""
+        _seed_security(db_session)
+        _seed_relative_valuation_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        _seed_confirmed_dividend(db_session, cash_amount=Decimal("1.00"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        summary = valuation_summary_for(
+            db_session, "COMB.N0000", archetype="bank", current_price=Decimal(8), as_of=AS_OF
+        )
+
+        assert summary.relative_valuation.fair_value_pe is not None
+        assert summary.relative_valuation.fair_value_ps is not None
+        assert "relative" in summary.triangulation.category_averages
+        assert "Justified P/E" in summary.note
+        assert "Justified P/S" in summary.note

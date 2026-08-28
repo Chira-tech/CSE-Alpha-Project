@@ -6,6 +6,9 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 from app.models.securities import Security
@@ -40,6 +43,38 @@ def _seed_ai_assisted(db, **overrides) -> Fundamental:
     db.commit()
     db.refresh(row)
     return row
+
+
+# --- (ticker, period_end, period_type, statement_line, version) uniqueness ---
+# Migration 0019: the database-level backstop behind every ingestion path's
+# own application-level idempotency check (`_already_ingested`,
+# `_already_ingested_by_source`) — closes a real, narrow concurrent-run race
+# (two ingestion processes hitting the exact same filing at the exact same
+# moment could both pass their own check before either commits).
+
+
+def test_duplicate_ticker_period_type_line_version_is_rejected_at_the_db_level(db_session):
+    """The real invariant this migration backs: every legitimate code path
+    already avoids producing this on its own (see migration 0019's own
+    docstring), so this test exercises the database-level backstop
+    directly — a second row with the SAME 5-tuple, not routed through any
+    application code that would normally prevent it, must still be
+    refused by the schema itself."""
+    _seed_security(db_session)
+    _seed_ai_assisted(db_session, statement_line="net_income", version=1)
+    with pytest.raises(IntegrityError):
+        _seed_ai_assisted(db_session, statement_line="net_income", version=1)
+
+
+def test_same_period_different_version_is_allowed(db_session):
+    """The constraint's own point: a GENUINE second filing for the same
+    period (a restatement, or an independently-sourced corroborating
+    reprint) always gets a different `version` from `_next_version`, and
+    must remain completely unaffected by this constraint."""
+    _seed_security(db_session)
+    row1 = _seed_ai_assisted(db_session, statement_line="net_income", version=1)
+    row2 = _seed_ai_assisted(db_session, statement_line="net_income", version=2)
+    assert row1.id != row2.id
 
 
 def test_list_defaults_to_pending_ai_assisted_only(db_session, client):
@@ -201,3 +236,153 @@ def test_confirm_batch_reports_bad_ids_without_failing_the_good_ones(db_session,
     assert body["confirmed"] == [good.id]
     failed_ids = {f["id"] for f in body["failed"]}
     assert failed_ids == {already_confirmed.id, 999999}
+
+
+# --- R1 T2.5: corroboration-gated bulk confirm ----------------------------
+# Built directly in response to OI-1 (docs/audits/R1_OPEN_ISSUES.md): a
+# careless bulk-confirm pass with no corroboration check promoted 396
+# wrong figures to REPORTED tier. This is the safe replacement.
+
+
+def test_corroborated_flag_true_when_an_independent_reported_row_matches(db_session, client):
+    _seed_security(db_session)
+    pending = _seed_ai_assisted(
+        db_session, statement_line="net_income", value=Decimal("22889584"),
+        source_url="https://cdn.cse.lk/original.pdf",
+    )
+    # A DIFFERENT filing (e.g. next year's comparative column) already
+    # REPORTED the exact same figure — genuine independent corroboration.
+    # A real ingestion of a second, distinct source_url for this same
+    # period always gets version=2 from `_next_version` — matched here so
+    # this fixture reflects what real data actually looks like, not just
+    # what the corroboration query itself checks (it doesn't key on
+    # version at all — see `_corroborated_ids`'s own docstring — but the
+    # unique constraint on (ticker, period_end, period_type,
+    # statement_line, version) does, migration 0019).
+    _seed_ai_assisted(
+        db_session, statement_line="net_income", value=Decimal("22889584"),
+        source_url="https://cdn.cse.lk/later_filing.pdf", version=2,
+        provenance_tier=ProvenanceTier.REPORTED,
+        confirmed_by="analyst", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    body = client.get("/fundamentals").json()
+    row = next(r for r in body["items"] if r["id"] == pending.id)
+    assert row["corroborated"] is True
+
+
+def test_corroborated_flag_false_with_no_independent_match(db_session, client):
+    _seed_security(db_session)
+    pending = _seed_ai_assisted(db_session, statement_line="net_income", value=Decimal("9"))
+
+    body = client.get("/fundamentals").json()
+    row = next(r for r in body["items"] if r["id"] == pending.id)
+    assert row["corroborated"] is False
+
+
+def test_corroborated_flag_false_when_only_match_is_the_same_source_url(db_session, client):
+    """Same source_url twice is not independent corroboration — it's the
+    same document counted twice. `version=2` on the second row only to
+    satisfy the (ticker, period_end, period_type, statement_line,
+    version) uniqueness constraint (migration 0019) so this fixture can
+    exist at all — same source_url, different version isn't a real shape
+    ordinary ingestion produces (it would have skipped re-ingesting an
+    identical PDF outright), this is deliberately a synthetic case
+    probing the API's own defensive same-source_url check specifically."""
+    _seed_security(db_session)
+    pending = _seed_ai_assisted(
+        db_session, statement_line="net_income", value=Decimal("9"),
+        source_url="https://cdn.cse.lk/same.pdf",
+    )
+    _seed_ai_assisted(
+        db_session, statement_line="net_income", value=Decimal("9"),
+        source_url="https://cdn.cse.lk/same.pdf", version=2,
+        provenance_tier=ProvenanceTier.REPORTED,
+        confirmed_by="analyst", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    body = client.get("/fundamentals").json()
+    row = next(r for r in body["items"] if r["id"] == pending.id)
+    assert row["corroborated"] is False
+
+
+def test_confirm_batch_corroborated_promotes_only_genuinely_corroborated_rows(db_session, client):
+    _seed_security(db_session)
+    corroborated_row = _seed_ai_assisted(
+        db_session, statement_line="revenue", value=Decimal("261589819"),
+        source_url="https://cdn.cse.lk/a.pdf",
+    )
+    _seed_ai_assisted(
+        db_session, statement_line="revenue", value=Decimal("261589819"),
+        source_url="https://cdn.cse.lk/b.pdf", version=2,
+        provenance_tier=ProvenanceTier.REPORTED,
+        confirmed_by="analyst", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+    uncorroborated_row = _seed_ai_assisted(db_session, statement_line="net_income", value=Decimal("9"))
+
+    response = client.post(
+        "/fundamentals/confirm-batch-corroborated",
+        json={"actor": "analyst", "ids": [corroborated_row.id, uncorroborated_row.id]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["confirmed"] == [corroborated_row.id]
+    assert len(body["failed"]) == 1
+    assert body["failed"][0]["id"] == uncorroborated_row.id
+    assert "not corroborated" in body["failed"][0]["reason"]
+
+    db_session.refresh(corroborated_row)
+    assert corroborated_row.provenance_tier == ProvenanceTier.REPORTED
+    assert corroborated_row.confirmed_by == "analyst (corroborated bulk confirm)"
+    # The distinct marker makes this action searchable/auditable separately
+    # from a genuine per-row human review, per this endpoint's own docstring.
+
+    db_session.refresh(uncorroborated_row)
+    assert uncorroborated_row.provenance_tier == ProvenanceTier.AI_ASSISTED
+    assert uncorroborated_row.confirmed_by is None
+
+
+def test_confirm_batch_corroborated_rejects_a_client_claiming_false_corroboration(db_session, client):
+    """The corroboration check is re-verified server-side on every id in
+    THIS endpoint — a client cannot bypass it by simply calling
+    confirm-batch-corroborated on an uncorroborated row."""
+    _seed_security(db_session)
+    row = _seed_ai_assisted(db_session, statement_line="net_income", value=Decimal("9"))
+
+    response = client.post(
+        "/fundamentals/confirm-batch-corroborated",
+        json={"actor": "sneaky", "ids": [row.id]},
+    )
+    body = response.json()
+    assert body["confirmed"] == []
+    assert body["failed"][0]["id"] == row.id
+
+    db_session.refresh(row)
+    assert row.provenance_tier == ProvenanceTier.AI_ASSISTED
+
+
+def test_corroborated_flag_true_across_different_period_types_for_the_same_balance_sheet_date(
+    db_session, client,
+):
+    """Regression for a real bug found live (23 Aug 2026, ABAN.N0000's
+    real total_assets for 2019-03-31): the first version of this feature
+    required `period_type` to match too, which meant it never fired for
+    the most common real corroboration shape — the same point-in-time
+    balance-sheet figure reported once as that year's own annual filing
+    (period_type='annual') and again as a later interim report's
+    comparative prior-year-end column (period_type='quarterly')."""
+    _seed_security(db_session)
+    pending = _seed_ai_assisted(
+        db_session, statement_line="total_assets", value=Decimal("2794523371"),
+        period_type="annual", source_url="https://cdn.cse.lk/annual_2019.pdf",
+    )
+    _seed_ai_assisted(
+        db_session, statement_line="total_assets", value=Decimal("2794523371"),
+        period_type="quarterly", source_url="https://cdn.cse.lk/interim_2021.pdf",
+        provenance_tier=ProvenanceTier.REPORTED,
+        confirmed_by="analyst", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    body = client.get("/fundamentals").json()
+    row = next(r for r in body["items"] if r["id"] == pending.id)
+    assert row["corroborated"] is True
