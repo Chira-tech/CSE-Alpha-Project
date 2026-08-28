@@ -2,7 +2,7 @@ import type { Evidence } from "./EvidencePanel";
 import { ProvenanceChip } from "./ProvenanceChip";
 import { EmptyState } from "./states";
 import { UNAVAILABLE } from "../format";
-import type { Ratio, RatioTrend, UncomputableRatio } from "../types";
+import type { Ratio, RatioPercentile, RatioTrend, UncomputableRatio } from "../types";
 
 /**
  * §12's ratio set, with §5.1's display rules: percentages to one decimal,
@@ -20,7 +20,7 @@ import type { Ratio, RatioTrend, UncomputableRatio } from "../types";
  * honest state of the data, displayed rather than hidden, and it fills
  * in on its own as more periods accumulate.
  */
-function trendLabel(trend: RatioTrend | undefined): string {
+export function trendLabel(trend: RatioTrend | undefined): string {
   if (!trend || trend.direction === "insufficient_history") {
     const n = trend?.periods_used ?? 0;
     return n <= 1 ? `${n} period` : `${n} periods — too few for a trend`;
@@ -30,20 +30,50 @@ function trendLabel(trend: RatioTrend | undefined): string {
   return `${arrow} ${word}${trend.significant ? "" : " (not significant)"}`;
 }
 
+/** §5.1-style: 1st/21st/82nd/100th, never a bare "82". */
+function ordinal(n: number): string {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+/** §12's sector-relative percentile — see `RatioPercentile`'s own
+ * doc-comment for the ranking convention. `null` percentile always
+ * carries a named reason (usually too few sector peers), shown instead
+ * of a blank cell. */
+export function percentileLabel(p: RatioPercentile | undefined): string {
+  if (!p) return UNAVAILABLE;
+  if (p.percentile === null) return p.reason ?? UNAVAILABLE;
+  const pct = Math.round(Number(p.percentile));
+  return `${ordinal(pct)} of ${p.group_label}${p.used_wider_sector ? " (wider sector)" : ""}`;
+}
+
 export function RatioTable({
   ratios,
   notComputable,
   periodEnd,
   trends = [],
+  percentiles = [],
   onExplain,
 }: {
   ratios: Ratio[];
   notComputable: UncomputableRatio[];
   periodEnd: string | null;
   trends?: RatioTrend[];
+  percentiles?: RatioPercentile[];
   onExplain: (evidence: Evidence) => void;
 }) {
   const trendByKey = new Map(trends.map((t) => [t.ratio_key, t]));
+  const percentileByKey = new Map(percentiles.map((p) => [p.ratio_key, p]));
   const computable = ratios.filter((r) => r.value !== null);
   const blocked = ratios.filter((r) => r.value === null);
 
@@ -72,42 +102,49 @@ export function RatioTable({
               <tr>
                 <th scope="col">Ratio</th>
                 <th scope="col" className="right">Value</th>
+                <th scope="col">Sector percentile (§12)</th>
                 <th scope="col">Trend (§13)</th>
                 <th scope="col">Provenance</th>
               </tr>
             </thead>
             <tbody>
-              {computable.map((r) => (
-                <tr
-                  key={r.key}
-                  className="selectable"
-                  tabIndex={0}
-                  onClick={() => onExplain(toEvidence(r, periodEnd))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onExplain(toEvidence(r, periodEnd));
-                    }
-                  }}
-                >
-                  <th
-                    scope="row"
-                    style={{
-                      background: "none",
-                      textTransform: "none",
-                      letterSpacing: 0,
-                      fontSize: 13,
-                      fontWeight: 500,
-                      color: "var(--ink-1)",
+              {computable.map((r) => {
+                const percentile = percentileByKey.get(r.key);
+                return (
+                  <tr
+                    key={r.key}
+                    className="selectable"
+                    tabIndex={0}
+                    onClick={() => onExplain(toEvidence(r, periodEnd, percentile))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onExplain(toEvidence(r, periodEnd, percentile));
+                      }
                     }}
                   >
-                    {r.label}
-                  </th>
-                  <td className="right num">{formatRatio(r)}</td>
-                  <td className="t-caption">{trendLabel(trendByKey.get(r.key))}</td>
-                  <td>{r.provenance && <ProvenanceChip tier={r.provenance} />}</td>
-                </tr>
-              ))}
+                    <th
+                      scope="row"
+                      style={{
+                        background: "none",
+                        textTransform: "none",
+                        letterSpacing: 0,
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: "var(--ink-1)",
+                      }}
+                    >
+                      {r.label}
+                    </th>
+                    <td className="right num">{formatRatio(r)}</td>
+                    <td className={percentile?.percentile === null ? "t-caption muted" : "t-caption"}>
+                      {percentileLabel(percentile)}
+                    </td>
+                    <td className="t-caption">{trendLabel(trendByKey.get(r.key))}</td>
+                    <td>{r.provenance && <ProvenanceChip tier={r.provenance} />}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -174,7 +211,7 @@ export function formatRatio(r: Ratio): string {
   return n.toFixed(2);
 }
 
-function toEvidence(r: Ratio, periodEnd: string): Evidence {
+export function toEvidence(r: Ratio, periodEnd: string, percentile: RatioPercentile | undefined): Evidence {
   return {
     title: r.label,
     whatItIs: `${r.label}, computed for the financial period ending ${periodEnd}.`,
@@ -187,10 +224,22 @@ function toEvidence(r: Ratio, periodEnd: string): Evidence {
     inputs: r.inputs_used.map((name) => ({ label: name, value: "see Financial statement lines" })),
     howItCompares: (
       <p style={{ margin: 0 }}>
-        Sector-relative percentiles and own-history trend arrive with the rest of the fundamental
-        engine (§12–13). Both need several periods of history and a sector mapping, neither of which
-        exists yet — so this figure currently stands alone, which is much less useful than it will
-        be.
+        {percentile && percentile.percentile !== null ? (
+          <>
+            {ordinal(Math.round(Number(percentile.percentile)))} percentile within{" "}
+            {percentile.group_label}
+            {percentile.used_wider_sector
+              ? " (the narrower CSE industry group had too few peers to rank against, so this falls back to the wider GICS sector)"
+              : ""}
+            , {percentile.group_size} peer{percentile.group_size === 1 ? "" : "s"} with a computable
+            value for this ratio today (§12). Own-history trend is above, in the Trend column.
+          </>
+        ) : (
+          <>
+            {percentile?.reason ??
+              "No sector-relative percentile yet for this ratio — see the Sector percentile column."}
+          </>
+        )}
       </p>
     ),
     source: { label: `Filed financial statements, period ending ${periodEnd}` },

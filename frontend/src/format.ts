@@ -79,6 +79,29 @@ export function directionGlyph(direction: Direction): string {
 }
 
 /**
+ * R1 brief §5.0's `TrendChip` windows (15/30/45(/60) — trading SESSIONS,
+ * not calendar days: this project's own price/index history is recorded
+ * once per real trading session, and a session-count window is what
+ * that data actually supports without inventing a calendar-day
+ * interpolation between sessions. `points` must be chronological
+ * (oldest first). A window longer than the real history available
+ * returns `null` for that window specifically — never a fabricated
+ * change computed from less history than the window claims.
+ */
+export function trendWindowPct(
+  points: { value: string }[],
+  sessionsAgo: number,
+): number | null {
+  if (points.length === 0) return null;
+  const idx = points.length - 1 - sessionsAgo;
+  if (idx < 0) return null;
+  const then = Number(points[idx].value);
+  const now = Number(points[points.length - 1].value);
+  if (!Number.isFinite(then) || !Number.isFinite(now) || then === 0) return null;
+  return ((now - then) / then) * 100;
+}
+
+/**
  * "2m ago" / "3d ago" — the sidebar DATA section's own freshness dots
  * (P1.1) need this compactly, unlike every other screen's full
  * `toLocaleString()` timestamp. Coarsens deliberately: once something is

@@ -19,9 +19,12 @@ const ACTIONS: DecisionAction[] = ["buy", "watchlist", "pass", "partial", "sell"
  * What's real and frozen at decision time: the blended fair value, the
  * price ladder (buy-below / fair value / trim-above), the margin-of-
  * safety breakdown, and the live price. What's honestly absent on every
- * row today: the §38 composite score, §36 Carhart certification, §37
- * timing — named per-field in `app.models.decisions`'s own docstring on
- * the backend, not silently omitted from the schema.
+ * row today: the §38 composite score, §36 Carhart certification and §37
+ * timing are all real and computable now (`GET /composite-score/
+ * {ticker}`), but this capture step doesn't read them yet, so the
+ * columns their own schema already has stay empty on every decision —
+ * named per-field in `app.models.decisions`'s own docstring on the
+ * backend, not silently omitted from the schema.
  */
 export function JournalScreen() {
   const [decisions, setDecisions] = useState<Decision[] | null>(null);
@@ -48,8 +51,10 @@ export function JournalScreen() {
           Every decision below freezes this system's own real fair value, price ladder and margin-of-
           safety breakdown at the moment you record it — never edited afterwards. Still honestly
           absent from every row: the §38 composite score, §36 Carhart certification and §37 timing
-          battery, none of which exist yet. Recording now, even with those gaps, is the whole point
-          (§45): a decision without a recorded rationale is a data point you can never recover later.
+          battery — all three are real and computable now (open any company file), this capture step
+          just doesn't read them into a decision yet. Recording now, even with that gap, is the whole
+          point (§45): a decision without a recorded rationale is a data point you can never recover
+          later.
         </p>
       </div>
 

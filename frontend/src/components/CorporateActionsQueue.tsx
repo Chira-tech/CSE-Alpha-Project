@@ -182,9 +182,8 @@ export function CorporateActionsQueue({ reviewerName }: { reviewerName: string }
     return (
       <EmptyState title="Nothing pending.">
         <p style={{ margin: 0 }}>
-          Every scraped corporate action has been reviewed. Run{" "}
-          <span className="code-hint">python -m app.cli ingest-corporate-actions</span> to scan for
-          new announcements.
+          Every scraped corporate action has been reviewed. New announcements are scanned
+          automatically every trading day — check back after the next scheduled scan.
         </p>
       </EmptyState>
     );

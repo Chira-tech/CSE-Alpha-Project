@@ -1,5 +1,51 @@
 import { Delta } from "./Delta";
+import { PlainExplainer } from "./PlainExplainer";
 import type { Spread } from "../types";
+
+// R1 T4.1.3 — three authored states, never a sentence generated from the
+// number at runtime (§5.0's own copy rule). ±0.25pp is a real, disclosed
+// "roughly level" band, not zero exactly — a spread of, say, +0.03pp
+// is not meaningfully different from dead level and calling it "stocks
+// pay more" would overstate a rounding-sized gap as a real edge.
+const LEVEL_BAND_PP = 0.25;
+
+function spreadExplainer(spreadPp: number, earningsYieldPct: string, tbillPct: string) {
+  if (spreadPp > LEVEL_BAND_PP) {
+    return {
+      headline: "Stocks are paying more than bonds right now.",
+      body: (
+        <>
+          Equity earnings yield {earningsYieldPct} vs 364-day T-bill {tbillPct}. When earnings
+          yields beat risk-free rates, equities are being priced with a real margin over the safe
+          alternative — historically a supportive backdrop, though this alone is not a signal to
+          act on.
+        </>
+      ),
+    };
+  }
+  if (spreadPp < -LEVEL_BAND_PP) {
+    return {
+      headline: "Bonds are paying more than stocks right now.",
+      body: (
+        <>
+          Equity earnings yield {earningsYieldPct} vs 364-day T-bill {tbillPct}. When risk-free
+          rates beat earnings yields, investors have less reason to pay up for equities, so
+          valuations tend to compress. Historically this favours patience over new positions.
+        </>
+      ),
+    };
+  }
+  return {
+    headline: "Stocks and bonds are paying about the same right now.",
+    body: (
+      <>
+        Equity earnings yield {earningsYieldPct} vs 364-day T-bill {tbillPct}. Neither side offers
+        a clear valuation edge over the other at this level — the margin equities normally need
+        over the risk-free alternative has narrowed.
+      </>
+    ),
+  };
+}
 
 /**
  * Master Spec §29's hero: the equity earnings yield minus the 364-day
@@ -54,11 +100,7 @@ export function SpreadHero({ spread }: { spread: Spread }) {
         {spreadPp.toFixed(2)}pp
       </div>
 
-      <p className="prose t-body" style={{ marginTop: "var(--s2)" }}>
-        {spreadPp < 0
-          ? "Equities are yielding less than risk-free Treasury bills. §29's framing: CSE equity is priced as a substitute for T-bills, so a negative spread is the market paying you less than the alternative."
-          : "Equities are yielding more than risk-free Treasury bills."}
-      </p>
+      <PlainExplainer {...spreadExplainer(spreadPp, pct(spread.earnings_yield), pct(spread.tbill_yield))} />
 
       <table className="data-table" style={{ marginTop: "var(--s4)" }}>
         <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3) 0 0" }}>
@@ -85,11 +127,10 @@ export function SpreadHero({ spread }: { spread: Spread }) {
 
       {isManual && (
         <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
-          This T-bill yield was entered by hand rather than scraped. The CBSL scraper now collects
-          the primary-market auction yield automatically, so a manual figure here means the
-          scraper has not run for this date — prefer <span className="code-hint">python -m app.cli
-          cbsl</span>. It is stored in the same point-in-time series as everything else and carries
-          its source, so nothing here pretends to be live data.
+          This T-bill yield was entered by hand rather than scraped. The CBSL scraper collects the
+          primary-market auction yield automatically each day, so a manual figure here means that
+          scheduled run hasn't reached this date yet. It is stored in the same point-in-time series
+          as everything else and carries its source, so nothing here pretends to be live data.
         </p>
       )}
 

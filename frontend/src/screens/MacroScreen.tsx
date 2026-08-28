@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiRequestError, getIndexHistory, getMarketOverview, getSectorSensitivity, getSpread } from "../api";
 import { Delta } from "../components/Delta";
 import { IndexHistoryChart } from "../components/IndexHistoryChart";
+import { SectorDrilldownPanel } from "../components/SectorDrilldownPanel";
 import { SectorSensitivityMatrix } from "../components/SectorSensitivityMatrix";
 import { SpreadHero } from "../components/SpreadHero";
 import { ErrorState, PartialNotice, SkeletonCard, SkeletonTable } from "../components/states";
@@ -26,13 +27,15 @@ import type { IndexHistory, MarketOverview, SectorSensitivity, Spread } from "..
  * panels, and the national project register. Named here rather than
  * silently omitted.
  */
-export function MacroScreen() {
+export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
   const [market, setMarket] = useState<MarketOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [index, setIndex] = useState<IndexHistory | null>(null);
   const [spread, setSpread] = useState<Spread | null>(null);
   const [sensitivity, setSensitivity] = useState<SectorSensitivity | null>(null);
   const [sensitivityError, setSensitivityError] = useState<string | null>(null);
+  // R1 T4.6.4 — which sector's drill-down panel is open, if any.
+  const [drilldownSector, setDrilldownSector] = useState<string | null>(null);
 
   useEffect(() => {
     getMarketOverview()
@@ -90,11 +93,20 @@ export function MacroScreen() {
             whatHappensNext={`Underlying error: ${sensitivityError}`}
           />
         ) : sensitivity ? (
-          <SectorSensitivityMatrix data={sensitivity} />
+          <SectorSensitivityMatrix data={sensitivity} onSelectSector={setDrilldownSector} />
         ) : (
           <SkeletonTable rows={10} columns={5} />
         )}
       </section>
+
+      {drilldownSector && (
+        <SectorDrilldownPanel
+          sector={drilldownSector}
+          sensitivityRow={sensitivity?.rows.find((r) => r.sector === drilldownSector)}
+          onClose={() => setDrilldownSector(null)}
+          onOpenCompany={onOpen}
+        />
+      )}
 
       {index && index.points.length > 1 && (
         <section aria-labelledby="aspi-history-heading" className="stack-tight">
@@ -128,7 +140,9 @@ export function MacroScreen() {
             <div className="table-wrap table-scroll">
               <table className="data-table">
                 <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
-                  S&amp;P/CSE industry-group indices, live from cse.lk.
+                  S&amp;P/CSE industry-group indices, live from cse.lk. Click a sector name for its
+                  real market-share treemap and macro sensitivities (same drill-down as the matrix
+                  above).
                 </caption>
                 <thead>
                   <tr>
@@ -142,7 +156,9 @@ export function MacroScreen() {
                   {sectors.map((s) => (
                     <tr key={s.name}>
                       <th scope="row" style={{ fontWeight: 500, background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, color: "var(--ink-1)" }}>
-                        {s.name}
+                        <button className="btn-link" onClick={() => setDrilldownSector(s.name)}>
+                          {s.name}
+                        </button>
                       </th>
                       <td className="right num">{formatIndexValue(s.index_value)}</td>
                       <td className="right">

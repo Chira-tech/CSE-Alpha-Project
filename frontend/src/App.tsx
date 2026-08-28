@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { RunCapture } from "./components/RunCapture";
 import { useReviewerName } from "./hooks/useReviewerName";
 import { NAV_ITEMS, REVIEW_SCREEN, type ScreenId } from "./nav";
@@ -12,6 +12,17 @@ import { OpportunitiesScreen } from "./screens/OpportunitiesScreen";
 import { PortfolioScreen } from "./screens/PortfolioScreen";
 import { ReviewScreen } from "./screens/ReviewScreen";
 import { TodayScreen } from "./screens/TodayScreen";
+
+// M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md
+// §1.3's allowlisted frontend edit — see nav.ts's own comment for why
+// this touches App.tsx too, one line beyond the brief's literal
+// two-file list: `NAV_ITEMS` only decides what's IN THE RAIL; without a
+// matching `case` here, clicking "Playbooks" would render `NotBuiltScreen`
+// instead of the real (if still Task-1-minimal) lazy route below. Lazy
+// so the M5 feature's own JS is never fetched at all unless this route
+// is actually visited — with the flag off, nothing ever navigates here,
+// so this import is simply never triggered.
+const PlaybooksRoute = lazy(() => import("./features/playbooks"));
 
 export function App() {
   const [screen, setScreen] = useState<ScreenId>("today");
@@ -48,25 +59,38 @@ export function App() {
   const advanced = NAV_ITEMS.filter((i) => i.group === "advanced");
 
   function renderScreen() {
+    // A ticker drilled into from ANY screen (Companies, Portfolio,
+    // Opportunities) opens the same company file — `screen` itself never
+    // changes, so "back" returns to whichever screen the click came from.
+    if (openTicker) {
+      const backLabel =
+        screen === "portfolio"
+          ? "Portfolio"
+          : screen === "opportunities"
+            ? "Opportunities"
+            : screen === "macro"
+              ? "Macro"
+              : "All companies";
+      return (
+        <CompanyScreen
+          ticker={openTicker}
+          onBack={() => setOpenTicker(null)}
+          onOpen={setOpenTicker}
+          backLabel={backLabel}
+        />
+      );
+    }
     switch (screen) {
       case "today":
         return <TodayScreen onOpenScreen={(id) => go(id)} />;
       case "companies":
-        return openTicker ? (
-          <CompanyScreen
-            ticker={openTicker}
-            onBack={() => setOpenTicker(null)}
-            onOpen={setOpenTicker}
-          />
-        ) : (
-          <CompaniesScreen onOpen={setOpenTicker} />
-        );
+        return <CompaniesScreen onOpen={setOpenTicker} />;
       case "macro":
-        return <MacroScreen />;
+        return <MacroScreen onOpen={setOpenTicker} />;
       case "portfolio":
-        return <PortfolioScreen />;
+        return <PortfolioScreen onOpen={setOpenTicker} />;
       case "opportunities":
-        return <OpportunitiesScreen />;
+        return <OpportunitiesScreen onOpen={setOpenTicker} />;
       case "journal":
         return <JournalScreen />;
       case "data-health":
@@ -78,6 +102,12 @@ export function App() {
             onChangeReviewerName={setName}
             onBack={() => go("data-health")}
           />
+        );
+      case "playbooks":
+        return (
+          <Suspense fallback={<div className="route stack">Loading…</div>}>
+            <PlaybooksRoute />
+          </Suspense>
         );
       default: {
         const item = NAV_ITEMS.find((i) => i.id === screen);

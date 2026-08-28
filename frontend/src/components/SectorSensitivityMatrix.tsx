@@ -17,9 +17,28 @@ import type { SectorSensitivity, SectorSensitivityRow, SensitivityEstimate } fro
  * relationship" and never a fabricated placeholder number — exactly the
  * anti-pattern §17 forbids.
  */
-export function SectorSensitivityMatrix({ data }: { data: SectorSensitivity }) {
+export function SectorSensitivityMatrix({
+  data,
+  onSelectSector,
+}: {
+  data: SectorSensitivity;
+  /** R1 T4.6.4 — clicking a sector name opens its drill-down panel
+   * (market-share treemap, ranked constituents, this row's own
+   * sensitivities carried through). Optional so this component still
+   * works standalone wherever it's used without a drill-down host. */
+  onSelectSector?: (sector: string) => void;
+}) {
   const rows = [...data.rows].sort((a, b) => b.constituent_count - a.constituent_count);
   const cellCount = rows.reduce((n, r) => n + r.estimates.length, 0);
+  // R1 T4.6.2 — "sequential muted scale... cell = sensitivity direction
+  // and magnitude." Normalised against the largest real |coefficient|
+  // anywhere in THIS matrix (not a fixed constant, which would misread
+  // as soon as the real distribution shifted) so shading is relative to
+  // what this system has actually estimated today.
+  const maxAbsCoeff = Math.max(
+    0,
+    ...rows.flatMap((r) => r.estimates.filter((e) => e.significant).map((e) => Math.abs(Number(e.coefficient)))),
+  );
 
   return (
     <div className="stack-tight">
@@ -59,7 +78,13 @@ export function SectorSensitivityMatrix({ data }: { data: SectorSensitivity }) {
           </thead>
           <tbody>
             {rows.map((row) => (
-              <SensitivityRow key={row.sector} row={row} shocks={data.shocks_used} />
+              <SensitivityRow
+                key={row.sector}
+                row={row}
+                shocks={data.shocks_used}
+                maxAbsCoeff={maxAbsCoeff}
+                onSelectSector={onSelectSector}
+              />
             ))}
           </tbody>
         </table>
@@ -93,44 +118,74 @@ export function SectorSensitivityMatrix({ data }: { data: SectorSensitivity }) {
   );
 }
 
-function SensitivityRow({ row, shocks }: { row: SectorSensitivityRow; shocks: string[] }) {
+function SensitivityRow({
+  row,
+  shocks,
+  maxAbsCoeff,
+  onSelectSector,
+}: {
+  row: SectorSensitivityRow;
+  shocks: string[];
+  maxAbsCoeff: number;
+  onSelectSector?: (sector: string) => void;
+}) {
   const byShock = new Map(row.estimates.map((e) => [e.shock_name, e]));
   return (
     <tr>
-      <th scope="row" style={rowHeadStyle}>{row.sector}</th>
+      <th scope="row" style={rowHeadStyle}>
+        {onSelectSector ? (
+          <button className="btn-link" onClick={() => onSelectSector(row.sector)}>
+            {row.sector}
+          </button>
+        ) : (
+          row.sector
+        )}
+      </th>
       <td className="right num">{row.constituent_count}</td>
       {shocks.map((shock) => (
-        <td key={shock} className="right">
-          <SensitivityCell estimate={byShock.get(shock)} />
+        <td key={shock} className="right" style={{ padding: 0 }}>
+          <SensitivityCell estimate={byShock.get(shock)} maxAbsCoeff={maxAbsCoeff} />
         </td>
       ))}
     </tr>
   );
 }
 
-function SensitivityCell({ estimate }: { estimate: SensitivityEstimate | undefined }) {
+/** R1 T4.6.2 — background shading is the "heat" in "heat map": a
+ * sequential MUTED scale (`--brand-100`..`--brand-400`, the same
+ * tokens `Treemap` uses), never a red-green diverging scale, and
+ * shading only applies to significant cells so a thin real history
+ * never masquerades as a strong relationship via colour alone. */
+function SensitivityCell({ estimate, maxAbsCoeff }: { estimate: SensitivityEstimate | undefined; maxAbsCoeff: number }) {
   if (!estimate) {
     return (
-      <span className="muted" title="Fewer than 20 real overlapping observations — not estimated">
-        —
-      </span>
+      <div style={{ padding: "var(--s2)" }}>
+        <span className="muted" title="Fewer than 20 real overlapping observations — not estimated">
+          —
+        </span>
+      </div>
     );
   }
   const coeff = Number(estimate.coefficient);
   const title = `p = ${Number(estimate.p_value).toFixed(3)}, R² = ${Number(estimate.r_squared).toFixed(3)}, n = ${estimate.observation_count}`;
   if (!estimate.significant) {
     return (
-      <span className="muted num" title={title}>
-        n.s.
-      </span>
+      <div style={{ padding: "var(--s2)" }}>
+        <span className="muted num" title={title}>
+          n.s.
+        </span>
+      </div>
     );
   }
+  const intensity = maxAbsCoeff > 0 ? Math.abs(coeff) / maxAbsCoeff : 0;
   const direction = estimate.direction_label === "positive" ? "up" : "down";
   return (
-    <span className={`delta delta-${direction} num`} title={title}>
-      <span aria-hidden="true">{direction === "up" ? "▲" : "▼"}</span> {coeff > 0 ? "+" : ""}
-      {coeff.toFixed(4)}
-    </span>
+    <div style={{ padding: "var(--s2)", background: `color-mix(in srgb, var(--brand-300) ${(intensity * 60).toFixed(0)}%, transparent)` }}>
+      <span className={`delta delta-${direction} num`} title={title}>
+        <span aria-hidden="true">{direction === "up" ? "▲" : "▼"}</span> {coeff > 0 ? "+" : ""}
+        {coeff.toFixed(4)}
+      </span>
+    </div>
   );
 }
 

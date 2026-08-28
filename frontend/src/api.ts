@@ -1,6 +1,7 @@
 import type {
   Spread,
   CompanyValuation,
+  CompositeScore,
   ConfirmBatchResult,
   CorporateAction,
   DataHealth,
@@ -13,12 +14,16 @@ import type {
   JobRun,
   JobsStatus,
   MarketOverview,
+  MonteCarlo,
   OpportunityRanking,
   PortfolioSnapshotDetail,
   PriceHistoryPage,
+  ScenarioSet,
+  SectorDrilldown,
   SectorSensitivity,
   SecurityDetail,
   SecurityListItem,
+  Tornado,
   ValuedPortfolio,
 } from "./types";
 
@@ -95,6 +100,32 @@ export function getValuation(ticker: string) {
   return request<CompanyValuation>(`/valuation/${encodeURIComponent(ticker)}`);
 }
 
+/** §23's Bear/Base/Bull set + sensitivity tornado — cheap enough to fetch
+ * alongside the rest of the fair-value page (a handful of DCF re-runs,
+ * not the 10,000-draw Monte Carlo below). */
+export function getScenarios(ticker: string) {
+  return request<ScenarioSet>(`/valuation/${encodeURIComponent(ticker)}/scenarios`);
+}
+
+export function getTornado(ticker: string) {
+  return request<Tornado>(`/valuation/${encodeURIComponent(ticker)}/tornado`);
+}
+
+/** §23's 10,000-draw Monte Carlo overlay — deliberately NOT fetched
+ * automatically alongside the rest of the fair-value page (10,000 real
+ * DCF re-runs); callers fetch this lazily, on demand. */
+export function getMonteCarlo(ticker: string) {
+  return request<MonteCarlo>(`/valuation/${encodeURIComponent(ticker)}/monte-carlo`);
+}
+
+/** §38's composite score — a real, honestly PARTIAL number (see
+ * `CompositeScore.is_partial`): 5 of 7 pillars are blended, Valuation
+ * and Growth are always shown as evidence only, per-ticker gaps in the
+ * rest are named on each pillar's own `reason`. */
+export function getCompositeScore(ticker: string) {
+  return request<CompositeScore>(`/composite-score/${encodeURIComponent(ticker)}`);
+}
+
 // --- Corporate actions --------------------------------------------------
 
 export function listCorporateActions(opts: { pendingOnly?: boolean; ticker?: string } = {}) {
@@ -165,6 +196,17 @@ export function confirmFundamentalsBatch(ids: number[], actor: string) {
   });
 }
 
+/** R1 T2.5: the safe bulk path — only promotes rows the server itself
+ * re-verifies as corroborated (an independently-sourced REPORTED row
+ * with the exact same value). Anything else in `ids` comes back in
+ * `failed`, never silently promoted. */
+export function confirmFundamentalsBatchCorroborated(ids: number[], actor: string) {
+  return request<ConfirmBatchResult>("/fundamentals/confirm-batch-corroborated", {
+    method: "POST",
+    body: JSON.stringify({ actor, ids }),
+  });
+}
+
 export function getIndexHistory() {
   return request<IndexHistory>("/market/index-history");
 }
@@ -175,6 +217,14 @@ export function getSpread() {
 
 export function getSectorSensitivity() {
   return request<SectorSensitivity>("/market/sector-sensitivity");
+}
+
+/** R1 T4.6.4. A real ~18s cost the first time it's called (reuses the
+ * whole-universe `opportunity_ranking_for` — see `app.domain.
+ * sector_drilldown_view`'s own docstring), paid on the user's own click
+ * into a sector, not on page load. */
+export function getSectorDrilldown(sector: string) {
+  return request<SectorDrilldown>(`/market/sector/${encodeURIComponent(sector)}`);
 }
 
 // --- Opportunities ------------------------------------------------------
@@ -254,6 +304,36 @@ export function cancelJob(runId: number) {
  */
 export function jobStreamUrl(runId: number): string {
   return `${BASE_URL}/jobs/${runId}/stream`;
+}
+
+/** R1 T3.1/T3.2: both export endpoints are real files, not JSON, so
+ * neither goes through `request()` above — same reason `uploadPortfolio`
+ * below doesn't. Filename comes from the server's own `Content-
+ * Disposition` header when present (it always is here) so the saved
+ * file's date matches when the export actually ran, not the click. */
+async function downloadFile(path: string, fallbackFilename: string): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${BASE_URL}${path}`);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // response body wasn't JSON — fall back to statusText
+    }
+    throw new ApiRequestError(detail, response.status);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { blob: await response.blob(), filename: match ? match[1] : fallbackFilename };
+}
+
+export function downloadWorkbook() {
+  return downloadFile("/export/workbook", "cse-alpha-workbook.xlsx");
+}
+
+export function downloadBackup() {
+  return downloadFile("/export/backup", "cse-alpha-backup.zip");
 }
 
 export async function uploadPortfolio(file: File): Promise<PortfolioSnapshotDetail> {

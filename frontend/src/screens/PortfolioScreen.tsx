@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiRequestError, getPortfolioHoldingsValued, uploadPortfolio } from "../api";
 import { Delta } from "../components/Delta";
+import { TrendChip } from "../components/TrendChip";
 import { EmptyState, ErrorState, SkeletonTable } from "../components/states";
 import { ZoneChip } from "../components/ZoneChip";
 import { directionOf, formatPrice, UNAVAILABLE } from "../format";
@@ -24,7 +25,7 @@ import type { ValuedPortfolio, ValuedPosition } from "../types";
  * overwrites a prior one), so re-uploading after a trade is exactly how
  * this screen is meant to stay current.
  */
-export function PortfolioScreen() {
+export function PortfolioScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
   const [data, setData] = useState<ValuedPortfolio | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -114,13 +115,13 @@ export function PortfolioScreen() {
           </p>
         </EmptyState>
       ) : (
-        <PortfolioBody data={data} />
+        <PortfolioBody data={data} onOpen={onOpen} />
       )}
     </div>
   );
 }
 
-function PortfolioBody({ data }: { data: ValuedPortfolio }) {
+function PortfolioBody({ data, onOpen }: { data: ValuedPortfolio; onOpen: (ticker: string) => void }) {
   const totalGain =
     data.total_live_market_value !== null
       ? Number(data.total_live_market_value) - Number(data.total_cost)
@@ -162,6 +163,19 @@ function PortfolioBody({ data }: { data: ValuedPortfolio }) {
           </div>
         </div>
 
+        {/* R1 T4.5.1 — three windows here (Today's own portfolio block gets
+            four); see `value_trend_pct`'s own docstring for the real,
+            disclosed assumption (today's holdings, past real prices). */}
+        <TrendChip
+          windows={["15d", "30d", "45d"].map((label) => ({
+            label,
+            pct:
+              data.value_trend_pct[label] !== null && data.value_trend_pct[label] !== undefined
+                ? Number(data.value_trend_pct[label])
+                : null,
+          }))}
+        />
+
         {data.positions_missing_a_live_price.length > 0 && (
           <div className="notice notice-caution" role="status">
             <h3>
@@ -198,12 +212,12 @@ function PortfolioBody({ data }: { data: ValuedPortfolio }) {
                 <th scope="col" className="right">Unrealised P&amp;L</th>
                 <th scope="col" className="right">Fair value</th>
                 <th scope="col">Zone</th>
-                <th scope="col" className="right">Buy below</th>
+                <th scope="col" className="right">Sell above</th>
               </tr>
             </thead>
             <tbody>
               {data.positions.map((p) => (
-                <PositionRow key={p.ticker} p={p} />
+                <PositionRow key={p.ticker} p={p} onOpen={onOpen} />
               ))}
             </tbody>
           </table>
@@ -213,14 +227,16 @@ function PortfolioBody({ data }: { data: ValuedPortfolio }) {
   );
 }
 
-function PositionRow({ p }: { p: ValuedPosition }) {
+function PositionRow({ p, onOpen }: { p: ValuedPosition; onOpen: (ticker: string) => void }) {
   const gain = p.live_unrealized_gain_loss !== null ? Number(p.live_unrealized_gain_loss) : null;
   const gainPct = gain !== null && Number(p.total_cost) !== 0 ? (gain / Number(p.total_cost)) * 100 : null;
 
   return (
     <tr>
       <th scope="row" style={rowHeadStyle}>
-        {p.ticker}
+        <button className="btn-link mono" onClick={() => onOpen(p.ticker)}>
+          {p.ticker}
+        </button>
         {p.warnings.length > 0 && (
           <span
             className="chip"
@@ -230,6 +246,19 @@ function PositionRow({ p }: { p: ValuedPosition }) {
             i
           </span>
         )}
+        {/* R1 T4.5.4: real attention flags, calm styling (§1 law 6 — no
+            alarm colour), one chip per flag so each has its own tooltip
+            rather than a single opaque "issues" indicator. */}
+        {p.attention_flags.map((f) => (
+          <span
+            key={f.key}
+            className="chip"
+            title={f.detail}
+            style={{ marginLeft: "var(--s1)", borderColor: "var(--border-strong)", color: "var(--ink-3)" }}
+          >
+            {f.label}
+          </span>
+        ))}
       </th>
       <td className="right num">{p.quantity}</td>
       <td className="right num">{formatPrice(p.avg_price)}</td>
@@ -260,7 +289,11 @@ function PositionRow({ p }: { p: ValuedPosition }) {
         <ZoneChip zone={p.price_ladder_zone} why={p.warnings.join(" ") || undefined} />
       </td>
       <td className="right num">
-        {p.price_ladder_zone !== null && p.buy_below_price !== null ? formatPrice(p.buy_below_price) : UNAVAILABLE}
+        {/* R1 T4.5.3: for a HELD position, the take-profit ceiling is the
+            actionable threshold — buy-below is the wrong signal once you
+            already own the name. Thesis-break (warnings) is a SEPARATE,
+            earlier exit trigger — this price alone is never the only one. */}
+        {p.price_ladder_zone !== null && p.sell_above_price !== null ? formatPrice(p.sell_above_price) : UNAVAILABLE}
       </td>
     </tr>
   );

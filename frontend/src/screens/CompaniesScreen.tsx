@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiRequestError, listSecurities } from "../api";
+import { Delta } from "../components/Delta";
 import { ProvenanceChip } from "../components/ProvenanceChip";
 import { EmptyState, ErrorState, SkeletonTable } from "../components/states";
 import { formatMagnitude, formatPrice, UNAVAILABLE } from "../format";
@@ -9,10 +10,22 @@ const PAGE_SIZE = 60;
 
 /** §54's Phase 2 "ranked screener UI" starting point: real, sortable
  * columns over what's actually computed today. Not the full §40
- * opportunity ranking (needs a composite score this system does not
- * have — Phase 6/7) — a screener over real ratios and prices instead of
- * a screener over a score that doesn't exist yet. */
-type SortKey = "last_close" | "turnover" | "volume" | "return_on_equity";
+ * opportunity ranking — the §38 composite score itself is real and live
+ * now (per-company, on the company file), but blending it into a
+ * universe-wide ranked column here would repeat the same ~30s
+ * universe-pass cost `app.domain.composite_score_view`'s own docstring
+ * already declined to pay per-request — a screener over real ratios and
+ * prices instead of over a rank this screen doesn't compute. */
+type SortKey =
+  | "last_close"
+  | "turnover"
+  | "volume"
+  | "return_on_equity"
+  | "return_on_equity_sector_percentile"
+  | "price_change_5d_pct"
+  | "price_change_10d_pct"
+  | "price_change_15d_pct"
+  | "price_change_30d_pct";
 type SortDirection = "asc" | "desc";
 
 function SortableHeader({
@@ -177,7 +190,7 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
       </div>
 
       {!filtered ? (
-        <SkeletonTable rows={10} columns={8} />
+        <SkeletonTable rows={10} columns={9} />
       ) : filtered.length === 0 ? (
         <EmptyState title={`No company matches "${query}".`}>
           <p style={{ margin: 0 }}>
@@ -202,6 +215,30 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                     onClick={() => toggleSort("last_close")}
                   />
                   <SortableHeader
+                    label="5d"
+                    active={sort?.key === "price_change_5d_pct"}
+                    direction={sort?.key === "price_change_5d_pct" ? sort.direction : null}
+                    onClick={() => toggleSort("price_change_5d_pct")}
+                  />
+                  <SortableHeader
+                    label="10d"
+                    active={sort?.key === "price_change_10d_pct"}
+                    direction={sort?.key === "price_change_10d_pct" ? sort.direction : null}
+                    onClick={() => toggleSort("price_change_10d_pct")}
+                  />
+                  <SortableHeader
+                    label="15d"
+                    active={sort?.key === "price_change_15d_pct"}
+                    direction={sort?.key === "price_change_15d_pct" ? sort.direction : null}
+                    onClick={() => toggleSort("price_change_15d_pct")}
+                  />
+                  <SortableHeader
+                    label="30d"
+                    active={sort?.key === "price_change_30d_pct"}
+                    direction={sort?.key === "price_change_30d_pct" ? sort.direction : null}
+                    onClick={() => toggleSort("price_change_30d_pct")}
+                  />
+                  <SortableHeader
                     label="Turnover (LKR)"
                     active={sort?.key === "turnover"}
                     direction={sort?.key === "turnover" ? sort.direction : null}
@@ -218,6 +255,12 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                     active={sort?.key === "return_on_equity"}
                     direction={sort?.key === "return_on_equity" ? sort.direction : null}
                     onClick={() => toggleSort("return_on_equity")}
+                  />
+                  <SortableHeader
+                    label="ROE %ile"
+                    active={sort?.key === "return_on_equity_sector_percentile"}
+                    direction={sort?.key === "return_on_equity_sector_percentile" ? sort.direction : null}
+                    onClick={() => toggleSort("return_on_equity_sector_percentile")}
                   />
                   <th scope="col">As at</th>
                 </tr>
@@ -260,6 +303,34 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                       {r.cse_sector ?? <span className="unavailable">{UNAVAILABLE}</span>}
                     </td>
                     <td className="right num">{formatPrice(r.last_close)}</td>
+                    <td className="right">
+                      {r.price_change_5d_pct !== null ? (
+                        <Delta percentage={Number(r.price_change_5d_pct)} />
+                      ) : (
+                        <span className="unavailable">{UNAVAILABLE}</span>
+                      )}
+                    </td>
+                    <td className="right">
+                      {r.price_change_10d_pct !== null ? (
+                        <Delta percentage={Number(r.price_change_10d_pct)} />
+                      ) : (
+                        <span className="unavailable">{UNAVAILABLE}</span>
+                      )}
+                    </td>
+                    <td className="right">
+                      {r.price_change_15d_pct !== null ? (
+                        <Delta percentage={Number(r.price_change_15d_pct)} />
+                      ) : (
+                        <span className="unavailable">{UNAVAILABLE}</span>
+                      )}
+                    </td>
+                    <td className="right">
+                      {r.price_change_30d_pct !== null ? (
+                        <Delta percentage={Number(r.price_change_30d_pct)} />
+                      ) : (
+                        <span className="unavailable">{UNAVAILABLE}</span>
+                      )}
+                    </td>
                     <td className="right num">{formatMagnitude(r.turnover)}</td>
                     <td className="right num">
                       {r.volume === null ? (
@@ -281,6 +352,13 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
                             </>
                           )}
                         </>
+                      )}
+                    </td>
+                    <td className="right num">
+                      {r.return_on_equity_sector_percentile === null ? (
+                        <span className="unavailable">{UNAVAILABLE}</span>
+                      ) : (
+                        `${Math.round(Number(r.return_on_equity_sector_percentile))}th`
                       )}
                     </td>
                     <td className="num">
@@ -307,10 +385,20 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
         </>
       )}
 
+      {sort && sort.key.startsWith("price_change_") && (
+        <p className="t-caption prose">
+          Sorting by recent price change. Recent strength does not by itself indicate value — check
+          the composite score and fair value before acting.
+        </p>
+      )}
+
       <p className="t-caption prose">
-        Composite scores (§38, Phase 6) and coverage tiers (§11, Phase 2) are absent because the
-        engines that compute them do not exist yet — not because they are zero. Fair value now does
-        exist (§18-26, this list just isn't the place it's shown) — open a company file: most will
+        Coverage tiers (§11, Phase 2) are absent from this list because the engine that computes
+        them is not wired to real data yet — not because they are zero. The §38 composite score DOES
+        exist now, live per-company on the company file, just not as a column here: ranking it
+        against every other row on this screen would need the same universe-wide pass that section's
+        own note explains it deliberately doesn't pay for on a single-ticker request. Fair value also
+        exists (§18-26, this list just isn't the place it's shown) — open a company file: most will
         still say no fair value is computable yet, honestly, because almost none have a
         human-confirmed fundamentals period.
       </p>

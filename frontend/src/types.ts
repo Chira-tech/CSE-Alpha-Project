@@ -52,6 +52,10 @@ export interface Fundamental {
   source_snippet: string | null;
   confirmed_by: string | null;
   confirmed_at: string | null;
+  /** R1 T2.5: an independently-sourced (different source_url) row
+   * already carries REPORTED provenance for this exact same figure —
+   * real corroboration, the one case safe for one-click bulk confirm. */
+  corroborated: boolean;
 }
 
 /** One page of the confirm queue, most-recent-period-first — backs the
@@ -121,6 +125,14 @@ export interface SecurityListItem {
   quarantined: boolean;
   return_on_equity: string | null;
   return_on_equity_provenance: ProvenanceTier | null;
+  return_on_equity_sector_percentile: string | null;
+  /** R1 T4.4.1: real trading-SESSION price appreciation (raw close, not
+   * adjustment-factor-adjusted). `null` when fewer real sessions of
+   * history exist than the window claims. */
+  price_change_5d_pct: string | null;
+  price_change_10d_pct: string | null;
+  price_change_15d_pct: string | null;
+  price_change_30d_pct: string | null;
 }
 
 export interface PricePoint {
@@ -191,6 +203,25 @@ export interface RatioTrend {
   last_period: string | null;
 }
 
+/** §12's sector-relative percentile — see the backend's `app.domain.
+ * sector_percentiles` module docstring for the grouping, winsorization
+ * and ranking-direction rules (ascending: the highest raw value gets
+ * the highest percentile). `percentile === null` means `reason` says
+ * why — usually too few peers in the sector to rank meaningfully. */
+export interface RatioSeriesPoint {
+  period_end: string;
+  value: string;
+}
+
+export interface RatioPercentile {
+  ratio_key: string;
+  percentile: string | null;
+  group_label: string | null;
+  group_size: number;
+  used_wider_sector: boolean;
+  reason: string | null;
+}
+
 export interface Suppression {
   model: string;
   reason: string;
@@ -245,11 +276,21 @@ export interface SecurityDetail {
   quarantined: boolean;
   price_history: PricePoint[];
   corporate_actions: CorporateActionSummary[];
+  /** R1 T2.6: when the scheduled daily scan (`app.jobs.scheduler.
+   * _job_corporate_actions_scan`) last covered this ticker — `null` means
+   * the sweep hasn't reached it yet, never that scanning must be run by
+   * hand. */
+  corporate_actions_last_scanned_at: string | null;
   fundamentals: FundamentalSummary[];
   ratio_period_end: string | null;
   ratios: Ratio[];
   ratios_not_yet_computable: UncomputableRatio[];
   ratio_trends: RatioTrend[];
+  ratio_percentiles: RatioPercentile[];
+  /** R1 T4.3.1: raw `(period_end, value)` history behind each ratio's
+   * own `ratio_trends` verdict, oldest first, keyed by ratio key —
+   * enough to draw a real path where >=3 periods exist. */
+  ratio_series: Record<string, RatioSeriesPoint[]>;
   valuation_routing: ValuationRouting;
   cost_of_equity: CostOfEquity;
   not_yet_built: string[];
@@ -316,11 +357,174 @@ export interface CompanyValuation {
   justified_price_to_book_warnings: string[];
   residual_income_fair_value: string | null;
   residual_income_warnings: string[];
+  dcf: {
+    fair_value_per_share: string | null;
+    warnings: string[];
+  };
+  gordon_growth_ddm: {
+    value_per_share: string | null;
+    warnings: string[];
+  };
+  hard_book: {
+    hard_book_per_share: string | null;
+    warnings: string[];
+  };
+  /** §20.2's justified P/E and justified P/S — real "relative"
+   * triangulation anchors alongside justified P/B as of 23 Aug 2026 (see
+   * `app.domain.valuation_view.RelativeValuationView`'s own docstring).
+   * `ev_to_ebit` fields stay `null` — needs ROIC, not extractable
+   * anywhere in this system yet. */
+  relative_valuation: {
+    eps: string | null;
+    sales_per_share: string | null;
+    payout_ratio: string | null;
+    justified_price_to_earnings: string | null;
+    justified_price_to_sales: string | null;
+    fair_value_per_share_pe: string | null;
+    fair_value_per_share_ps: string | null;
+    trading: {
+      price_to_earnings: string | null;
+      price_to_book: string | null;
+      ev_to_ebit: string | null;
+      price_to_sales: string | null;
+    };
+    warnings: string[];
+  };
   triangulation: ValuationAnchorCategory;
   margin_of_safety: MarginOfSafetyOut;
   sanity: SanityOut | null;
   price_ladder: PriceLadderOut | null;
   note: string;
+}
+
+/** §23's Bear/Base/Bull scenario set — `GET /valuation/{ticker}/scenarios`. */
+export interface ScenarioSet {
+  period_end: string | null;
+  scenarios: {
+    bear_value_per_share: string;
+    base_value_per_share: string;
+    bull_value_per_share: string;
+    note: string;
+  } | null;
+  distribution_note: string | null;
+  warnings: string[];
+}
+
+/** §23's sensitivity tornado — `GET /valuation/{ticker}/tornado`. */
+export interface Tornado {
+  period_end: string | null;
+  bars: {
+    assumption_name: string;
+    low_value_per_share: string;
+    high_value_per_share: string;
+    spread: string;
+  }[];
+  warnings: string[];
+}
+
+/** §23's 10,000-draw Monte Carlo overlay — `GET
+ * /valuation/{ticker}/monte-carlo`, fetched lazily (opt-in) since it's a
+ * heavier call than the rest of the fair-value page. */
+export interface MonteCarlo {
+  period_end: string | null;
+  draws: number | null;
+  p10: string | null;
+  p25: string | null;
+  p50: string | null;
+  p75: string | null;
+  p90: string | null;
+  probability_fair_value_exceeds_price: string | null;
+  note: string | null;
+  warnings: string[];
+}
+
+// --- Composite score (§38) ------------------------------------------------
+
+export interface PillarScore {
+  key: string;
+  label: string;
+  weight_pct: string;
+  /** 0-100, or `null` when `included` is false. */
+  score: string | null;
+  included: boolean;
+  /** Set whenever `included` is false — either a fixed, design-level
+   * reason (Valuation/Growth's own real cost constraint) or a per-ticker
+   * reason (e.g. no sector-relative percentile available for this
+   * ticker's own ratios). */
+  reason: string | null;
+}
+
+export interface CompositeIntegrity {
+  evaluable: boolean;
+  vetoed: boolean;
+  reason: string;
+}
+
+/** Real Valuation-pillar figures, shown but never ranked (§38's own cost
+ * constraint) — the same numbers the Fair value (§18-26) section above
+ * already shows for this ticker, repeated here only as pillar evidence. */
+export interface CompositeValuationEvidence {
+  blended_fair_value_per_share: string | null;
+  dispersion_pct: string | null;
+  margin_of_safety_pct: string | null;
+  price_ladder_zone: PriceLadderZone | null;
+  current_price: string | null;
+  regime_label: string | null;
+}
+
+export interface CompositeGrowthTrend {
+  ratio_key: string;
+  direction: "increasing" | "decreasing" | "no_trend" | "insufficient_history";
+  significant: boolean;
+  accelerating: boolean | null;
+  fraction_same_direction: string | null;
+  periods_used: number;
+}
+
+export interface CompositeProjectImpact {
+  project_id: number;
+  impact_metric: string;
+  quantified_impact_pct: string | null;
+  notes: string | null;
+}
+
+export interface TimingSignal {
+  key: string;
+  value: string | null;
+  weight_pct: string;
+  included: boolean;
+  reason: string | null;
+}
+
+export interface ContrarianCheck {
+  rev_1m_bottom_decile: boolean | null;
+  business_quality_ge_70: boolean | null;
+  no_integrity_red_flag: boolean | null;
+  no_adverse_disclosure_60d: string;
+  no_active_sector_macro_shock: boolean | null;
+  all_conditions_met: boolean;
+}
+
+export interface TimingBattery {
+  signals: TimingSignal[];
+  crash_guard_active: boolean;
+  contrarian: ContrarianCheck;
+}
+
+export interface CompositeScore {
+  ticker: string;
+  as_of: string;
+  pillars: PillarScore[];
+  total_score: string | null;
+  weight_used_pct: Record<string, string>;
+  /** Always true today — Valuation and Growth are permanently excluded
+   * from the number by a real, disclosed cost constraint, not a bug. */
+  is_partial: boolean;
+  integrity: CompositeIntegrity;
+  valuation_evidence: CompositeValuationEvidence;
+  growth_ratio_trends: CompositeGrowthTrend[];
+  growth_project_impacts: CompositeProjectImpact[];
+  timing_battery: TimingBattery;
 }
 
 export interface QuarantinedTicker {
@@ -348,6 +552,13 @@ export interface DataHealth {
   fundamentals_pending_confirmation: number;
   fundamentals_confirmed: number;
   quarantined: QuarantinedTicker[];
+  /** R1 T4.1.5: top tickers by pending-figure count — real, cheap
+   * proxy for where confirming pays off most. See the backend's own
+   * `DataHealth.fundamentals_pending_by_ticker` docstring for why this
+   * is NOT the brief's literal "unblocks fair value for N companies"
+   * claim (that needs a full universe valuation pass, too slow for a
+   * screen meant to load in under two minutes). */
+  fundamentals_pending_by_ticker: { ticker: string; count: number }[];
 }
 
 export interface SpreadPoint {
@@ -414,9 +625,21 @@ export interface ValuedPosition {
   blended_fair_value_per_share: string | null;
   price_ladder_zone: PriceLadderZone | null;
   buy_below_price: string | null;
+  /** R1 T4.5.3: the take-profit ceiling (§26's `exit_threshold`) — the
+   * right signal for a position you already hold, unlike buy-below. */
+  sell_above_price: string | null;
   margin_of_safety_pct: string | null;
   dispersion_pct: string | null;
   warnings: string[];
+  /** R1 T4.5.4: real, calmly-styled flags — never a fabricated
+   * "thesis break" (needs §45's decision record, not built yet). */
+  attention_flags: AttentionFlag[];
+}
+
+export interface AttentionFlag {
+  key: string;
+  label: string;
+  detail: string;
 }
 
 export interface ValuedPortfolio {
@@ -426,6 +649,11 @@ export interface ValuedPortfolio {
   total_cost: string;
   total_live_market_value: string | null;
   positions_missing_a_live_price: string[];
+  /** R1 T4.1.6/T4.5.1 — keyed "15d"/"30d"/"45d"/"60d". Today's exact
+   * holdings priced at each past real close, NOT a real historical
+   * portfolio replay (no transaction log yet) — see the backend's own
+   * `portfolio_value_trend` docstring. */
+  value_trend_pct: Record<string, string | null>;
 }
 
 export type DecisionAction = "buy" | "watchlist" | "pass" | "partial" | "sell" | "trim";
@@ -527,6 +755,26 @@ export interface SectorSensitivity {
   warnings: string[];
 }
 
+/** R1 T4.6.4's sector drill-down panel. */
+export interface SectorCompany {
+  ticker: string;
+  name: string;
+  market_cap: string | null;
+  market_cap_reason: string | null;
+  pct_of_sector: string | null;
+  fair_value_gap_pct: string | null;
+  gap_reason: string | null;
+}
+
+export interface SectorDrilldown {
+  sector: string;
+  as_of: string;
+  companies: SectorCompany[];
+  total_market_cap: string | null;
+  excluded_from_market_cap_pct: number;
+  composite_score_omitted_reason: string;
+}
+
 export interface IndexPoint {
   obs_date: string;
   value: string;
@@ -552,6 +800,7 @@ export type JobKey =
   | "capture_corporate_actions"
   | "enrich_securities"
   | "recompute"
+  | "refresh_stale_fundamentals"
   | "capture_all";
 
 export type JobRunStatus = "queued" | "running" | "success" | "failed" | "cancelled";

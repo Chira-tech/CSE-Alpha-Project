@@ -30,7 +30,8 @@ export type ScreenId =
   | "journal"
   | "lab"
   | "data-health"
-  | "review";
+  | "review"
+  | "playbooks";
 
 export interface NavItem {
   id: ScreenId;
@@ -122,3 +123,22 @@ export const REVIEW_SCREEN: NavItem = {
   awaitingPhase: null,
   group: "advanced",
 };
+
+// M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md
+// §1.3): the allowlisted frontend nav edit. That brief names
+// `frontend/src/config/navigation.ts`, which does not exist in this
+// codebase — `NAV_ITEMS` right here IS the real, equivalent "one nav
+// array a caller appends to" the brief describes, just at its real
+// path. Guarded by `VITE_M5_ENABLED` (unset/false by default — Vite
+// env vars are string-typed, so this checks the literal string "true",
+// not JS truthiness) so `NAV_ITEMS` is byte-identical to before with
+// the flag off, matching the backend's own `m5_enabled` guard exactly.
+if (import.meta.env.VITE_M5_ENABLED === "true") {
+  NAV_ITEMS.push({
+    id: "playbooks",
+    label: "Playbooks",
+    blurb: "Convergence setups, base rates, and the trial record",
+    awaitingPhase: null,
+    group: "advanced",
+  });
+}

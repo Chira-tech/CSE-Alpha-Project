@@ -56,12 +56,29 @@ export function RunCapture() {
       }
     };
     es.onerror = () => {
-      // The stream closes itself server-side once the run reaches a
-      // terminal status; a real connection drop just stops updates
-      // here rather than throwing — the next status poll still reports
-      // the real outcome.
+      // A REAL BUG, FOUND LIVE (26 Aug 2026): a genuine connection drop
+      // (the backend/worker process restarting mid-run, not the stream
+      // closing itself after a clean terminal onmessage above) does NOT
+      // guarantee the server ever gets to tell us what happened — there
+      // is no follow-up onmessage to rely on. The old version of this
+      // handler left `activeRun` exactly as it was and trusted "the next
+      // status poll still reports the real outcome" — but the poll in
+      // the effect below explicitly SKIPS itself whenever `activeRunRef.
+      // current` is still set, which it always was here, so that never
+      // happened: the sidebar was left showing a frozen, stale progress
+      // percentage forever, even though the run had already been marked
+      // `failed` server-side. Clearing `activeRun` before calling
+      // `refreshStatus()` (rather than leaving it set and calling
+      // `refreshStatus()`, which would hit that exact same guard and
+      // return immediately) is what actually re-syncs: refreshStatus
+      // fetches the real current state right away, and — if the run is
+      // genuinely still in flight under a new connection — resumes
+      // watching it via its own "inFlight" check, same as a fresh page
+      // load would.
       es.close();
       eventSourceRef.current = null;
+      setActiveRun(null);
+      refreshStatus();
     };
   }
 
@@ -162,45 +179,54 @@ export function RunCapture() {
         ))}
       </ul>
 
-      {activeRun ? (
+      {activeRun && (
+        // A small, always-visible confirmation that a run is genuinely
+        // progressing — not a placeholder that could sit at 0% forever.
+        // Sits ABOVE the trigger button (which stays in place, disabled
+        // and relabelled) rather than replacing it, so the control a
+        // user just clicked doesn't disappear out from under them.
         <div className="run-capture-progress" role="status" aria-live="polite">
-          <div className="meter run-capture-meter">
-            <span
-              className="meter-fill"
-              style={{ width: `${Math.min(100, Math.max(0, Number(activeRun.progress_pct) || 0))}%` }}
-            />
+          <div className="run-capture-progress-row">
+            <div className="meter run-capture-meter">
+              <span
+                className="meter-fill"
+                style={{ width: `${Math.min(100, Math.max(0, Number(activeRun.progress_pct) || 0))}%` }}
+              />
+            </div>
+            <span className="t-caption run-capture-pct">
+              {Math.round(Math.min(100, Math.max(0, Number(activeRun.progress_pct) || 0)))}%
+            </span>
           </div>
           <div className="t-caption run-capture-note">
             {activeRun.progress_note ?? `${activeRun.label}…`}
+            {" — "}
+            <button className="btn-link" onClick={handleCancel}>
+              Cancel
+            </button>
           </div>
-          <button className="btn-link" onClick={handleCancel}>
-            Cancel
+        </div>
+      )}
+      <button
+        className="btn-primary run-capture-trigger"
+        onClick={() => setMenuOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        disabled={!!activeRun}
+      >
+        {activeRun ? `Running: ${activeRun.label}…` : "Run Capture ▸"}
+      </button>
+      {menuOpen && !activeRun && (
+        <div className="run-capture-menu" role="menu">
+          {menuJobs.map((j) => (
+            <button key={j.job} role="menuitem" onClick={() => handleRun(j.job)}>
+              {j.label}
+            </button>
+          ))}
+          <div className="run-capture-menu-divider" role="separator" />
+          <button role="menuitem" onClick={() => handleRun("capture_all")}>
+            Run everything
           </button>
         </div>
-      ) : (
-        <>
-          <button
-            className="btn-primary run-capture-trigger"
-            onClick={() => setMenuOpen((v) => !v)}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-          >
-            Run Capture ▸
-          </button>
-          {menuOpen && (
-            <div className="run-capture-menu" role="menu">
-              {menuJobs.map((j) => (
-                <button key={j.job} role="menuitem" onClick={() => handleRun(j.job)}>
-                  {j.label}
-                </button>
-              ))}
-              <div className="run-capture-menu-divider" role="separator" />
-              <button role="menuitem" onClick={() => handleRun("capture_all")}>
-                Run everything
-              </button>
-            </div>
-          )}
-        </>
       )}
 
       {notice && (

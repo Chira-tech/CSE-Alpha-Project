@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   ApiRequestError,
   getDataHealth,
+  getIndexHistory,
   getMarketOverview,
   getOpportunityRanking,
   getPortfolioHoldingsValued,
@@ -9,10 +10,11 @@ import {
 } from "../api";
 import { Delta } from "../components/Delta";
 import { SpreadHero } from "../components/SpreadHero";
+import { TrendChip } from "../components/TrendChip";
 import { ZoneChip } from "../components/ZoneChip";
 import { EmptyState, ErrorState, PartialNotice, SkeletonCard } from "../components/states";
-import { directionOf, formatIndexValue, formatInteger, formatPrice, UNAVAILABLE } from "../format";
-import type { DataHealth, MarketOverview, OpportunityRanking, Spread, ValuedPortfolio } from "../types";
+import { directionOf, formatIndexValue, formatInteger, formatPrice, trendWindowPct, UNAVAILABLE } from "../format";
+import type { DataHealth, IndexHistory, MarketOverview, OpportunityRanking, Spread, ValuedPortfolio } from "../types";
 
 /**
  * UI & Experience Specification §8 — Screen 1, "Today". Four questions in
@@ -43,11 +45,17 @@ export function TodayScreen({
   const [spread, setSpread] = useState<Spread | null>(null);
   const [portfolio, setPortfolio] = useState<ValuedPortfolio | null | undefined>(undefined);
   const [opportunities, setOpportunities] = useState<OpportunityRanking | null | undefined>(undefined);
+  const [aspiHistory, setAspiHistory] = useState<IndexHistory | null>(null);
 
   useEffect(() => {
     getMarketOverview()
       .then(setMarket)
       .catch((e) => setMarketError(e instanceof ApiRequestError ? e.message : String(e)));
+    // T4.1.2's TrendChip — real ASPI history, independent of the live
+    // market call above so one failing doesn't take the other down.
+    getIndexHistory()
+      .then(setAspiHistory)
+      .catch(() => setAspiHistory(null));
     getDataHealth()
       .then(setHealth)
       .catch((e) => setHealthError(e instanceof ApiRequestError ? e.message : String(e)));
@@ -89,7 +97,8 @@ export function TodayScreen({
   return (
     <div className="route stack">
       <header className="screen-head">
-        <h1>Today</h1>
+        {/* R1 T4.1.1 */}
+        <h1>Today's summary</h1>
         <p className="prose">
           {new Date().toLocaleDateString("en-GB", {
             weekday: "long",
@@ -132,6 +141,16 @@ export function TodayScreen({
                 </span>
                 {market.status && <span className="status-tag">{market.status}</span>}
               </div>
+              {aspiHistory && aspiHistory.points.length > 1 && (
+                <div style={{ marginTop: "var(--s3)" }}>
+                  <TrendChip
+                    windows={[15, 30, 45].map((n) => ({
+                      label: `${n}d`,
+                      pct: trendWindowPct(aspiHistory.points, n),
+                    }))}
+                  />
+                </div>
+              )}
             </div>
 
             {spread && <SpreadHero spread={spread} />}
@@ -182,6 +201,16 @@ export function TodayScreen({
                 </li>
               ))}
             </ul>
+            {health.fundamentals_pending_by_ticker.length > 0 && (
+              <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
+                Highest-count tickers in the queue:{" "}
+                {health.fundamentals_pending_by_ticker
+                  .slice(0, 5)
+                  .map((t) => `${t.ticker} (${t.count})`)
+                  .join(", ")}
+                .
+              </p>
+            )}
             <div style={{ marginTop: "var(--s4)" }}>
               <button onClick={() => onOpenScreen("review")}>Open the confirm queue</button>
             </div>
@@ -237,6 +266,18 @@ export function TodayScreen({
                 <div className="t-data">{portfolio.positions.length}</div>
               </div>
             </div>
+            {/* R1 T4.1.6: FOUR windows here specifically (not three like
+                Portfolio's own summary) — the brief's own instruction. */}
+            <div style={{ marginTop: "var(--s4)" }}>
+              <TrendChip
+                windows={["15d", "30d", "45d", "60d"].map((label) => ({
+                  label,
+                  pct: portfolio.value_trend_pct[label] !== null && portfolio.value_trend_pct[label] !== undefined
+                    ? Number(portfolio.value_trend_pct[label])
+                    : null,
+                }))}
+              />
+            </div>
             <div style={{ marginTop: "var(--s4)" }}>
               <button onClick={() => onOpenScreen("portfolio")}>Open Portfolio</button>
             </div>
@@ -260,8 +301,9 @@ export function TodayScreen({
           <div className="notice notice-neutral">
             <h3>Nothing ranks yet</h3>
             <p className="prose t-body">
-              §40's full risk-adjusted-return ranking still needs engines that don't exist (the §38
-              composite score, Carhart certification, the timing battery) — see{" "}
+              §40's full risk-adjusted-return ranking still isn't built — the §38 composite score
+              itself is real now (see any company file), but blending it into a ranked list here
+              needs a universe-wide pass this system doesn't yet run on a schedule — see{" "}
               <button className="btn-link" onClick={() => onOpenScreen("opportunities")}>
                 Opportunities
               </button>{" "}

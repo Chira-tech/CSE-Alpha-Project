@@ -19,8 +19,33 @@ import type { PricePoint } from "../types";
  * action is Phase-1 remaining work — see ROADMAP.md) — showing anything
  * else here would imply a total-return series this system does not yet
  * compute.
+ *
+ * R1 T4.3.8: three optional reference lines — ceiling (§26's exit
+ * threshold — "valuation stretched"), floor (the strong-accumulate
+ * threshold) and average. `averageLabel` names what the average line
+ * actually is: this component has no idea whether the viewer holds the
+ * stock, so the caller decides between a real cost basis and the
+ * trailing mean — never silently assumed here. A bound that doesn't
+ * exist (no fair value computed yet) is omitted from the chart AND named
+ * as missing in the caption — never drawn as a guess.
  */
-export function PriceHistoryChart({ history }: { history: PricePoint[] }) {
+export function PriceHistoryChart({
+  history,
+  ceiling,
+  floor,
+  average,
+  averageLabel = "Average",
+}: {
+  history: PricePoint[];
+  /** §26 exit_threshold — omit (undefined) when no fair value exists yet. */
+  ceiling?: number;
+  /** §26 strong_accumulate_threshold — omit when no fair value exists yet. */
+  floor?: number;
+  /** Real avg cost (a held position) or the trailing mean close — the
+   * caller's choice, reflected in `averageLabel`. */
+  average?: number;
+  averageLabel?: string;
+}) {
   const points = history
     .filter((p): p is PricePoint & { close: string } => p.close !== null)
     .map((p) => ({ date: p.date, value: Number(p.close) }));
@@ -28,16 +53,21 @@ export function PriceHistoryChart({ history }: { history: PricePoint[] }) {
   if (points.length < 2) return null;
 
   const values = points.map((p) => p.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const refValues = [ceiling, floor, average].filter((v): v is number => v !== undefined);
+  // The price axis widens to fit any reference line outside the raw
+  // price range too — a real ceiling far above the traded range must
+  // still be visible, not clipped off the top of the chart.
+  const min = Math.min(...values, ...refValues);
+  const max = Math.max(...values, ...refValues);
   const range = max - min || 1;
   const width = 720;
   const height = 140;
+  const yOf = (v: number) => height - ((v - min) / range) * height;
 
   const path = values
     .map((v, i) => {
       const x = (i / (values.length - 1)) * width;
-      const y = height - ((v - min) / range) * height;
+      const y = yOf(v);
       return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
@@ -47,14 +77,46 @@ export function PriceHistoryChart({ history }: { history: PricePoint[] }) {
   const changePct = ((last.value - first.value) / first.value) * 100;
   const skipped = history.length - points.length;
 
+  const refLines: { value: number; label: string; key: string }[] = [];
+  if (ceiling !== undefined) refLines.push({ value: ceiling, label: `Ceiling ${ceiling.toFixed(2)}`, key: "ceiling" });
+  if (average !== undefined) refLines.push({ value: average, label: `${averageLabel} ${average.toFixed(2)}`, key: "average" });
+  if (floor !== undefined) refLines.push({ value: floor, label: `Floor ${floor.toFixed(2)}`, key: "floor" });
+
+  const missingBounds: string[] = [];
+  if (ceiling === undefined) missingBounds.push("ceiling");
+  if (floor === undefined) missingBounds.push("floor");
+
   return (
     <figure style={{ margin: "0 0 var(--s4)" }}>
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label={`Close price from ${first.date} to ${last.date}, ranging between ${min.toFixed(2)} and ${max.toFixed(2)} LKR`}
-        style={{ width: "100%", height: "auto", display: "block" }}
+        style={{ width: "100%", height: "auto", display: "block", overflow: "visible" }}
       >
+        {refLines.map((r) => (
+          <g key={r.key}>
+            <line
+              x1={0}
+              x2={width}
+              y1={yOf(r.value)}
+              y2={yOf(r.value)}
+              stroke="var(--ink-3)"
+              strokeWidth="1"
+              strokeDasharray="4 3"
+            />
+            <text
+              x={width}
+              y={yOf(r.value)}
+              textAnchor="end"
+              dy={r.key === "ceiling" ? -4 : 12}
+              fontSize="10"
+              fill="var(--ink-3)"
+            >
+              {r.label}
+            </text>
+          </g>
+        ))}
         <path d={path} fill="none" stroke="var(--brand-500)" strokeWidth="1.5" strokeLinejoin="round" />
       </svg>
 
@@ -76,6 +138,8 @@ export function PriceHistoryChart({ history }: { history: PricePoint[] }) {
         range is stated above rather than implied by the shape.
         {skipped > 0 &&
           ` ${skipped} stored session${skipped === 1 ? "" : "s"} with no close recorded are excluded from this chart.`}
+        {missingBounds.length > 0 &&
+          ` No ${missingBounds.join(" or ")} line shown — no fair value is computable for this company yet.`}
       </figcaption>
     </figure>
   );

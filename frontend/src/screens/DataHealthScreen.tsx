@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getDataHealth } from "../api";
+import { ApiRequestError, downloadBackup, downloadWorkbook, getDataHealth } from "../api";
 import { AsOf, EmptyState, ErrorState, SkeletonCard } from "../components/states";
+import { downloadBlob } from "../csv";
 import { onDataRefreshed } from "../dataRefresh";
 import { formatInteger, UNAVAILABLE } from "../format";
 import type { DataHealth } from "../types";
@@ -8,6 +9,42 @@ import type { DataHealth } from "../types";
 export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void }) {
   const [data, setData] = useState<DataHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [workbookBusy, setWorkbookBusy] = useState(false);
+  const [workbookError, setWorkbookError] = useState<string | null>(null);
+  const [workbookNotice, setWorkbookNotice] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [backupNotice, setBackupNotice] = useState<string | null>(null);
+
+  async function handleDownloadWorkbook() {
+    setWorkbookBusy(true);
+    setWorkbookError(null);
+    setWorkbookNotice(null);
+    try {
+      const { blob, filename } = await downloadWorkbook();
+      downloadBlob(filename, blob);
+      setWorkbookNotice(`Downloaded ${filename} at ${new Date().toLocaleTimeString()}.`);
+    } catch (e) {
+      setWorkbookError(e instanceof ApiRequestError ? e.message : String(e));
+    } finally {
+      setWorkbookBusy(false);
+    }
+  }
+
+  async function handleDownloadBackup() {
+    setBackupBusy(true);
+    setBackupError(null);
+    setBackupNotice(null);
+    try {
+      const { blob, filename } = await downloadBackup();
+      downloadBlob(filename, blob);
+      setBackupNotice(`Downloaded ${filename} at ${new Date().toLocaleTimeString()}.`);
+    } catch (e) {
+      setBackupError(e instanceof ApiRequestError ? e.message : String(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
 
   useEffect(() => {
     function load() {
@@ -153,6 +190,54 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
         </div>
       </section>
 
+      <section aria-labelledby="export-heading" className="stack-tight">
+        <h2 id="export-heading">Export</h2>
+        <div className="row" style={{ alignItems: "flex-start", gap: "var(--s4)", flexWrap: "wrap" }}>
+          <div className="stack-tight" style={{ maxWidth: 340 }}>
+            <button onClick={handleDownloadWorkbook} disabled={workbookBusy}>
+              {workbookBusy ? "Building…" : "Download Excel workbook"}
+            </button>
+            <p className="t-caption prose" style={{ margin: 0 }}>
+              For analysis in Excel — companies, prices, financial statements, ratios, valuations,
+              macro series and your portfolio, one sheet each. The valuations sheet re-runs a real
+              full-universe pass, same as Opportunities, so this can take roughly a minute.
+            </p>
+            {workbookNotice && (
+              <p className="t-caption" role="status" style={{ margin: 0, color: "var(--pos-strong)" }}>
+                {workbookNotice}
+              </p>
+            )}
+            {workbookError && (
+              <p className="t-caption" role="alert" style={{ margin: 0, color: "var(--neg-strong)" }}>
+                {workbookError}
+              </p>
+            )}
+          </div>
+          <div className="stack-tight" style={{ maxWidth: 340 }}>
+            <button onClick={handleDownloadBackup} disabled={backupBusy}>
+              {backupBusy ? "Building…" : "Download full backup"}
+            </button>
+            <p className="t-caption prose" style={{ margin: 0 }}>
+              A complete, exact copy of every table (newline-delimited JSON per table, plus a
+              checksummed manifest) — the actual disaster-recovery artefact, not the Excel workbook
+              above. Keep this somewhere safe. Restore verification for this exact format was run
+              against real data (<code>scripts/verify_backup_restore.py</code>) and confirmed every
+              table's row count and checksum match — see <code>docs/audits/R1_FIX_LOG.md</code>.
+            </p>
+            {backupNotice && (
+              <p className="t-caption" role="status" style={{ margin: 0, color: "var(--pos-strong)" }}>
+                {backupNotice}
+              </p>
+            )}
+            {backupError && (
+              <p className="t-caption" role="alert" style={{ margin: 0, color: "var(--neg-strong)" }}>
+                {backupError}
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
       <section aria-labelledby="quarantine-heading" className="stack-tight">
         <h2 id="quarantine-heading">Quarantined tickers</h2>
         {data.quarantined.length === 0 ? (
@@ -160,7 +245,10 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             <p style={{ margin: 0 }}>
               Every ticker's stored adjustment factors reconcile against an independent recomputation
               from its confirmed corporate actions, within the 0.5% threshold (§7). A ticker appears
-              here when that check fails, and is excluded from every model until resolved.
+              here when that check fails, and is excluded from Opportunities ranking and Portfolio
+              valuation until resolved — see docs/audits/R1_OPEN_ISSUES.md's OI-3 for the real gap
+              this closed (that exclusion wasn't actually wired anywhere until this session, despite
+              this list's own existence implying it was).
             </p>
           </EmptyState>
         ) : (
