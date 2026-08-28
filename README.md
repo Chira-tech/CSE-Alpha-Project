@@ -132,6 +132,13 @@ the missing Timescale extension and fall back to a plain table
 automatically. Point `DATABASE_URL` at Postgres and the same migrations
 apply unchanged.
 
+`app/db/session.py` tunes the SQLite engine specifically (WAL journal
+mode, a much larger connection pool than SQLAlchemy's own default) —
+see that file's own comments if a symptom ever looks like "the app just
+hangs on a fresh page load, `/health` is still fine" again; both fixes
+were found live, the hard way, chasing exactly that symptom (23 Aug
+2026, see `docs/audits/R1_FIX_LOG.md`). Neither applies to Postgres.
+
 ### Keeping data collection running
 
 Forward capture at the close is still how a day's own price gets in, and

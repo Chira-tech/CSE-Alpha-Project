@@ -2885,6 +2885,896 @@ table. Fixed the same way `GET /securities/{ticker}/prices` already was:
       load, select-all plus bulk confirm correctly shrinks both the page
       and the total.
 
+### Confirm-queue verification pass, and a real finding it surfaced: stale drafts from an already-fixed extraction bug
+
+An agent-run verification pass worked through the pending confirm queue
+against the live app (never touching the concurrently-running
+`backfill-financials` process or its DB writes) — re-checking every
+pending row against real source data before confirming anything, exactly
+§8's own discipline, just performed by an agent standing in for a human
+reviewer rather than skipped.
+
+- [x] **Corporate actions: 59 of 71 pending confirmed**, each cross-
+      checked against the real CSE announcement (`fetch_announcement_
+      detail`, this project's own paced `CseClient`) before being patched
+      and confirmed — dividend per-share amounts from `votingDivPerShare`/
+      `nonVotingDivPerShare` or unambiguous "Cents X" wording in
+      `remarks`; rights-issue `cum_rights_price` filled from the REAL
+      stored close the trading day before ex-date (never estimated); one
+      stock-split ratio cross-checked against exact share counts. 12 left
+      pending with a specific real reason each — 8 rights issues with no
+      stored price for the day before ex-date, 1 with no ratio/price
+      anywhere in the source, 2 dividends missing the amount clause in
+      `remarks`, and 4 ABL.N0000 rows that turned out to be value-based
+      scrip dividends misfiled as bonus issues, whose true share ratio
+      depends on a conversion price nothing captured names.
+      - **A real, separate bug found while verifying, not fixed here**:
+        the corporate-actions loader's announcement-pairing heuristic
+        mispairs a ticker that has MULTIPLE historical rights issues of
+        the same type — verified live on AAF.N0000, where it paired the
+        real 2026 "dates" announcement with an unrelated 2014 initial
+        disclosure instead of the real 2026 one. Worked around for this
+        verification pass only (date-proximity pairing); the codebase's
+        own pairing logic is unchanged.
+- [x] **Fundamentals: 22,019 rows confirmed across the pass** (21,746 from
+      the first sweep across all 290 tickers, +273 more found on a
+      second, more thorough pass over four specific tickers below), each
+      gated on `check_accounting_identities` passing CLEANLY (every
+      computable check, not just whichever one used to fail) before
+      promotion — same acceptance bar `reconcile_ambiguous_values_via_
+      identities` already established elsewhere in this codebase, reused
+      rather than reinvented for the verification pass itself.
+      - **995 groups / 170 tickers failed an identity check** and were
+        correctly left unconfirmed. Most are ordinary — but three tickers
+        showed suspiciously ROUND, large gaps: CALH.N0000 (`total_assets`
+        short by 80-100bn across 6 real quarters), HNB.N0000/HNB.X0000
+        (`total_equity` short by exactly LKR 200bn), COCR.N0000
+        (`total_liabilities` AND `total_equity` both independently short,
+        ~110bn combined) — round-number gaps at that scale don't happen
+        by coincidence in real accounting data, so this got investigated
+        rather than just logged and left.
+- [x] **Root cause traced to the exact byte, not just "an extraction
+      bug"**: downloaded the real PDFs and found pdfplumber rendering a
+      stray space right after a large number's own leading digit — e.g.
+      HNB's real balance sheet literally prints `Total equity 2
+      69,594,665 ... 3 16,702,915 ...` (the "2" and "3" are the numbers'
+      own leading digits, detached — real values 269,594,665 and
+      316,702,915, in '000). This is the SAME limitation already named in
+      `_repair_split_leading_digits`'s own docstring (found earlier on
+      Panasian Power's `inventories` row) — a row where some columns are
+      already fixed by an earlier, narrower repair (whose regex only
+      catches a split landing right before a comma) desyncs the
+      uniform-alternation pattern the later repair requires, so it bails
+      out and returns the tokens untouched. That earlier case never
+      touched anything `check_accounting_identities` covers; these three
+      tickers' cases hit the totals it exists to protect — exactly why
+      this verification pass caught them.
+- [x] **THE REAL FINDING: re-running TODAY's extractor against the
+      identical PDFs reads every one of these totals CORRECTLY.** The
+      underlying bug is already fixed in the current codebase (something
+      upstream — column-count/variance-% detection — changed since these
+      filings were first ingested) — the three tickers' stored rows are
+      simply STALE drafts from before that fix landed, and
+      `_already_ingested` treats "a filing already has stored rows" as
+      permanently done, so no amount of re-running `backfill-financials`
+      would ever revisit and correct them on its own.
+- [x] **`refresh_stale_fundamentals` + `python -m app.cli refresh-stale-
+      fundamentals --ticker T`** (`app/ingestion/financial_pdf_
+      extractor.py`) — re-downloads a filing already in the DB, re-runs
+      today's extractor, and repairs a still-unconfirmed row ONLY if the
+      fresh reading makes the filing balance CLEANLY. Deliberately
+      conservative, matching every other write path onto this table:
+      never touches an already-confirmed (Reported) row; an all-or-
+      nothing per filing (a fresh extraction that still doesn't balance
+      changes nothing, not even the rows that already matched); no new
+      merging heuristic added anywhere — zero risk of the regression
+      `_repair_split_leading_digits`'s own docstring warns a naive fix
+      would reintroduce (J.F. Packaging's genuine note-reference line),
+      because the merging logic itself is completely unchanged. 3 new
+      tests (a real repair applied, a confirmed row correctly left
+      untouched even though it's wrong, a still-failing fresh reading
+      correctly refused); full suite 1211 passed.
+      - **Run live against all four tickers**: 22 filings currently
+        failed an identity check across HNB.N0000/X0000, CALH.N0000,
+        COCR.N0000 — **11 repaired** (exactly the round-number cases
+        above, now balancing exactly), **11 correctly left untouched**,
+        every one of them off by only Rs. 1 (or Rs. 1,000 for one HNB
+        quarter) — real, pre-existing publication-level rounding, not
+        this bug, refused by the same strict "every computable check
+        must pass" gate rather than silently tolerated.
+      - Confirmed all 11 repaired filings' now-clean rows immediately
+        after (`actor="claude-agent"`, same as the rest of this pass),
+        plus 273 further already-clean-but-still-pending rows across
+        these same four tickers found while re-verifying them — the
+        first sweep's per-ticker page size hadn't covered every one of
+        HNB's ~35 real quarterly/annual periods.
+      - **Not run against the other 166 flagged tickers yet** — this
+        entry fixes and verifies the tool against the three concrete
+        cases that motivated it; a broader sweep of the remaining
+        failed-identity list is a real, separate, disclosed next step,
+        not assumed to behave identically (most of those 166 tickers'
+        failures may be genuine discrepancies this tool is specifically
+        designed to leave alone, not stale-extraction artifacts).
+
+### Magnitude-plausibility check, and the stale-fundamentals sweep wired to run on its own
+
+Prompted by the product owner sampling the (by-then 34,522-row) pending
+fundamentals queue and asking for automatic math validation on
+extraction, plus automatic re-extraction when it fails — not just the
+existing "warn a human, wait for someone to run a CLI command by hand"
+loop.
+
+- [x] **`check_magnitude_plausibility`, closing a real gap named but
+      deliberately left unfixed in commit 313afdc** (`app/domain/
+      financial_statement_parsing.py`): a line item whose magnitude is a
+      millionth (or less) of the largest OTHER value on the same filing
+      is flagged even when no accounting identity happens to cover it —
+      the exact AAF.N0000 shape that commit named (net_income read as the
+      literal digit "1" against a ~19.3bn total_assets, invisible to
+      `check_accounting_identities` because income_tax_expense wasn't
+      also extracted for that filing) and a second, independent real case
+      found live running the new check for the first time (VLL.N0000, FY
+      ended 2012-03-31: one leg of "pre-tax profit - tax = net income"
+      reads as the literal value 30 against a net_income of 59,130,635).
+      Self-scaling by ratio to the filing's own largest extracted value
+      rather than a fixed LKR floor, so it can't miss a small line on a
+      large company or false-positive on a genuinely small one. `check_
+      extraction_quality` composes it with `check_accounting_identities`
+      as the one entry point every real caller now uses (`ingest_
+      financial_statement`, `refresh_stale_fundamentals`, `app.cli`'s
+      `refresh-stale-fundamentals`, and the archive backfill loader —
+      all four previously called `check_accounting_identities` directly).
+      7 new tests, including a regression guard that every real fixture
+      (J.F. Packaging's balance sheet, income statement, cash-flow
+      statement) produces zero false positives.
+      - **Verified live, and it immediately surfaced a real, previously-
+        invisible systemic misread**: re-running `refresh-stale-
+        fundamentals` against ABAN.N0000 found `revenue = 5` on TWELVE
+        separate fiscal years (2013-2024), plus `trade_payables = 3`,
+        `inventories = 17`, `revaluation_reserves = 22.1`, `total_
+        interest_bearing_debt = 23.1` on one filing alone — a genuine
+        note-reference-as-value column-count-detection bug specific to
+        this company's statement shape, not a one-off. The identical
+        value across 12 different years is itself the tell; a real
+        misread wouldn't repeat exactly. Root cause (why `detect_
+        expected_value_columns` misreads ABAN's own header shape)
+        not yet investigated — a real, separate, disclosed gap this
+        pass surfaced but did not chase.
+- [x] **`sweep_stale_fundamentals`** (`app/ingestion/financial_pdf_
+      extractor.py`): the shared core behind BOTH `app.cli`'s
+      `refresh-stale-fundamentals` command (refactored to a thin wrapper
+      around it) and a new job runner entry, so the two can never drift.
+      Groups every given ticker's stored rows into filings, checks each
+      against `check_extraction_quality` BEFORE any network call, and
+      only downloads+re-extracts the ones actually failing — a cancellable
+      `on_filing` callback matching `enrich_securities`'s own convention.
+- [x] **`refresh_stale_fundamentals` wired into both the manual "Run
+      Capture" menu and a new weekly Saturday cron** (`app/jobs/
+      registry.py`, `app/jobs/runner.py`, `app/jobs/scheduler.py`, 07:30
+      Colombo — after `price_gap_repair`, since PDFs off CSE's own CDN
+      aren't paced through `CseClient` and don't contend with anything
+      else). This is the actual "queue it, run another data grab
+      automatically" loop asked for — directly closes the "not run against
+      the other 166 flagged tickers yet... a real, separate, disclosed
+      next step" gap named at the end of the previous entry above. `/jobs/
+      status`'s `next_scheduled_at` lookup (`app/api/routes/jobs.py`)
+      updated to include the new cron id — a job with a real schedule
+      silently reporting `None` there would have been the same class of
+      dishonesty this system works hard to avoid everywhere else. 3 more
+      new tests (scheduler registration + Colombo-time assertions, a
+      `next_scheduled_at` regression guard). Full suite 1320 passed.
+      - **Run live end-to-end through the real API** (not just unit
+        tested): `POST /jobs/refresh_stale_fundamentals/run` → picked up
+        by the worker within 5s → real per-filing progress
+        (`Stale fundamentals · 9 / 2604 (AAF.N0000 2016-12-31)`) → started
+        genuinely repairing rows. 2,604 filings currently fail `check_
+        extraction_quality` universe-wide (grown from the 995-group/170-
+        ticker count two entries above — both because more backfilling
+        happened since, and because the magnitude check itself surfaces
+        failures the identity check alone couldn't see) — left running in
+        the background rather than force-stopped; genuinely long on this
+        first pass against the current backlog, same "not scheduled,
+        genuinely heavy" caveat `backfill-financials` already carries, but
+        every subsequent Saturday run only has to work through whatever
+        newly started failing that week.
+
+### Database-level uniqueness on `fundamentals`, closing a real (if narrow) concurrent-ingestion race
+
+Prompted by the product owner asking directly whether ingestion could
+duplicate data.
+
+- [x] **Verified first, not assumed**: every real ingestion path already
+      has application-level idempotency (`_already_ingested` by period,
+      `_already_ingested_by_source` by exact PDF) — confirmed zero
+      duplicate (ticker, period_end, period_type, statement_line,
+      version) rows anywhere in the real 105,618-row table. But nothing
+      in the schema BACKED that invariant — the same class of gap
+      already disclosed for `JobRun` concurrency (application-level
+      guard, no DB constraint) — so two ingestion processes hitting the
+      exact same filing at the exact same moment (a manual
+      `backfill-financials` overlapping the scheduled daily
+      `capture_filings` job) could theoretically both pass their own
+      check before either commits.
+- [x] **Migration 0019**: `CREATE UNIQUE INDEX ... ON fundamentals
+      (ticker, period_end, period_type, statement_line, version)`,
+      declared in `Fundamental.__table_args__` too. Applied cleanly to
+      the real dev DB — zero existing violations, confirmed before
+      writing the migration, not after.
+- [x] **A candidate second constraint, investigated and correctly
+      REJECTED**: `ingested_filing_log(ticker, source_url)` looked like
+      the same gap at first glance — 53 real repeated pairs found. All
+      53 turned out to be exactly one calendar day apart, zero
+      same-day/near-simultaneous pairs — genuine `reconcile=True` passes
+      on a LATER day finding new `statement_line`s the first pass
+      missed (`ingest_archived_report`'s own docstring: a reconcile pass
+      finding something new is MEANT to log again). A unique constraint
+      there would have enforced a false invariant and broken a real,
+      working feature — caught by actually checking the timestamps
+      before writing the fix, not by pattern-matching "duplicate rows
+      exist, add a constraint."
+- [x] **3 existing tests fixed, not weakened**: `test_fundamentals_api.py`'s
+      corroboration tests constructed two independently-sourced rows at
+      the same `version=1` — a fixture shape real ingestion never
+      produces (`_next_version` always increments for a second distinct
+      source_url on the same period), now corrected to `version=2` on
+      the second row, matching real data. 2 new tests added: the
+      constraint actually rejects a genuine duplicate at the DB level,
+      and a same-period/different-version pair remains completely
+      unaffected. Full suite 1322 passed.
+
+## "Does this provide correct decisions?" — three real root-cause parsing bugs found and fixed
+
+Prompted by the product owner asking directly whether the platform is
+correct, not just complete — and given a standing directive to keep
+fixing until the honest answer is yes, not to stop at disclosing gaps.
+Closes the open item both R1_OPEN_ISSUES.md (OI-4) and R1_VALIDATION.md
+named but left unfixed: "the true scale [of note-reference contamination]
+across the whole universe is unknown."
+
+- [x] **Full-scope measurement, for the first time**: `check_magnitude_
+      plausibility` (already built the previous session) run against
+      EVERY currently-confirmed row, not the 8-line/absolute-threshold
+      heuristic OI-1's own sweep used — **884 confirmed rows flagged**
+      as almost-certainly corrupted. `scripts/reverify_magnitude_
+      flagged_fundamentals.py` (generalises `scripts/reverify_
+      suspicious_fundamentals.py`) and `scripts/remediate_oi4_full_
+      scope.py` (generalises `scripts/remediate_oi1.py`) built to
+      measure and fix it at that scale, same conservative shape as the
+      originals: dry-run by default, real re-download + re-extraction
+      against the live source PDF, never silently re-promoted to
+      REPORTED.
+- [x] **Root cause #1 — Sri Lankan fiscal-year-range headers
+      double-counted**: `_YEAR_TOKEN_RE` alone reads a genuine 2-column
+      header written as "2019/2020 2018/2019" (SL's April-March fiscal
+      year, common convention) as FOUR year tokens, not two — silently
+      mis-detecting a 2-column statement as 4-column and disabling the
+      note-reference-drop rule for every line on it. Traced to the exact
+      byte on Asia Asset Finance PLC's real filing: `capital_expenditure`
+      stored as the literal digit `20` (Note 20) instead of the real
+      `-27,787,206` sitting right next to it. Fixed with `_count_year_
+      tokens` (counts a `YYYY/YYYY` range as one column), 5 new tests,
+      verified end-to-end against the real live PDF — `capital_
+      expenditure` now correctly resolves to `-27787206`.
+- [x] **Root cause #2 — a CSE "errata" announcement's own `manualDate`
+      doesn't reliably carry the period it corrects**: MFPE.N0000's real
+      duplicate-annual-period bug (named, unfixed in R1_VALIDATION.md)
+      traced to its exact source — an ERRATA letter ("correction to NAV
+      ratio disclosure... does not impact the financial figures") for
+      the real 31 March 2025 annual report, catalogued with
+      `manualDate` = its OWN 22 Oct 2025 submission date, creating a
+      phantom second "annual" period with every figure identical to the
+      original. Fixed by skipping any archived filing whose first page
+      mentions "errata" outright, rather than guessing the real period
+      from free text — a new `_first_page_text` helper, bounded by its
+      own timeout (the same real pdfplumber-hang class `_extract_with_
+      timeout` already guards against, on a different file). 2 new
+      tests using the real errata's own captured text.
+- [x] **Root cause #3 — a joint-venture/associate "Summarised Statement"
+      note isn't excluded like a genuine notes page is**: HNB.N0000's
+      real ~15x net_income error (R1_VALIDATION.md's single most
+      material finding, root cause explicitly not found in that pass)
+      traced to the exact page: note 34(d), "Summarised Statement Of
+      Profit Or Loss Of Joint Venture - Acuity Partners (Pvt) Ltd,"
+      prints a miniature income statement for HNB's OWN joint venture
+      under the same canonical labels HNB's real consolidated statement
+      uses — doesn't contain "notes to the" (a note-34 continuation
+      page, not the notes section's own opening header) so the existing
+      exclusion missed it, and it precedes HNB's real statement in page
+      order, so "first occurrence wins" kept the joint venture's own
+      figure. Fixed by adding "summarised/summarized statement of" as a
+      second, generalisable unconditional notes-page exclusion —
+      catches this shape for ANY company's JV/associate/segment
+      sub-schedule, not just Acuity Partners. 1 new test using the real
+      page text.
+- [x] **Root cause #4 — a genuine primary statement page's own routine
+      FOOTER excluded it**: fixing #3 alone still wasn't enough — HNB's
+      REAL income statement page (its actual "STATEMENT OF PROFIT OR
+      LOSS AND OTHER COMPREHENSIVE INCOME") was ALSO being excluded, by
+      the ORIGINAL "notes to the" marker (built for J.F. Packaging's
+      Note 25.1 case) firing on a completely ordinary line every real
+      primary statement page in this filing carries: "The notes to the
+      financial statements from pages 298 to 466 form an integral part
+      of these financial statements" (verified: real page 290, line 39
+      of 41 — a footer disclosure, not a section header). This sentence
+      is standard boilerplate on essentially any compliant Sri Lankan
+      filing, so this was likely the highest-impact of the four fixes,
+      not specific to HNB. Fixed by scoping `_NOTES_PAGE_MARKERS` to the
+      page's own first 10 lines (matching `_HEADER_SEARCH_LINES`'s own
+      precedent) — a real notes-section header always lives there; a
+      footer reference never does. 2 new tests, including a regression
+      guard that the ORIGINAL J.F. Packaging case stays caught.
+- [x] **HNB verified end-to-end, live, with all four fixes together**:
+      `net_income` for FY2024 now correctly resolves to **41,341,793,000**
+      (Bank) — matching the real external ~15x-larger figure R1_VALIDATION.md
+      found, not the wrong 3,179,557,000 that had been sitting confirmed.
+      Root cause fully closed, not just disclosed.
+- [x] Full suite green throughout every fix: 1335 passed.
+
+**Both full-universe sweeps (the 884-row OI-4 remediation and the
+existing stale-fundamentals repair) were RESTARTED from scratch after
+EVERY fix landed, four times in total** — a long-running sweep is a live
+Python process that already imported the pre-fix code; resuming from its
+own checkpoint would have kept re-verifying against an already-superseded
+extractor. Re-running from scratch after each fix is the only way each
+sweep's own results actually reflect what today's code does.
+
+- [x] **OI-4 remediation applied**: `scripts/remediate_oi4_full_scope.py
+      --apply` — 477 confirmed-wrong candidates (509 physical rows,
+      several matched more than one stored row) reverted to AI_ASSISTED
+      with the value corrected to what today's fixed pipeline verified
+      against the live source PDF, exactly the OI-1 precedent. 402 were
+      genuinely `confirmed_correct` (real, small figures the magnitude
+      check was right to flag as suspicious-looking but a fresh
+      extraction confirms are real), 5 unverifiable.
+- [x] **HNB's specific wrong row, closed with a targeted, fully-verified
+      correction** (`scripts/remediate_hnb_net_income.py`) — the OI-4
+      sweep's own magnitude check correctly never flagged this row
+      (3.18bn isn't implausibly tiny relative to HNB's own ~2 trillion
+      total_assets) and `refresh_stale_fundamentals` correctly refuses
+      to touch an already-confirmed row even when an identity DOES fail
+      — so the fixed extraction pipeline alone could not close this on
+      its own; it needed one targeted, evidence-based correction.
+      Verified two independent ways before applying: (1) live
+      re-extraction against the real source PDF with all four fixes,
+      (2) an independently-confirmed row ALREADY in this database
+      (a different filing, confirmed in an earlier, unrelated session)
+      carrying the identical figure. Reverted to AI_ASSISTED, pending
+      human re-confirmation, per §8 — never silently re-promoted.
+- [x] **A fifth real bug, found auditing for exactly this "silently
+      wrong, no check catches it" class**: cross-checked every
+      CONFIRMED (`annual`, `quarterly`) pair covering the same period —
+      real, independent corroboration, the same signal that let the HNB
+      fix be verified. Found `interest_expense` disagreeing by close to
+      an exact 2x ratio (same magnitude, opposite sign) across dozens of
+      unrelated tickers. Traced to the real source, not assumed: this is
+      NOT an extraction bug — LGL.N0000's real FY2013 annual report
+      prints "Finance Costs 6.3 (5,053,018) ..." (parenthesised) while
+      its own real quarterly interim prints the identical figure
+      unparenthesised. The SAME company formats this line with opposite
+      sign conventions across filing types — both extractions are
+      individually correct reads of genuinely inconsistent source text.
+      **Real, live consequence closed**: `app.domain.wacc.compute_cost_
+      of_debt` divided `interest_expense / total_interest_bearing_debt`
+      with no sign normalisation — a company whose confirmed row
+      happened to carry the negative reading got a NEGATIVE cost of
+      debt, pulling WACC down and overstating every DCF value built on
+      it, the exact dangerous direction this module's own docstring is
+      already careful to name for a MISSING cost of debt, now closed for
+      the wrong-sign case too. Fixed with `abs(interest_expense)` — a
+      downstream normalisation, not a data correction, so it benefits
+      **105 distinct tickers** with a currently-negative confirmed
+      `interest_expense` immediately, with zero data remediation needed
+      (valuations compute live, not from a cache). 1 new test using the
+      real LGL.N0000 figures.
+- [x] **The same sign issue, found on a SECOND quantity by re-running the
+      same annual/quarterly cross-check with a more precise signal**
+      (same magnitude, opposite sign — not just ">5% different," which
+      mostly just reflects a quarter's flow figure genuinely differing
+      from a full year's, not a bug): `total_interest_bearing_debt` — a
+      debt BALANCE, which can never legitimately be negative — showed
+      the identical pattern (verified: LVEF.N0000's real FY2025 annual
+      filing prints its debt maturity split parenthesised; its own
+      quarterly filing prints the identical figure unparenthesised).
+      This one has THREE real consumers, all fixed: `wacc.compute_wacc`
+      (a negative reading would make `debt_weight` negative and
+      `equity_weight` exceed 1.0 — an uninterpretable weighted average,
+      not just a wrong number) and `valuation_view.dcf_for`'s own
+      capital-structure section (a negative `total_debt` would INCREASE
+      `equity_value` in the enterprise-to-equity bridge — subtracting a
+      negative — the same overstate-the-value direction the existing
+      `capex = abs(...)` line already guards against one line above it).
+      2 new tests. Full suite: 1337 passed.
+
+**A note on scope, honestly**: this "same-magnitude-opposite-sign
+cross-check" is a real, generalisable technique — re-run at any time
+against any pair of independently-confirmed sources — but it can only
+ever surface what it's given to compare (two confirmed sources for the
+same period existing at all) and only catches THIS specific failure
+shape (sign flips), not every way a number could be wrong. Treated as
+what it is: a real, bounded improvement, not a claim that every possible
+silent error is now caught.
+
+- [x] **A 7th real fix, closing a limitation this codebase's own prior
+      work explicitly named and deliberately declined to fix at the
+      time**: `_repair_split_leading_digits`'s own docstring already
+      documented, in detail, a real "non-uniform split" case (Panasian
+      Power PLC's Inventories row — some columns split, some not) and
+      said plainly that fixing it needed "the real discriminator...
+      MAGNITUDE plausibility relative to the rest of the same filing...
+      not solvable here... without the same risk of reintroducing" the
+      J.F. Packaging false-positive. **`check_magnitude_plausibility`,
+      built this session, is that missing piece.** Traced JAT Holdings
+      PLC's real confirmed `net_income` (stored as the literal digit
+      "2") to the actual root cause, which turned out to be one level
+      earlier than the non-uniform-split repair itself: `detect_
+      expected_value_columns` is a PAGE-level, header-only function, and
+      a header like "Rs. Rs. % Rs. Rs. %" is genuinely ambiguous — Tea
+      Smallholder's real "%"-column prints a BARE number per row (needs
+      counting), JAT's own real "%"-column prints the value WITH a
+      literal "%" suffix on every row (already correctly stripped by
+      `_VARIANCE_PCT_RE`, so it must NOT be counted) — and the header
+      alone cannot say which a given filing will do. Fixed by adjusting
+      the expected-column comparison PER LINE, by however many
+      `_VARIANCE_PCT_RE` tokens THAT line actually had to strip — Tea
+      Smallholder's real line strips zero (unaffected, unchanged
+      behaviour, verified with a new test), JAT's real line strips two
+      (correctly un-inflating the comparison, unlocking the already-
+      existing `_merge_all_split_pairs` alt_values machinery this whole
+      time was ready to compute the right answer but was never being
+      asked to). 2 new tests, one against JAT's real line, one against
+      Amãna Bank's real "%"-suffixed-but-not-split line (the exact
+      fixture `_VARIANCE_PCT_RE`'s own docstring already cites) as a
+      non-regression guard. Full suite: 1339 passed.
+- [x] **A genuinely deeper residual, found and named rather than forced**:
+      fixing the column-count bug alone did not fully resolve JAT's own
+      `net_income` line — `alt_values` now correctly computes the right
+      answer (238,401,649), but `reconcile_ambiguous_values_via_
+      identities` (the page-level step that would apply it) doesn't pick
+      it, because JAT's real `profit_before_tax` was ALSO split by
+      exactly the same missing leading digit ("2", worth 200,000,000 in
+      both cases) — and since "pre-tax profit − tax = net income" is a
+      pure addition/subtraction relationship, subtracting the identical
+      200,000,000 from BOTH sides leaves the identity passing under the
+      WRONG default reading, exactly as cleanly as under the right one.
+      This is not a bug in the fix just shipped — it's a structurally
+      different, genuinely harder problem: an error invisible to
+      identity-based reconciliation BY CONSTRUCTION (a uniform offset
+      across both terms of a linear identity), and too large in absolute
+      terms (tens of millions) to trip the magnitude-plausibility floor
+      either. Named precisely rather than patched around with a guess;
+      closing it for real would need a genuinely different signal (e.g.
+      period-over-period growth-rate plausibility against the SAME row's
+      own unaffected comparative column) that does not exist yet.
+- [x] **Re-measurement after the seven fixes above, and a second remediation
+      pass**: re-ran `reverify_magnitude_flagged_fundamentals.py` from a
+      cleared checkpoint (mandatory after every parsing-code change — a
+      stale in-memory process would silently re-verify against the OLD
+      code) against all 407 rows still flagged after the first 509-row
+      remediation wave. Result: **323 confirmed_correct** (the fresh
+      re-extraction reproduces the same stored figure — some genuinely
+      tiny/correct values, some still-wrong cases the fixes above don't
+      reach yet), **79 confirmed_still_wrong** (a DIFFERENT value now,
+      i.e. today's pipeline disagrees with what's stored — real,
+      actionable), 5 unverifiable. `remediate_oi4_full_scope.py --apply`
+      run a second time against the freshly-regenerated report: **79
+      more rows reverted to `AI_ASSISTED`/unconfirmed with corrected
+      values**, same audit-trail-note discipline as the first pass.
+      Combined total across both remediation passes: 588 correction
+      operations (579 distinct rows — 9 rows needed correcting twice,
+      once by each pass, as later fixes unlocked a more correct
+      re-extraction than the first pass had available).
+- [x] **Root cause #8, found tracing the 323 "confirmed_correct" bucket
+      rather than accepting it at face value**: Ownally Holdings PLC's
+      real confirmed `revenue` for FY2022 was stored as the literal
+      digit "6" — and TODAY's pipeline (all 7 fixes above included)
+      reproduced the exact same "6" on re-extraction, which is why the
+      sweep called it `confirmed_correct` rather than flagging it as
+      newly-wrong. Traced to the same `detect_expected_value_columns`
+      family root cause as fix #7, but a different shape: ONAL's real
+      page text reads "Year ended 31 March 2022 2022 2021" — pdfplumber
+      has merged the page's own TITLE line (whose trailing "2022" just
+      completes that sentence, not a column header) with the table's
+      real header row ("2022 2021") onto one line. `_count_year_tokens`
+      counted THREE year tokens (the title's "2022", the header's own
+      "2022", and "2021") for what is genuinely a 2-column statement,
+      inflating `expected_value_columns` to 3 — which made the real data
+      line "Revenue from contracts with customers 6 213,037,864
+      181,702,922" (note reference "6" + 2 real values, 3 tokens total)
+      pass the `len(numeric_tokens) > expected_value_columns` check as
+      3 > 3 = False, so the note-reference-drop rule never fired and the
+      leading "6" was kept as the value. Fixed by collapsing an
+      immediately-ADJACENT literal duplicate year (nothing but
+      whitespace between two identical 4-digit tokens) to one column —
+      narrow and position-aware, so J.F. Packaging's real "2026 2025
+      2026 2025" (non-adjacent repeats, all 4 genuinely distinct
+      columns) is provably unaffected; pinned with a unit test on that
+      exact shape plus a new fixture (`ONAL_INCOME_STATEMENT_TEXT`, real
+      page 43 text) and an end-to-end extraction regression. Full suite:
+      1342 passed. **Confirmed live to also affect other tickers sharing
+      this exact "X ended DATE YYYY YYYY" merged-header shape** — traced
+      Raamboda Falls PLC's real Statement of Financial Position
+      ("As at 30th June 2020 2020 2019") the same way: `expected_value_
+      columns` is now correctly 2 there too, unblocking the note-
+      reference-drop AND `alt_values`/reconciliation machinery for every
+      split-leading-digit line on that page (`TOTAL ASSETS`, `Total
+      [Non-]Current Assets`, etc.) that used to read as a bare single
+      digit. Worker restarted, checkpoint cleared, full sweep re-run
+      against all still-confirmed flagged rows to measure fix #8's real
+      scope before the next remediation pass — see the entry below once
+      it completes.
+- [x] **Fix #8's measured scope, and a third remediation pass**: re-ran the
+      sweep against exactly the 328 rows the previous sweep had called
+      `confirmed_correct` or `unverifiable` (i.e. everything fix #8 could
+      plausibly still change). Result: **258 still confirmed_correct, 65
+      NOW confirmed_still_wrong** — fix #8 alone flipped 65 rows from
+      "silently accepted as correct" to "actionable, confirmed wrong."
+      Broken down by ticker, confirms the header-pattern hypothesis
+      generalised well beyond the two filings (ONAL, Raamboda Falls) it
+      was traced on: **ONAL.N0000 15, RHTL.N0000 10, RFL.N0000 6,
+      RPBH.N0000 5, RIL.N0000 4, LPL.N0000/LPL.X0000 4 each, HUNA.N0000
+      4**, plus single-digit counts across ATLL, EXT, WLTH, LGL, LFIN,
+      HPWR, CALU, CALI — the same "title line merged with the real
+      column-header row" PDF-extraction artifact recurring across many
+      independent filers, not a one-off. `remediate_oi4_full_scope.py
+      --apply` run a third time: **65 more rows reverted to
+      `AI_ASSISTED`/unconfirmed with corrected values.** Running total
+      across all three remediation passes: 653 correction operations.
+- [x] **Root cause #9 — a false-POSITIVE in the plausibility check itself,
+      not a parsing bug**: `check_magnitude_plausibility`'s own
+      `ratio = abs(value) / largest` is always exactly 0 for a genuinely
+      zero value, always below the implausibility floor, so a real zero
+      subtotal could NEVER pass this check no matter how many times it
+      was re-verified — found tracing Pan Asia Power PLC's real confirmed
+      `total_non_current_liabilities`, printed as a literal "0" on 16
+      independent real filings across consecutive years (the company
+      simply repaid all its long-term debt that year — a completely
+      ordinary accounting outcome, re-confirmed identical every time).
+      Fixed by exempting an exact zero from the check entirely — a
+      corrupted read (split-off leading digit, stray footnote number) is
+      never itself exactly zero, so this loses no real detection power.
+      Worker restarted, checkpoint cleared, sweep re-run against the 328
+      rows fix #8 could plausibly still touch: **result flipped to 235
+      candidates (28 fewer — genuine zeros no longer even flagged),
+      258 confirmed_correct, 0 newly wrong, 5 unverifiable** — a pure
+      false-positive reduction, nothing to remediate this round. Full
+      suite: 1343 passed.
+- [x] **Root cause #10 — three combined bugs found tracing PALM.N0000/
+      CHMX.N0000 (the new top-flagged tickers once #8 and #9's false
+      positives were cleared)**: Chemanex PLC's real confirmed `revenue`
+      (stored as the literal digit 1) and `gross_profit` (stored as
+      2,928 instead of 22,928) traced to THREE separate, compounding
+      real bugs on one filing: (1) `detect_expected_value_columns`
+      undercounted a bare "%" variance column that shares the YEAR/date
+      header line itself ("2018 2017 Variance %") rather than the unit-
+      declaration line Tea Smallholder's own already-handled shape uses
+      — fixed by summing the two signals when they cooccur on the same
+      line; (2) `_merge_all_split_pairs` offered NO alternate at all
+      when a genuine leading note reference sits directly in front of a
+      split pair's own leading digit (both lone digits, indistinguishable
+      by shape to the original single-pass greedy scan) — fixed by
+      retrying with the leading token dropped when the direct scan
+      overshoots the target column count, narrow enough that an existing
+      safety-net unit test needed updating (it was testing an
+      unsourced/hypothetical shape, not a real filing, and its own test
+      class already documents the module's actual design principle:
+      offer an aggressive candidate, let `reconcile_ambiguous_values_
+      via_identities` reject what doesn't validate — replaced with a
+      still-irresolvable-either-way case to keep that safety coverage
+      real); (3) a stray space after a negative value's own OPENING
+      parenthesis ("( 84,645)" instead of "(84,645)") broke `cost_of_
+      sales`'s extraction entirely — a THIRD real pdfplumber space
+      artifact, distinct from the two `_repair_split_thousands` already
+      handled — which mattered because the accounting-identity
+      reconciliation that fixes (1) and (2) needs `cost_of_sales`
+      correct to even evaluate "revenue + cost_of_sales = gross_profit."
+      All three fixed together, verified end-to-end against the real
+      filing text: `reconcile_ambiguous_values_via_identities` — already
+      existing, no new reconciliation logic needed — now correctly
+      resolves BOTH `revenue` (107,573) and `gross_profit` (22,928) using
+      exactly the same identity-based machinery built for J.F. Packaging
+      and eChannelling's real cases. Full suite: 1348 passed.
+- [x] **Fix #10's measured scope, and a fourth remediation pass**: worker
+      restarted, checkpoint cleared, sweep re-run against the same 235
+      candidates fix #9 had left. Result: **211 confirmed_correct, 19
+      NEWLY confirmed_wrong, 5 unverifiable**. Broken down by ticker,
+      confirms fix #10's three combined bugs are genuinely general
+      (found on Chemanex, but not Chemanex-specific): **RFL.N0000 4,
+      LLUB.N0000 3**, plus single-row hits spread across STAF, SCAP,
+      RWSL, RIL, RHTL, REEF, PHAR, MHDL, LOFC, JKL, HUNA, CHMX (a
+      SECOND, different line on top of the revenue/gross_profit pair
+      already fixed by the unit test), CALI, CALC, BFN. `remediate_
+      oi4_full_scope.py --apply` run a fourth time: **20 rows reverted
+      to `AI_ASSISTED`/unconfirmed with corrected values** (19 report
+      entries, one matching 2 DB rows). Running total across all four
+      remediation passes: 673 correction operations.
+- [x] **Root cause #11 — a genuine architectural GAP named and closed,
+      not just another parsing bug**: PALM.N0000, the new top-flagged
+      ticker once #8–#10's false positives and fixable bugs were
+      cleared, turned out to be a genuinely different, harder shape (a
+      12-column Group×Company×3-month/6-month×current/prior/variance%
+      header where individual line items OMIT sub-columns rather than
+      dash-filling them, and WHICH columns get omitted varies per line
+      item — named as a residual, not force-fixed, matching the JAT
+      precedent from earlier this session: forcing a fix here risks
+      fragile, over-fitted logic for one company's unusual layout).
+      Checking a SECOND top-flagged ticker (SHOT.N0000) instead found a
+      real, well-scoped, GENERAL gap: its real confirmed `inventories`
+      (stored as the literal digit 3) already computes the CORRECT
+      `alt_values` reading (37,890) via the exact same split-pair
+      machinery every other real case in this module relies on — but
+      `inventories` is a balance-sheet COMPONENT line with no sibling
+      accounting identity anywhere in `check_accounting_identities`
+      (nothing sums "total_current_assets = inventories + trade_
+      receivables + ..."), so `reconcile_ambiguous_values_via_
+      identities` never even considers it: there is nothing for
+      identity-based reconciliation to test the correction against, so
+      the obviously-correct alt sits unused forever, even though `check_
+      magnitude_plausibility` already flags the default outright. Closed
+      by a new, complementary reconciliation pass, `reconcile_magnitude_
+      implausible_values` — a narrower, DIFFERENT acceptance rule from
+      identity-based reconciliation (not a relaxation of it): a
+      substitution is accepted only when the key was already flagged
+      implausible, an alt exists, the alt itself clears its own flag,
+      and the substitution introduces no NEW implausibility flag on any
+      other key (the corrected value becoming the filing's new "largest"
+      could otherwise shrink some other key's ratio below the floor for
+      the first time). Wired into `_apply_identity_reconciled_
+      corrections` as a SECOND pass, run after identity-based
+      reconciliation and against its updated values, so both passes
+      compose correctly on the same filing. 5 new unit tests (the real
+      Serendib case, a no-alt-available case, a still-implausible-alt
+      case, a never-flagged-so-never-touched case, and a would-newly-
+      implicate-another-key rejection case) plus one true end-to-end
+      integration test through the actual public `extract_financial_
+      statement_candidates` entry point (Serendib's real balance sheet
+      page, `inventories` AND `trade_receivables` both correctly
+      resolved alongside an identity-reconciled `total_assets` on the
+      same page). Full suite: 1354 passed.
+
+## M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md): Task 1 (isolation scaffold) only
+
+A new, separate module — not part of the Master Spec's own phase
+sequence above. Strictly additive per its own brief §0: never writes to
+an existing table, never imports the app's DB session/models, never
+modifies a shared frontend component.
+
+- [x] **`backend/m5/`**: the full package tree the brief specifies
+      (panel/, states/, baserates/, playbooks/, validation/, shadow/,
+      api/, worker.py) — every module beyond Task 1 itself is an honest
+      stub (a docstring naming which task builds it and what it's
+      blocked on), not invented logic.
+- [x] **Three real mismatches between the brief and this actual
+      codebase, found and adapted rather than blindly followed**:
+      1. §1.1's Postgres role/schema SQL cannot run against this
+         project's real dev database (SQLite, deliberately — see
+         README's own "SQLite vs PostgreSQL" section). `m5/db.py` uses a
+         completely separate SQLite file (`m5.sqlite`) instead — a
+         stronger physical isolation guarantee than a Postgres
+         schema+role, arguably. The original SQL is preserved verbatim
+         at `m5/migrations/pg_roles_reference.sql` for the real
+         production move.
+      2. §1.3's `if settings.M5_ENABLED:` requires a field on
+         `app.config.Settings` that didn't exist (that class's own
+         `extra="ignore"` silently drops undeclared env vars) — added
+         `m5_enabled: bool = False`, disclosed as a deliberate, minimal
+         exception to "only main.py, one line," not silently done.
+      3. §1.3's `frontend/src/config/navigation.ts` doesn't exist; the
+         real nav array is `frontend/src/nav.ts`, and wiring a real
+         route also required one guarded `case` in `App.tsx`'s own
+         render switch — a third touch point beyond the brief's literal
+         two files, again disclosed rather than hidden.
+- [x] **A named, real blocker, not worked around**: Task 4's state
+      thresholds (Appendix A) and Task 7's five remaining playbook
+      definitions (Appendix B) live in the companion spec PDF (`CSE
+      Alpha Engine - M5 Convergence Engine v1.0.pdf`), which is
+      referenced but not included in the brief's own text — `m5/states/
+      definitions.py` and `m5/playbooks/definitions/__init__.py` name
+      this precisely rather than inventing threshold numbers.
+- [x] **The 4 CI isolation gates (brief §1.4)** — `tests/isolation/
+      test_m5_isolation.py`: 2 close to the brief's literal pseudocode
+      (no forbidden imports; no writes outside `m5.`), 2 adapted (the
+      brief's git-diff-against-a-pre-M5-tag check replaced with a static
+      marker scan, since no such tag exists in a repo where M5 work
+      started mid-session against an already-dirty tree; the
+      flag-off-means-404 check verified against the real FastAPI app).
+      All 4 pass. Verified BOTH directions live, not just the flag-off
+      unit test: a throwaway backend instance with `M5_ENABLED=true`
+      really returns 200 from `/api/v5/status` (and `/health` keeps
+      working unaffected), then torn down — confirmed no `m5.sqlite`
+      file was even created (the status endpoint never touches the DB
+      engine, matching "nothing beyond the scaffold is implemented yet"
+      exactly).
+- [x] **Frontend wiring, guarded**: `frontend/src/features/playbooks/`
+      — a lazy-loaded route with its own error boundary (brief §8's
+      requirement, built now since it's part of the allowed wiring, not
+      Task 8's real UI), rendering a real, honest "not built yet" body
+      that calls the real `/api/v5/status` endpoint — proving nav entry
+      -> lazy route -> error boundary -> real backend call actually
+      works end to end, this codebase's own established "never fake
+      content, even a placeholder" discipline extended to M5's own
+      first screen.
+- [x] Full existing suite green throughout: 1326 backend tests passed,
+      frontend `tsc --noEmit` + the zone-fallback CI guard clean.
+
+**Not started**: Tasks 2-9 (panel builder, backfill, state classifier,
+base rate engine, trial registry, playbook engine, the real Playbooks
+tab, shadow book).
+
+## Phase 6 — the factor library, §36 Carhart certification, §37 timing battery, §38 composite score: completed
+
+Everything the "Explicitly deferred" section below used to call
+genuinely unbuilt (MKT-RF, SMB, HML/HML_hard, MOM, the mandatory Dimson
+correction, §36's Carhart certification regression) is now real and
+live, plus the two pillars that consume it:
+
+- **§35.1's full factor series** (`app.domain.factor_series` +
+  `factor_series_view`) — MKT-RF, SMB, HML_hard, MOM and LIQ, all on a
+  real weekly formation cadence (disclosed substitution for §35.1's own
+  monthly convention — this system's real price history supports
+  ~163 weeks of meaningful re-estimation, not monthly rebalancing).
+  SMB/HML_hard/MOM/LIQ reuse `app.domain.portfolio_sort.
+  two_by_three_sort` (the real Fama-French 2x3 construction) with a
+  different real per-ticker `style_value` each; MKT-RF and MOM's own
+  "skip the most recent month" windowing are the two genuinely new
+  pieces this module adds.
+- **§36 Carhart certification** (`app.domain.carhart_regression` +
+  `carhart_view`) — Dimson (1979) 3-lag aggregated betas against all 5
+  real factor series above, Newey-West HAC standard errors via
+  `statsmodels` (the same lazy-import precedent `app.domain.
+  sector_sensitivity` already set), regressed by real date intersection
+  across every series so a week missing from one factor never silently
+  misaligns the rest.
+- **§37 timing & momentum battery** (`app.domain.timing_battery` +
+  `timing_battery_view`) — the real weighted-signal composite (52wk-high
+  20%, residual momentum 20%, MOM_12_2 20%, MOM_6_1 15%, REV_1M 15%,
+  volume confirmation 10%), §37.1's contrarian branch, §37.2's
+  crash-guard reweighting. A missing signal (most commonly residual
+  momentum, which needs a real Carhart regression with enough real
+  weeks behind it) renormalizes the weighted mean among whatever IS
+  real for this ticker — never a fabricated zero standing in for a
+  missing signal.
+- **§12 sector-relative percentiles, real and universe-wide**
+  (`app.domain.sector_percentiles` + `sector_percentiles_view`) — a
+  ratio's own value ranked against its real CSE industry-group peers
+  (falling back to the wider GICS sector when the narrow group has too
+  few), the machinery both the company file's own ratio cards and the
+  composite score's own percentile-ranked pillars now share.
+- **§38's Macro & sector fit pillar** (`app.domain.macro_sector_fit` +
+  `macro_sector_fit_view`) — a direction-count formula over sector
+  sensitivity to the current regime, project-register exposure and
+  sector momentum, deliberately NOT magnitude-weighted (an OLS
+  coefficient's magnitude isn't comparable across differently-scaled
+  shock series without an invented normalization — see that module's
+  own docstring).
+- **§38 composite score itself** (`app.domain.composite_score` +
+  `composite_score_view`, `GET /composite-score/{ticker}`) — the real
+  7-pillar blend (Valuation 25/Business quality 25/Growth 15/Financial
+  strength 10/Macro & sector fit 10/Timing & momentum 10/Risk 5) plus
+  the §11.1 Gate 3 integrity veto reported as evaluated/vetoed/
+  unevaluable (never assumed to pass). Valuation and Growth are
+  permanently shown as evidence rather than blended into the number —
+  a real, measured ~30s-per-universe-pass latency cost at current data
+  volume, not a data gap; any other pillar missing for a specific
+  ticker carries its own real, named reason. Live on the company file
+  and folded into `app.domain.opportunity_ranking_view`'s own module
+  docstring, which used to (wrongly) claim this machinery didn't exist
+  — corrected in place rather than left stale once this section made
+  the claim provably false.
+
+Rolling alpha (`app.domain.rolling_alpha`) — a real trailing-window
+alpha series built on the same Carhart machinery, for a future
+performance-attribution surface — also shipped alongside the above but
+isn't consumed by any screen yet; named here so it isn't mistaken for
+dead code.
+
+## R1 — UX & data-integrity remediation (Aug 2026)
+
+A full second pass, separate from Phase 1-6's own build-out above:
+fixing what the screens actually showed a real user, auditing this
+system's own stored data against reality, and building the QA
+infrastructure to keep both from silently regressing. Full detail
+lives in its own audit trail, `docs/audits/R1_*.md` (published as a
+browsable artifact — ask for the link if it's not already at hand),
+not duplicated here; this entry is the pointer plus the headline
+findings.
+
+- **Phase 1/2 data audit** — synthetic-value sweep, source
+  reconciliation, and OI-1: 95 confirmed "Reported" figures across the
+  universe were actually stale note-reference numbers (a PDF note
+  number like "5" or "4.2" mis-read as the real value) from before a
+  parser fix, wrongly bulk-confirmed. Re-verified against real source
+  PDFs, corrected, reverted to AI_ASSISTED pending re-confirmation.
+- **Phase 4 — UI redesign**, screen by screen: Today (real trend
+  chips, real attention counts), Opportunities and Companies
+  (paginated, real 5/10/15/30-day sort columns), Portfolio ("Sell
+  Above" replacing the wrong "Buy Below" signal for held positions,
+  real per-position attention flags), the Company file (ratio cards
+  with real sector percentile + multi-year path, a plain-language cost-
+  of-equity explainer, valuation routing collapsed into one honest
+  table, the composite score made the page's own visual anchor with a
+  real weight-proportional stacked bar, paginated financial statement
+  lines sorted awaiting-confirmation-first), and Macro (a real
+  sector drill-down — market-share treemap, ranked constituents, macro
+  sensitivities carried through — the single highest-value new feature
+  in that pass).
+- **Phase 4B — QA infrastructure**: `backend/scripts/qa_capture.py`
+  (real Playwright session against the real running app; screenshots,
+  programmatic assertions, forbidden-string/empty-state/axe-core
+  sweeps), `docs/audits/R1_BROWSER_QA.md` (human-in-the-loop five-
+  question review per screen), and this repo's first-ever CI workflow
+  (`.github/workflows/ci.yml`).
+- **Two real, severe backend bugs found and fixed** while building the
+  QA automation, both in `app/db/session.py`: SQLite was never in WAL
+  mode (real lock contention), and — the more serious one —
+  SQLAlchemy's own default connection-pool ceiling (15) was being
+  exhausted by this app's own concurrent requests on a normal cold page
+  load, which could make a screen hang **indefinitely** for a real
+  user, not just run slow. Traced to an exact `TimeoutError` in the
+  server log; fixed by raising the pool size for SQLite specifically.
+  Re-verified live: a page that never rendered before now loads in ~8s,
+  consistently.
+- **Phase 5 — independent valuation** (`docs/audits/R1_VALIDATION.md`):
+  5 randomly-seeded tickers (seed recorded, reproducible), valued from
+  raw stored data before touching this system's own computed output,
+  then checked against real external research gathered live. Found a
+  genuine ~15x error in HNB.N0000's stored net income against real
+  externally-reported group earnings (root cause not yet found —
+  highest-priority open item); found and fixed two more OI-1-pattern
+  stale rows on LOFC.N0000 (logged as OI-4 — on statement lines OI-1's
+  own reverification sweep never checked, so the true scale of that bug
+  class across the rest of the universe is still unknown); and
+  documented, honestly, that 3 of the 5 randomly-picked tickers have no
+  independently-computable fair value from this system's confirmed data
+  today, each for a different, real, named reason.
+
+- **Housekeeping, reliability and the "Run Capture" root cause** (23 Aug
+  2026, `docs/audits/R1_FIX_LOG.md`'s own "Housekeeping..." section):
+  removed 3 duplicate git worktrees and a duplicate PDF found while
+  cleaning up "duplicate `ROADMAP.md`" reports; found the worker
+  process (`python -m app.worker`) had never actually been running —
+  `sys.stdout.encoding` defaults to `cp1252` on Windows even redirected
+  to a file, and the first Unicode character in a log line crashed it
+  silently, which is why "Run Capture" looked broken (nothing was ever
+  polling the job queue) — fixed with a UTF-8 stdout/stderr reconfigure
+  in both `worker.py` and `main.py`, plus a new `recover_orphaned_runs`
+  self-heal for any `JobRun` stuck `running` from a crash; the Run
+  Capture button also got a real, small percentage-complete progress
+  bar above it. Processed both real confirm queues at scale through the
+  existing, already-safe mechanisms (213 corporate actions via real
+  `cash_amount` confirms, 478 fundamentals via the corroborated-batch
+  endpoint) — a genuine side effect: `gordon_growth_ddm_for` went from
+  "real but empty" (zero confirmed dividend rows anywhere) to computing
+  real values for the first time.
+- **All 9 §18-26 valuation models made to actually run, not just
+  disclosed** (23 Aug 2026, same day, in direct response to reviewing
+  the pass above as "3 of 9 have zero live caller"): justified P/E and
+  justified P/S (§20.2) are now real live triangulation anchors,
+  `app.domain.valuation_view.relative_valuation_for`, deriving a real
+  payout ratio from the trailing confirmed dividends the housekeeping
+  pass above just unlocked; §23's Bear/Base/Bull scenario set,
+  sensitivity tornado and Monte Carlo overlay are now wired in a new
+  `app.domain.scenarios_view`, built directly on the existing live DCF
+  engine's own base-case assumptions, exposed via `GET
+  /valuation/{ticker}/scenarios`, `/tornado` and `/monte-carlo` and
+  surfaced on the company file. Sum-of-the-parts (§21) is the one model
+  investigated and confirmed to be a genuine hard blocker, not a wiring
+  gap: it needs a segment-level subsidiary/ownership-%/EBITDA-multiple
+  data source that no ingestion pipeline in this project produces at
+  all, tracked separately below rather than left conflated with gaps
+  that turned out to be fixable. 14 new backend tests, 1311/1311 green.
+
+**Real, disclosed gaps this pass did not close** (see
+`docs/audits/R1_OPEN_ISSUES.md` and `R1_FIX_LOG.md`'s own "not done"
+sections for the complete list): HNB's net-income divergence isn't
+root-caused; OI-1's reverification sweep needs re-running across every
+confirmed statement line, not just the original 8; the Company file's
+own page-length density (everything real, nothing individually
+removable, but no way to jump straight to a verdict yet); and the
+Companies table's ticker rows are plain `<tr onClick>` rather than the
+`<button>` every other screen's own ticker cell uses — a real, cosmetic
+accessibility inconsistency, not a keyboard trap (found live while
+building the QA script's own row-click logic).
+
 ## Explicitly deferred to later phases
 
 The earnings integrity veto (§14 — needs CFO, related-party revenue,
@@ -2917,14 +3807,13 @@ away. §34's own possible future variable-set expansion (reserves, M2b,
 private credit, trade balance, tourist arrivals — noted in §29's own
 entry as not available from the daily CBSL PDF) is likewise a real,
 separate, disclosed gap, not part of "macro/ARDL" as a line item
-anymore. **Phase 6 (the factor library) is also no longer entirely
-untouched** — real Amihud illiquidity (§35's own LIQ factor input,
-and the pre-existing "confirmed blocked" gap in Ke's illiquidity
-premium and MoS's liquidity component) is live; MKT-RF, SMB, HML/
-HML_hard, MOM, the mandatory Dimson correction, and §36's Carhart
-certification regression remain genuinely unbuilt, named precisely in
-that entry rather than folded into a false "factor library done" claim.
-Building the still-deferred items against
+anymore. **Phase 6 (the factor library) is also no longer a deferred
+item at all — see "Phase 6 — the factor library..." above, corrected
+here rather than left standing once that section made this paragraph's
+own older claim false.** MKT-RF, SMB, HML/HML_hard, MOM, the mandatory
+Dimson correction, §36's Carhart certification regression, §37's
+timing battery and §38's composite score are all real and live now,
+not deferred. Building the still-genuinely-deferred items above against
 unvalidated data, or against inputs this system doesn't actually have,
 would produce exactly the look-ahead-biased, false-precision numbers the
 spec's failure-mode register (Part N) warns about.
