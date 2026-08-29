@@ -56,3 +56,7 @@ docs/audits/external_dividends_cache.jsonl
 # — hundreds of MB of xlsx, kept on disk locally, never in git
 docs/price data/
 backend/scripts/.pdf_cache/
+# scripts/measure_unmatched_labels.py's own scratch cache + report —
+# regenerated on every run, referenced (not copied) by docs/SYSTEM_AUDIT.md
+backend/scripts/.unmatched_labels.json
+backend/scripts/.unmatched_report.txt
