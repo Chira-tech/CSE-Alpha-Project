@@ -99,7 +99,7 @@ def check_against_second_source(
                 ticker,
                 our_close,
                 quote,
-                threshold_pct=settings.reconciliation_mismatch_threshold_pct,
+                threshold_pct=settings.second_source_mismatch_threshold_pct,
             )
         except SecondSourceShapeError:
             logger.exception("second-source quote for %s could not be trusted", ticker)
@@ -118,7 +118,7 @@ def check_against_second_source(
                 detail=(
                     f"stored close {result.our_close} for {as_of} disagrees with TradingView's "
                     f"current quote {result.their_close} by {result.mismatch_pct:.4%}, exceeding "
-                    f"the {settings.reconciliation_mismatch_threshold_pct:.2%} threshold. This is "
+                    f"the {settings.second_source_mismatch_threshold_pct:.2%} threshold. This is "
                     f"an EXTERNAL second-source check (Part II §5.2), independent of the internal "
                     f"adj_factor reconciliation. Ticker quarantined until resolved."
                 ),

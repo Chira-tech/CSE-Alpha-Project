@@ -149,7 +149,7 @@ from app.domain.relative_valuation import (
 from app.domain.sanity import SanityCheckResult, SanityContext, run_sanity_checks
 from app.domain.market_cap_view import published_market_cap_for
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
-from app.domain.ttm import trailing_twelve_months
+from app.domain.ttm import annualised_flow, trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import CorporateActionType
@@ -195,14 +195,33 @@ def _confirmable_line_items(
     # misleading cumulative value) when TTM annualisation isn't yet
     # possible for this ticker.
     if "net_income" in items and net_income_period_type is not None:
-        ttm_net_income = trailing_twelve_months(
+        # `annualised_flow` = TTM when it can be built, otherwise the most
+        # recent confirmed ANNUAL row (already twelve months as reported —
+        # nothing scaled or estimated). See its own docstring for the
+        # measured reason the fallback exists: TTM alone dropped net_income
+        # for 200 of 283 tickers, because the archive backfill gave most
+        # companies a deep ANNUAL history against a sparse quarterly one,
+        # leaving no prior-year quarterly comparator to annualise against.
+        annualised = annualised_flow(
             db, ticker, "net_income", as_of,
             current_period_end=latest_period, current_period_type=net_income_period_type,
             current_value=items["net_income"].value,
         )
-        if ttm_net_income is not None:
+        if annualised is not None:
+            note = None
+            if annualised.basis == "latest_annual":
+                note = (
+                    f"net_income taken from the confirmed ANNUAL period ending "
+                    f"{annualised.period_end} — a real twelve-month reported figure, used "
+                    f"because no prior-year quarterly comparator exists to build a "
+                    f"trailing-twelve-month figure around {latest_period}. Earnings are "
+                    f"therefore as of {annualised.period_end} while the balance sheet is "
+                    f"as of {latest_period}."
+                )
             items["net_income"] = LineItem(
-                value=ttm_net_income, provenance=items["net_income"].provenance
+                value=annualised.value,
+                provenance=items["net_income"].provenance,
+                basis_note=note,
             )
         else:
             # Deliberately NOT added to `excluded` — that set's own
@@ -335,6 +354,13 @@ def _gather_inputs(
         )
     if period_end is None:
         warnings.append("No fundamentals visible as of this date at all.")
+
+    # Disclose a derived basis (see LineItem.basis_note) — a fair value
+    # built on last year's earnings against this quarter's book value must
+    # say so, not read as if both came from the same date.
+    for item in items.values():
+        if item.basis_note:
+            warnings.append(item.basis_note)
 
     roe = None
     if items:

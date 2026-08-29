@@ -88,6 +88,7 @@ from __future__ import annotations
 
 import datetime as dt
 from decimal import Decimal
+from typing import NamedTuple
 
 from sqlalchemy.orm import Session
 
@@ -170,3 +171,70 @@ def trailing_twelve_months(
     prior_year_period = min(candidates, key=lambda r: abs((r.period_end - target_prior_date).days))
 
     return last_fiscal_year_value - prior_year_period.value + current_value
+
+
+class AnnualisedFlow(NamedTuple):
+    """A twelve-month flow figure plus HOW it was obtained, so the caller
+    can disclose the basis rather than presenting every ROE as if it came
+    from the same kind of measurement."""
+
+    value: Decimal
+    basis: str  # "ttm" | "latest_annual"
+    period_end: dt.date | None  # the annual period used, when basis is latest_annual
+
+
+def annualised_flow(
+    db: Session,
+    ticker: str,
+    statement_line: str,
+    as_of: dt.date,
+    *,
+    current_period_end: dt.date,
+    current_period_type: str,
+    current_value: Decimal,
+) -> AnnualisedFlow | None:
+    """`trailing_twelve_months`, and when that cannot be built, the most
+    recent confirmed ANNUAL row for the same line.
+
+    WHY THE FALLBACK EXISTS (measured, 29 Aug 2026). `trailing_twelve_
+    months` needs a real prior-year comparator at the same relative point
+    in the fiscal year, and returns None without one — correctly, since
+    the raw cumulative figure would understate ROE by roughly half (the
+    COMB.N0000 P0 bug this module was built for). But that module was
+    written when, as its own docstring records, "no `Fundamental` row in
+    this entire database has ever had `period_type == 'annual'`". The
+    financial-report archive backfill has since created thousands of real
+    annual rows, and most tickers now have a DEEP annual history against a
+    SPARSE quarterly one — AAF.N0000, for instance, has two quarterly
+    periods and eleven annual ones, so no prior-year quarterly comparator
+    exists and TTM can never be built for it.
+
+    Measured across the universe: 200 of 283 tickers lost `net_income`
+    this way, which removes ROE, which removes justified P/B and residual
+    income, which leaves triangulation with no anchors at all — the single
+    largest reason this system valued only 25 of 290 companies.
+
+    An annual row needs no annualisation: it IS twelve months of the same
+    flow, as reported. Nothing is estimated or scaled here. The cost is
+    recency — the annual period can be older than the current balance
+    sheet — so the basis is returned for the caller to disclose, and TTM
+    from quarterlies is still always preferred when it is available.
+    """
+    ttm = trailing_twelve_months(
+        db, ticker, statement_line, as_of,
+        current_period_end=current_period_end,
+        current_period_type=current_period_type,
+        current_value=current_value,
+    )
+    if ttm is not None:
+        return AnnualisedFlow(ttm, "ttm", None)
+
+    rows = fundamentals_as_of(db, ticker, as_of, statement_line=statement_line)
+    annuals = [
+        r for r in rows
+        if r.period_type == "annual" and can_enter_valuation(r.provenance_tier)
+    ]
+    if not annuals:
+        return None
+    latest = max(annuals, key=lambda r: r.period_end)
+    return AnnualisedFlow(Decimal(latest.value), "latest_annual", latest.period_end)

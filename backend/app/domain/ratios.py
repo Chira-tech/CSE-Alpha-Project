@@ -49,6 +49,14 @@ class LineItem:
 
     value: Decimal
     provenance: ProvenanceTier
+    #: Optional note about how this figure was DERIVED, when it isn't the
+    #: filing's own raw line — currently set only when a flow line had to
+    #: be annualised from a period other than the current one (see
+    #: `app.domain.ttm.annualised_flow`). Carried here rather than returned
+    #: alongside so `_confirmable_line_items`' six existing call sites keep
+    #: their signature; the one caller that reports to a user
+    #: (`valuation_view._gather_inputs`) reads it and discloses it.
+    basis_note: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)

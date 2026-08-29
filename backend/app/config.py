@@ -116,7 +116,30 @@ class Settings(BaseSettings):
     annual_factor_formation_day: int = 30
 
     # --- Corporate actions / reconciliation (§7) ----------------------------------
+    #: INTERNAL check only (`app.jobs.reconciliation`): our stored
+    #: adjustment-factor series against a fresh recomputation from our own
+    #: confirmed corporate actions. That is exact arithmetic on the same
+    #: inputs — any real gap is a genuine defect — so it stays at Part II
+    #: §5.2's own 0.5%. Deliberately NOT shared with the external
+    #: second-source check below any more; see that setting for why.
     reconciliation_mismatch_threshold_pct: Decimal = Decimal("0.005")
+
+    #: EXTERNAL check (`app.jobs.second_source_reconciliation`): our stored
+    #: official close against TradingView's LIVE quote. Part II §5.2's 0.5%
+    #: assumes a like-for-like close-vs-close comparison, but that source
+    #: publishes no historical series (see `app.domain.second_source`), so
+    #: the two figures are different measurements of the same security and a
+    #: small gap is ordinary intraday noise, not a defect.
+    #:
+    #: Sharing the 0.5% figure quarantined 105 of 290 tickers — 36% of the
+    #: exchange — in a single run on 28 Aug 2026, every one of them under 5%
+    #: apart (median 2%: ACL 94.30 vs 94.9, AGPL 15.30 vs 15.2) and 103 of
+    #: them otherwise ready to value. 5% is where the observed distribution
+    #: actually breaks: it clears 100 of the 105 while still flagging the 5
+    #: genuinely larger gaps, and leaves a wide margin against the error
+    #: class this exists to catch (UCAR.N0000's real 2.6x / 160% stored-price
+    #: discrepancy, R1_VALIDATION.md). See PARAMETERS.md #17.
+    second_source_mismatch_threshold_pct: Decimal = Decimal("0.05")
 
     # --- cse.lk client politeness (§5 — "the single biggest operational
     # fragility") ------------------------------------------------------------------
