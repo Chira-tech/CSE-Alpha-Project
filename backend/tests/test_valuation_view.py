@@ -962,24 +962,74 @@ class TestRelativeValuationFor:
         assert view.eps == Decimal(2)  # 200/100
         assert view.sales_per_share == Decimal(20)  # 2000/100
         assert view.net_margin == Decimal("0.1000")  # 200/2000
-        # payout = D0/EPS = 1.00/2 = 0.5
+        # The TRAILING ACTUAL payout is still reported: D0/EPS = 1.00/2.
         assert view.payout_ratio == Decimal("0.5")
-        # justified P/E = payout*(1+g)/(Ke-g) = 0.5*1.05/0.10 = 5.25
-        assert abs(view.justified_pe.value - Decimal("5.25")) < Decimal("0.0001")
-        # fair value = 5.25 * EPS(2) = 10.5
-        assert abs(view.fair_value_pe - Decimal("10.5")) < Decimal("0.0001")
-        # justified P/S = net_margin*payout*(1+g)/(Ke-g) = 0.10*0.5*1.05/0.10 = 0.525
-        assert abs(view.justified_ps.value - Decimal("0.525")) < Decimal("0.0001")
-        # fair value = 0.525 * sales/share(20) = 10.5
-        assert abs(view.fair_value_ps - Decimal("10.5")) < Decimal("0.0001")
+
+        # ...but the multiple uses the STEADY-STATE payout consistent with
+        # the growth rate it is paired with (29 Aug 2026 — see
+        # `relative_valuation_for`'s own comment for the real COMB.N0000
+        # case where using the trailing payout put justified P/E 3.4x
+        # below justified P/B). ROE = 200/1000 = 0.20, g = 0.05, so a
+        # company growing forever at g retains g/ROE = 0.25 and therefore
+        # pays out 1 - 0.25 = 0.75.
+        # justified P/E = 0.75*1.05/0.10 = 7.875
+        assert abs(view.justified_pe.value - Decimal("7.875")) < Decimal("0.0001")
+        # fair value = 7.875 * EPS(2) = 15.75
+        assert abs(view.fair_value_pe - Decimal("15.75")) < Decimal("0.0001")
+        # justified P/S = net_margin*payout*(1+g)/(Ke-g) = 0.10*0.75*1.05/0.10 = 0.7875
+        assert abs(view.justified_ps.value - Decimal("0.7875")) < Decimal("0.0001")
+        # fair value = 0.7875 * sales/share(20) = 15.75
+        assert abs(view.fair_value_ps - Decimal("15.75")) < Decimal("0.0001")
+
+    def test_justified_pe_is_exactly_justified_pb_times_one_plus_g(self, db_session, monkeypatch):
+        """THE REASON justified P/E must never be read as corroborating
+        justified P/B. With the steady-state payout the two are the same
+        Gordon model on different denominators:
+
+            JPE_fv = (1 - g/ROE)(1+g)/(Ke-g) x EPS,  EPS = ROE x BVPS
+                   = (ROE-g)(1+g)/(Ke-g) x BVPS
+                   = JPB_fv x (1+g)
+
+        Pinned as a test so that if a future change makes them diverge,
+        it is a deliberate modelling decision and not an accident — and so
+        that nobody mistakes their agreement for independent evidence.
+        Here: BVPS = 1000/100 = 10, JPB = (0.20-0.05)/(0.15-0.05) = 1.5,
+        so JPB_fv = 15 and JPE_fv = 15 x 1.05 = 15.75.
+        """
+        _seed_security(db_session)
+        _seed_relative_valuation_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        _seed_confirmed_dividend(db_session, cash_amount=Decimal("1.00"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        rel = relative_valuation_for(db_session, "COMB.N0000", current_price=Decimal(8), as_of=AS_OF)
+        pb = valuation_view.justified_price_to_book_for(db_session, "COMB.N0000", as_of=AS_OF)
+
+        assert pb.fair_value_per_share is not None and rel.fair_value_pe is not None
+        one_plus_g = Decimal(1) + pb.inputs.growth_rate
+        assert abs(rel.fair_value_pe - pb.fair_value_per_share * one_plus_g) < Decimal("0.0001")
+        assert any("NOT independent of justified P/B" in w for w in rel.warnings)
+
+    def test_trading_multiples_and_cheap_reads(self, db_session, monkeypatch):
+        """The observed multiples this system trades against, and the
+        cheap/expensive read versus the justified ones."""
+        _seed_security(db_session)
+        _seed_relative_valuation_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        _seed_confirmed_dividend(db_session, cash_amount=Decimal("1.00"))
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = relative_valuation_for(db_session, "COMB.N0000", current_price=Decimal(8), as_of=AS_OF)
 
         assert view.trading.price_to_earnings == Decimal(4)  # 8/2
         assert view.trading.price_to_book == Decimal("0.8")  # 8/10
         assert view.trading.price_to_sales == Decimal("0.4")  # 8/20
         assert view.trading.ev_to_ebit is None  # cash isn't extracted anywhere — no live EV
 
-        assert view.pe_vs_trading.read_as_cheap is True  # 4 < 5.25
-        assert view.ps_vs_trading.read_as_cheap is True  # 0.4 < 0.525
+        # Trading 4.0 against a justified 7.875 (the steady-state-payout
+        # figure — see test_hand_worked_justified_pe_and_ps).
+        assert view.pe_vs_trading.read_as_cheap is True  # 4 < 7.875
+        assert view.ps_vs_trading.read_as_cheap is True  # 0.4 < 0.7875
 
         # EV/EBIT is real code, deliberately not invoked with a fabricated ROIC.
         assert any("justified EV/EBIT not computed" in w for w in view.warnings)

@@ -3831,12 +3831,49 @@ noise. §20.2's justified P/E is Gordon-based — `payout x (1+g) / (Ke-g)`
 PARAMETERS.md #11). But COMB retains 80% of earnings at an ROE of 17.9%,
 so its own sustainable growth is ~14.3%. Holding retention at 80% while
 forcing g to 5% describes a company destroying value on everything it
-keeps, which is why the multiple collapses to 1.79x. The same
-inconsistency biases justified P/E down for exactly the profitable,
-low-payout companies. Resolving it — a consistent `g` across the
-Gordon-family models, or a sustainable-growth `g` for justified P/E —
-is the next thing standing between this engine and a fair value backed
-by two anchors that actually agree.
+keeps, which is why the multiple collapses to 1.79x.
+
+### Fixed — and the fix proved the anchors were never independent
+
+- [x] **The multiple now uses the STEADY-STATE payout, not the trailing
+      actual.** A company growing forever at `g` must, by the Gordon
+      identity, retain exactly `g / ROE`, so its steady-state payout is
+      `1 - g/ROE`. Pairing today's actual payout with a TERMINAL growth
+      rate was the bug. This is not a departure from §20.2 — it is the
+      same reinvestment consistency §20.2's own EV/EBIT formula already
+      spells out as `(1 - tax) x (1 - g / ROIC) / (WACC - g)`; `1 - g/ROIC`
+      there is `1 - g/ROE` here, one line up the capital structure.
+      COMB's justified P/E moved from 70.66 to 251.00 against justified
+      P/B's 239.05, and universe-wide dispersion collapsed from "31 of 65
+      over 50%" to **every one of 56 under 10%**.
+
+- [x] **But that agreement is arithmetic, not corroboration — and the
+      engine now says so on every affected valuation.** With the
+      steady-state payout the two are algebraically the same model:
+
+          JPE_fv = (1 - g/ROE)(1+g)/(Ke-g) x EPS,  and EPS = ROE x BVPS
+                 = (ROE-g)(1+g)/(Ke-g) x BVPS
+                 = JPB_fv x (1+g)
+
+      Confirmed live on every company checked — COMB, HNB and RIL all
+      return a JPE/JPB ratio of **exactly 1.05000** against a (1+g) of
+      1.05000. Residual income, under this system's own flat-ROE "no
+      view" baseline, collapses to the same thing a third time. A
+      warning is emitted on every valuation that computes justified P/E,
+      and `test_justified_pe_is_exactly_justified_pb_times_one_plus_g`
+      pins the identity so a future divergence has to be deliberate.
+
+**THE STANDING CONCLUSION FOR §24.** Triangulation cannot be made
+genuinely multi-anchor by adding more members of the Gordon family —
+justified P/B, justified P/E and residual income are one model wearing
+three hats, and a low dispersion between them is the arithmetic of
+`(1+g)`, not evidence. Real independence requires a STRUCTURALLY
+different valuation: §18's FCFF DCF (cash flows rather than book or
+earnings — blocked only on extracting `operating_profit`,
+`depreciation_and_amortisation` and `net_working_capital`), §22's
+asset/NAV, or §20.1's cross-sectional peer multiples. **The DCF is the
+one real second opinion within reach, and is now the highest-value
+remaining build for the product's output.**
 
 ### Full system audit (29 Aug 2026)
 

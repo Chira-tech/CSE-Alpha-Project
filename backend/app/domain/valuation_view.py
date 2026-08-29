@@ -1324,17 +1324,93 @@ def relative_valuation_for(
     else:
         payout_ratio = trailing_dps / eps
 
+    # THE PAYOUT THE MULTIPLE USES IS THE STEADY-STATE ONE, NOT THE
+    # TRAILING ACTUAL — a real inconsistency found 29 Aug 2026, the moment
+    # justified P/E first ran against live data and disagreed with
+    # justified P/B by 3.4x on COMB.N0000 (239.05 vs 70.66).
+    #
+    # `inputs.growth_rate` is the STEADY-STATE terminal growth (§18.2's
+    # policy figure, capped below Rf — see `_steady_state_growth`). A
+    # company growing forever at `g` must, by the Gordon identity, be
+    # retaining exactly `g / ROE` of its earnings, so its steady-state
+    # payout is `1 - g/ROE`. Feeding today's ACTUAL payout into a formula
+    # whose `g` is the terminal one describes a company that retains 80%
+    # of its earnings and still only grows 5% — value-destroying by
+    # construction — which is why COMB's multiple collapsed to 1.79x.
+    #
+    # This is not a departure from §20.2, it is the same reinvestment
+    # consistency §20.2's OWN EV/EBIT formula already spells out:
+    # `(1 - tax) x (1 - g / ROIC) / (WACC - g)`. `1 - g/ROIC` there is
+    # exactly `1 - g/ROE` here, one line up the capital structure.
+    #
+    # The trailing actual payout is still computed and still REPORTED
+    # (`payout_ratio` below) — it is real information about what the
+    # company currently distributes, and `gordon_growth_ddm_for` rightly
+    # uses the actual dividend. It just is not the right number to pair
+    # with a terminal growth rate.
+    # The confirmed-dividend gate above still applies: these multiples are
+    # only offered for a company that demonstrably distributes, which is
+    # the pre-existing design decision and is not what was broken here.
+    # What changes is only WHICH payout the formula uses.
+    steady_state_payout = None
+    if payout_ratio is not None and inputs.roe is not None and inputs.roe > 0:
+        implied = Decimal(1) - (inputs.growth_rate / inputs.roe)
+        if implied > 0:
+            steady_state_payout = implied
+        else:
+            warnings.append(
+                f"justified P/E and P/S not computed — this company's ROE ({inputs.roe:.2%}) is at "
+                f"or below the steady-state growth rate ({inputs.growth_rate:.2%}), so it cannot "
+                "sustain that growth from retained earnings at all and the Gordon-family "
+                "multiples have no meaningful value."
+            )
+    elif payout_ratio is not None and inputs.roe is None:
+        warnings.append("justified P/E and P/S not computed — ROE unavailable, so the "
+                        "steady-state payout consistent with the growth rate cannot be derived.")
+
     justified_pe = None
     fair_value_pe = None
-    if payout_ratio is not None and inputs.cost_of_equity is not None:
-        justified_pe = justified_price_to_earnings(payout_ratio, inputs.growth_rate, inputs.cost_of_equity)
+    if steady_state_payout is not None and inputs.cost_of_equity is not None:
+        justified_pe = justified_price_to_earnings(
+            steady_state_payout, inputs.growth_rate, inputs.cost_of_equity
+        )
         if justified_pe.value is not None and eps is not None:
             fair_value_pe = justified_pe.value * eps
 
+    if fair_value_pe is not None:
+        # NOT AN INDEPENDENT ANCHOR — and this must be said, because a
+        # small dispersion between it and justified P/B looks exactly like
+        # two models corroborating each other when it is one model counted
+        # twice.
+        #
+        # Proven algebraically and confirmed live on every company checked
+        # (COMB/HNB/RIL all return a ratio of exactly 1.05000 against a
+        # (1+g) of 1.05000): with the steady-state payout `1 - g/ROE`,
+        #     JPE_fv = (1 - g/ROE)(1+g)/(Ke-g) x EPS
+        # and EPS = ROE x BVPS exactly, so
+        #     JPE_fv = (ROE-g)(1+g)/(Ke-g) x BVPS = JPB_fv x (1+g).
+        # Justified P/E and justified P/B are the same Gordon model on
+        # different denominators, differing only by the trailing-vs-leading
+        # factor. Residual income under this system's flat-ROE baseline
+        # collapses to the same thing again.
+        #
+        # Genuine triangulation therefore needs a STRUCTURALLY different
+        # model — §18's FCFF DCF (cash flows, not book or earnings),
+        # §22's asset/NAV, or §20.1's cross-sectional peer multiples — not
+        # another member of the Gordon family.
+        warnings.append(
+            "justified P/E is NOT independent of justified P/B — with the steady-state payout "
+            "they are the same Gordon model on different denominators, and their fair values "
+            "differ by exactly (1 + g). A small dispersion between them is arithmetic, not "
+            "corroboration."
+        )
+
     justified_ps = None
     fair_value_ps = None
-    if payout_ratio is not None and net_margin is not None and inputs.cost_of_equity is not None:
-        justified_ps = justified_price_to_sales(net_margin, payout_ratio, inputs.growth_rate, inputs.cost_of_equity)
+    if steady_state_payout is not None and net_margin is not None and inputs.cost_of_equity is not None:
+        justified_ps = justified_price_to_sales(
+            net_margin, steady_state_payout, inputs.growth_rate, inputs.cost_of_equity
+        )
         if justified_ps.value is not None and sales_per_share is not None:
             fair_value_ps = justified_ps.value * sales_per_share
 
