@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.domain.market_cap import market_cap
 from app.models.float_data import FloatData
 from app.models.prices import PriceDaily
+from app.models.securities import Security
 
 
 def latest_shares_issued(db: Session, ticker: str, as_of: dt.date) -> int | None:
@@ -28,6 +29,61 @@ def latest_shares_issued(db: Session, ticker: str, as_of: dt.date) -> int | None
         .limit(1)
     )
     return row.shares_issued if row else None
+
+
+#: Share classes that hold a claim on the SAME shareholders' equity, and
+#: must therefore all be counted when turning a company-wide figure into a
+#: per-share one. `rights` is deliberately excluded — a rights line
+#: (AAF.R0000) is a tradeable entitlement, not issued share capital, and
+#: adding it would understate book value per share. `unit` lines
+#: (CALC/CALI/CALU) are standalone closed-end funds with no sibling class,
+#: so they are unaffected either way.
+_EQUITY_CLAIM_INSTRUMENTS = ("ordinary", "non_voting")
+
+
+def latest_shares_issued_all_classes(db: Session, ticker: str, as_of: dt.date) -> int | None:
+    """Total shares issued across every equity class of the SAME ISSUER.
+
+    A REAL BUG THIS CLOSES, found live (29 Aug 2026): `total_equity` on a
+    `.X0000` non-voting row is the WHOLE company's equity — a bank does not
+    publish a separate balance sheet per share class — but
+    `latest_shares_issued` returned only that class's own share count. For
+    HNB.X0000 that divided 281,085,275,000 of real equity by 117,103,990
+    non-voting shares, giving a book value of 2,400/share against a true
+    ~487 (281bn over 577m total shares). Its fair value came out at 1,240
+    against a 330 price, and the ticker was reported as
+    `strong_accumulate` — the single most dangerous shape of error this
+    project exists to prevent, since it is confident, precise and entirely
+    wrong. Every one of the 20 dual-listed `.X0000` tickers was overstated
+    by its own class-to-total share ratio.
+
+    Deliberately a SEPARATE function rather than a change to
+    `latest_shares_issued`: market capitalisation of one listed line is
+    genuinely that line's own shares times its own price (see
+    `market_cap_for` and `app.jobs.market_cap_reconciliation`, which
+    reconciles against the exchange's own per-line published figure), so
+    that caller must keep the per-class count. Only per-share figures
+    derived from company-wide fundamentals need this one.
+    """
+    security = db.get(Security, ticker)
+    if security is None or security.issuer_code is None:
+        return latest_shares_issued(db, ticker, as_of)
+    siblings = db.scalars(
+        select(Security.ticker).where(
+            Security.issuer_code == security.issuer_code,
+            Security.instrument_type.in_(_EQUITY_CLAIM_INSTRUMENTS),
+        )
+    ).all()
+    if not siblings:
+        return latest_shares_issued(db, ticker, as_of)
+    total = 0
+    found = False
+    for sibling in siblings:
+        shares = latest_shares_issued(db, sibling, as_of)
+        if shares:
+            total += shares
+            found = True
+    return total if found else None
 
 
 def _latest_close(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:

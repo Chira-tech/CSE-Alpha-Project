@@ -95,6 +95,15 @@ from sqlalchemy.orm import Session
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.provenance import can_enter_valuation
 
+_LAST_FISCAL_YEAR_MAX_AGE_DAYS = 457
+"""How far back the "last full fiscal year" may sit from the current
+period and still be the one this TTM is built around. Fifteen months: a
+current period can legitimately be up to four quarters past its own last
+year-end, plus a margin for a late filing or a non-calendar fiscal year.
+Anything older is a different year entirely and must not be used as the
+base — see the COMB.N0000 case in `trailing_twelve_months` for what
+happens when it is."""
+
 _PRIOR_YEAR_TOLERANCE_DAYS = 20
 """How far a real prior-year comparator's `period_end` may drift from
 exactly 365 days before the current period and still be trusted as "the
@@ -148,7 +157,34 @@ def trailing_twelve_months(
     rows = fundamentals_as_of(db, ticker, as_of, statement_line=statement_line)
     confirmed = [r for r in rows if can_enter_valuation(r.provenance_tier)]
 
-    annuals = [r for r in confirmed if r.period_type == "annual" and r.period_end < current_period_end]
+    # The annual row must be the fiscal year IMMEDIATELY preceding this
+    # period, not merely the newest one that happens to be visible.
+    #
+    # A REAL BUG THIS CLOSES (29 Aug 2026), on this module's own reference
+    # company. `fundamentals_as_of` resolves §6 restatement versioning per
+    # period_end, so where a period has BOTH an annual row and a quarterly
+    # row (a Q4 cumulative filing and the annual report for the same
+    # year-end), only one survives — and which one survives depends on
+    # their version numbers. For COMB.N0000 that left just two annual rows
+    # visible, 2022-12-31 and 2021-12-31, with the real 2025-12-31 and
+    # 2024-12-31 annuals shadowed by their quarterly twins. `max(annuals)`
+    # therefore picked a THREE-YEAR-OLD fiscal year as the base for a
+    # 2026-06-30 TTM, giving 28,657,079,000 against the correct
+    # 65,195,124,000 — ROE 7.88% instead of the 17.92% this module's own
+    # docstring records as right, putting a real, liquid, well-run bank
+    # back in the "Exit" zone: precisely the P0 bug this module was built
+    # to fix, re-entering through a different door.
+    #
+    # Falling through to the quarterly reset heuristic when no RECENT
+    # annual row is visible is not a workaround — that heuristic is this
+    # module's original mechanism, verified against COMB's own six real
+    # fiscal-year boundaries, and it finds 2025-12-31 correctly.
+    annuals = [
+        r for r in confirmed
+        if r.period_type == "annual"
+        and r.period_end < current_period_end
+        and (current_period_end - r.period_end).days <= _LAST_FISCAL_YEAR_MAX_AGE_DAYS
+    ]
     if annuals:
         last_fiscal_year_value = max(annuals, key=lambda r: r.period_end).value
     else:

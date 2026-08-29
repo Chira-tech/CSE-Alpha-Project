@@ -130,7 +130,7 @@ from app.domain.dividend_residual_income import (
 from app.domain.liquidity import percentile_rank
 from app.domain.liquidity_view import liquidity_percentile_for, universe_amihud_ratios
 from app.domain.macro_engine_view import RegimeView, regime_for
-from app.domain.market_cap_view import latest_shares_issued
+from app.domain.market_cap_view import latest_shares_issued_all_classes
 from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.point_in_time import fundamentals_as_of
@@ -155,15 +155,47 @@ from app.models.corporate_actions import CorporateAction
 from app.models.enums import CorporateActionType
 
 
+#: How far back `_confirmable_line_items` may reach for a line the anchor
+#: period doesn't carry. Three years: long enough to cover a company that
+#: reports a given line only in its annual filing (so the newest interim
+#: legitimately lacks it) plus a missed year, short enough that a balance
+#: sheet old enough to describe a materially different company is never
+#: silently paired with today's price. Every fallback is disclosed
+#: regardless of age — this bound is the point past which disclosure stops
+#: being enough.
+_LINE_FALLBACK_MAX_AGE_DAYS = 1095
+
+
 def _confirmable_line_items(
     db: Session, ticker: str, as_of: dt.date
 ) -> tuple[dt.date | None, dict[str, LineItem], tuple[str, ...]]:
-    """The latest point-in-time-visible period's line items, restricted to
-    tiers `can_enter_valuation` allows (§8). Returns
+    """The latest point-in-time-visible line items, restricted to tiers
+    `can_enter_valuation` allows (§8). Returns
     `(period_end, items, excluded_lines)` — `excluded_lines` names any
-    statement line that exists for the period but was held back because
-    it is still AI-assisted/unconfirmed, so a caller can say why a figure
-    is missing rather than just that it is."""
+    statement line that exists for the anchor period but was held back
+    because it is still AI-assisted/unconfirmed, so a caller can say why a
+    figure is missing rather than just that it is.
+
+    PER-LINE, NOT PER-PERIOD (29 Aug 2026). This used to return ONLY the
+    lines confirmed for the single latest period, and drop everything else.
+    Real filings are not uniform: a company's newest confirmed filing is
+    often an interim carrying a balance sheet but no income statement, or
+    the reverse. Measured across a 60-ticker sample, 30 tickers had no
+    `net_income` and 24 had no `total_equity` in their latest period WHILE
+    OLDER CONFIRMED PERIODS HELD BOTH — and since ROE needs both, the whole
+    valuation collapsed to "no anchors at all" for 216 of 290 companies.
+
+    So a line missing from the anchor period now falls back to the most
+    recent EARLIER period that has it confirmed, within
+    `_LINE_FALLBACK_MAX_AGE_DAYS`. Nothing is estimated: every value is a
+    real confirmed figure the company itself reported, and §6's
+    point-in-time gate still applies to all of them (`fundamentals_as_of`
+    has already filtered to what was public on `as_of`). The cost is that
+    lines can come from different dates, so each one that does carries a
+    `basis_note` naming its own period, which `_gather_inputs` surfaces as
+    a warning — a fair value built partly on an older balance sheet must
+    say so rather than read as a single coherent snapshot.
+    """
     rows = fundamentals_as_of(db, ticker, as_of)
     if not rows:
         return None, {}, ()
@@ -182,6 +214,35 @@ def _confirmable_line_items(
             items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
             if row.statement_line == "net_income":
                 net_income_period_type = row.period_type
+
+    # Fill anything the anchor period doesn't carry from the most recent
+    # earlier confirmed period that does.
+    oldest_allowed = latest_period - dt.timedelta(days=_LINE_FALLBACK_MAX_AGE_DAYS)
+    earlier = sorted(
+        (
+            r for r in rows
+            if r.period_end < latest_period
+            and r.period_end >= oldest_allowed
+            and can_enter_valuation(r.provenance_tier)
+        ),
+        key=lambda r: r.period_end,
+        reverse=True,
+    )
+    for row in earlier:
+        if row.statement_line in items:
+            continue
+        items[row.statement_line] = LineItem(
+            value=row.value,
+            provenance=row.provenance_tier,
+            basis_note=(
+                f"{row.statement_line} is from the confirmed period ending "
+                f"{row.period_end} — the latest period ({latest_period}) has no confirmed "
+                f"value for this line. A real reported figure, but from an earlier date."
+            ),
+        )
+        if row.statement_line == "net_income":
+            net_income_period_type = row.period_type
+        excluded.discard(row.statement_line)
 
     # A REAL P0 fix (18 Aug 2026) — see `app.domain.ttm`'s own module
     # docstring for the full finding: `net_income` for a "quarterly"
@@ -386,7 +447,7 @@ def _gather_inputs(
     book_value_per_share = None
     total_equity_item = items.get("total_equity")
     total_assets_item = items.get("total_assets")
-    shares = latest_shares_issued(db, ticker, as_of)
+    shares = latest_shares_issued_all_classes(db, ticker, as_of)
     if total_equity_item is None:
         warnings.append("total_equity not available from confirmed fundamentals.")
     if shares is None:
@@ -608,7 +669,7 @@ def wacc_for(
         universe_liquidity_ratios=universe_liquidity_ratios,
         universe_liquidity_percentiles=universe_liquidity_percentiles,
     )
-    shares = latest_shares_issued(db, ticker, stamp)
+    shares = latest_shares_issued_all_classes(db, ticker, stamp)
 
     result = compute_wacc(
         shares_outstanding=Decimal(shares) if shares else None,
@@ -945,7 +1006,7 @@ def dcf_for(
     if ke_result.risk_free_rate is None:
         missing.append("risk_free_rate (needed to cap terminal/stage-2 growth)")
 
-    shares = latest_shares_issued(db, ticker, stamp)
+    shares = latest_shares_issued_all_classes(db, ticker, stamp)
     if not shares:
         missing.append("shares_issued (no FloatData row on or before this date)")
 
@@ -1150,7 +1211,7 @@ def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Har
             "separately-documented cases — see this function's own docstring)."
         )
 
-    shares = latest_shares_issued(db, ticker, stamp)
+    shares = latest_shares_issued_all_classes(db, ticker, stamp)
     if shares is None:
         warnings.append("shares_issued not available (no FloatData row on or before this date).")
 
