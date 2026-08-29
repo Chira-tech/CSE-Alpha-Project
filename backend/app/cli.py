@@ -495,6 +495,14 @@ def cmd_auto_confirm_fundamentals(args: argparse.Namespace) -> int:
             print("DRY RUN — nothing written to the database. Re-run with --apply.")
             return 0
 
+        def _promotable(v) -> bool:
+            if args.confirm_through == "auto":
+                return v.auto_confirm
+            if args.confirm_through == "high":
+                return v.auto_confirm or v.confidence == "high"
+            # "noveto": anything with at least one signal and zero vetoes
+            return bool(v.signals) and not v.vetoes
+
         confirmed = 0
         banded = 0
         stamp = dt.datetime.now(dt.timezone.utc)
@@ -510,14 +518,16 @@ def cmd_auto_confirm_fundamentals(args: argparse.Namespace) -> int:
                 )
             ).all()
             for row in rows:
-                if v.auto_confirm:
+                if _promotable(v):
                     sig = "+".join(sorted(v.signals))
+                    band = "auto-confirm" if v.auto_confirm else v.confidence
                     row.provenance_tier = ProvenanceTier.REPORTED
-                    row.confirmed_by = f"auto:cross-check-v1 [{sig}]"
+                    row.confirmed_by = f"auto:cross-check-v1/{band} [{sig}]"
                     row.confirmed_at = stamp
                     row.source_snippet = (
                         f"[AUTO-CONFIRM {dt.date.today().isoformat()}] machine cross-check "
-                        f"passed on {sig} with no veto — promoted to REPORTED by "
+                        f"({band}): today's parser reproduces this value and it passed {sig} "
+                        f"with no correctness veto — promoted to REPORTED by "
                         f"`app.domain.fundamental_cross_check`. Revert: "
                         f"scripts/revert_auto_confirm.py.\n\n" + (row.source_snippet or "")
                     )
@@ -528,7 +538,10 @@ def cmd_auto_confirm_fundamentals(args: argparse.Namespace) -> int:
                         row.source_snippet = note + " " + (row.source_snippet or "")
                         banded += 1
         db.commit()
-        print(f"APPLIED — {confirmed} rows promoted to REPORTED, {banded} rows tagged with a confidence band.")
+        print(
+            f"APPLIED (--confirm-through {args.confirm_through}) — {confirmed} rows promoted to "
+            f"REPORTED, {banded} rows left AI_ASSISTED with a confidence band."
+        )
     finally:
         db.close()
     return 0
@@ -835,6 +848,13 @@ def main(argv: list[str] | None = None) -> int:
     p_ac.add_argument("--min-signals", type=int, default=2, help="signals required to auto-confirm (default 2)")
     p_ac.add_argument("--pacing-seconds", type=float, default=2.0, help="delay between PDF re-downloads")
     p_ac.add_argument("--apply", action="store_true", help="write the confirmations to the database")
+    p_ac.add_argument(
+        "--confirm-through", choices=("auto", "high", "noveto"), default="auto",
+        help="how far down the confidence bands --apply promotes: 'auto' (>=2 signals incl. "
+        "re-extraction + independent cross-check), 'high' (also 2+ signals no veto), "
+        "'noveto' (also single-signal rows — everything that trips no correctness veto). "
+        "Everything not promoted is left AI_ASSISTED with its band written on it.",
+    )
     p_ac.set_defaults(func=cmd_auto_confirm_fundamentals)
 
     p_bp = sub.add_parser(

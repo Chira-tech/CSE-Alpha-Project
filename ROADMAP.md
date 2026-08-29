@@ -3646,8 +3646,22 @@ mandatory, at least 2 independent signals.
       every one hand-checked correct — including the AHPL component lines
       this session's own over-correction refix had just corrected, now
       independently re-confirmed by S2+S3. 29 new tests; full suite
-      **1385 passed**. The full unattended run (~4,561 filings) is the
-      operator's to kick off.
+      **1385 passed**.
+- [x] **Full run applied.** The re-extraction pass ran across all 4,893
+      pending filing groups (~15 h unattended, resumable checkpoint —
+      `docs/audits/AUTO_CONFIRM_2026-08-29.md`): 35,181 rows scored,
+      **6,082 auto-confirm**, 4,683 high, 12,494 medium, 11,922
+      needs-review (a veto). At the product owner's direction — needing
+      the queue substantially down the same day, with the risk stated —
+      `--apply --confirm-through noveto` promoted **every row that trips
+      no correctness veto**: **23,421 rows → `REPORTED`**, tagged
+      `auto:cross-check-v1/<band>`. The confirm queue fell from 35,523 to
+      **12,102**; the remainder (magnitude-flag / ceiling-breach /
+      >20x-jump / still-doesn't-balance-after-re-extraction) each carry a
+      `needs-review` band and are genuine human work.
+      `scripts/revert_auto_confirm.py` reverts the whole pass. A stable
+      (non-dated) checkpoint filename so a later `--apply` reuses the
+      re-extraction instead of re-downloading.
 
 ## M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md): Task 1 (isolation scaffold) only
 
