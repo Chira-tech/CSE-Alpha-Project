@@ -1054,3 +1054,176 @@ def market_overview(refresh: bool = False) -> MarketOverview:
             _cache = (now, overview)
 
     return overview
+
+
+# ---------------------------------------------------------------------------
+# §31's regime gauge
+# ---------------------------------------------------------------------------
+
+
+class RegimeConsequenceOut(BaseModel):
+    """What the current regime is ALREADY doing to every fair value in the
+    system — not advice, a description of live behaviour."""
+
+    margin_of_safety_add_pct: Decimal | None
+    erp_add_pct: Decimal | None
+    note: str
+
+
+class RegimeSubReadOut(BaseModel):
+    kind: str  # "markov" | "composite"
+    label: str | None
+    detail: str
+
+
+class SectorTiltOut(BaseModel):
+    sector: str
+    shock: str
+    direction: str
+    coefficient: Decimal
+    p_value: Decimal
+    constituent_count: int
+
+
+class RegimeGaugeOut(BaseModel):
+    as_of: dt.date
+    label: str | None
+    probabilities: dict[str, Decimal]
+    note: str
+    sub_reads: list[RegimeSubReadOut]
+    consequence: RegimeConsequenceOut
+    half_life_periods: Decimal | None
+    half_life_note: str
+    sector_tilts: list[SectorTiltOut]
+    sector_tilt_note: str
+    not_built: list[str]
+
+
+@router.get("/regime", response_model=RegimeGaugeOut)
+def regime_gauge(db: Session = Depends(get_db)) -> RegimeGaugeOut:
+    """§31's regime gauge: the live read, the two INDEPENDENT sub-reads it
+    is blended from, what it is already doing to every valuation, the §30
+    step-2 error-correction half-life, and the §33 sector tilts that are
+    statistically significant right now.
+
+    Deliberately does NOT include a recommended gross exposure. §31 names
+    exposure-capping as a regime consequence but gives no number for it
+    anywhere, and this system has no portfolio-construction or sizing
+    layer for one to act on — so it is reported in `not_built` rather
+    than invented. A percentage here would look exactly as precise as the
+    margin-of-safety and ERP figures beside it, which ARE real spec-given
+    numbers already wired into every fair value.
+    """
+    from app.domain.ardl_cointegration_view import ardl_bounds_test_for as _ardl
+    from app.domain.cost_of_equity import regime_erp_adjustment
+    from app.domain.macro import SERIES_TBILL_364D
+    from app.domain.macro_engine_view import regime_for
+    from app.domain.margin_of_safety import REGIME_MOS_PCT
+
+    stamp = dt.date.today()
+    view = regime_for(db, stamp)
+    result = view.result
+
+    sub_reads: list[RegimeSubReadOut] = []
+    if result is not None and result.statistical is not None:
+        s = result.statistical
+        sub_reads.append(RegimeSubReadOut(
+            kind="markov",
+            label=result.label,
+            detail=(
+                f"A real {s.k_regimes}-regime Markov switching fit on {s.observation_count} "
+                f"ASPI daily log returns."
+            ),
+        ))
+    if result is not None and result.composite is not None:
+        c = result.composite
+        sub_reads.append(RegimeSubReadOut(
+            kind="composite",
+            label=c.label,
+            detail=(
+                f"{len(c.signals)} real macro signal(s) read against §31's own signature table. "
+                f"{c.coverage_note}"
+            ),
+        ))
+
+    label = result.label if result is not None else None
+    consequence = RegimeConsequenceOut(
+        margin_of_safety_add_pct=REGIME_MOS_PCT.get(label) if label else None,
+        erp_add_pct=regime_erp_adjustment(label) if label else None,
+        note=(
+            "Already applied to every fair value on every screen: §25 widens the required "
+            "margin of safety by this amount, and §17.2 adds the ERP figure to the cost of "
+            "equity (scaled by each company's own beta), which lowers every discounted "
+            "valuation. Neither is a recommendation — both are live behaviour."
+        ),
+    )
+
+    # §30 step 2's error-correction half-life, on the pair this system has
+    # the deepest real history for: the ASPI against the 364-day T-bill.
+    half_life = None
+    half_life_note = ""
+    try:
+        ardl = _ardl(db, SERIES_ASPI, [SERIES_TBILL_364D], stamp)
+        if ardl.result is not None:
+            half_life = ardl.result.half_life_periods
+            half_life_note = (
+                f"ARDL bounds test, ASPI against the 364-day T-bill, "
+                f"{ardl.aligned_observation_count} aligned observations. "
+                f"{ardl.result.conclusion}"
+            )
+        else:
+            half_life_note = (
+                "Not estimable yet — " + ("; ".join(ardl.warnings) or "no result")
+            )
+    except Exception as exc:  # noqa: BLE001 — a gauge must not 500 on one estimator
+        half_life_note = f"Error-correction estimate unavailable: {type(exc).__name__}"
+
+    # §33 tilts: only the statistically significant cells, which is what a
+    # "tilt" actually means. Everything else is in the full matrix already
+    # on this screen.
+    tilts: list[SectorTiltOut] = []
+    tilt_note = ""
+    try:
+        matrix = sector_sensitivity_matrix_for(db, stamp)
+        for row in matrix.rows:
+            for est in row.estimates:
+                if est.significant:
+                    tilts.append(SectorTiltOut(
+                        sector=row.sector, shock=est.shock_name, direction=est.direction_label,
+                        coefficient=est.coefficient, p_value=est.p_value,
+                        constituent_count=row.constituent_count,
+                    ))
+        tilts.sort(key=lambda t: t.p_value)
+        tilt_note = (
+            f"{len(tilts)} statistically significant sector/shock pair(s) at p<0.05, from real "
+            f"OLS regressions over {len(matrix.rows)} sector(s) and {len(matrix.shocks_used)} "
+            f"macro shock series. A tilt is a measured sensitivity, not an allocation."
+        ) if tilts else (
+            "No sector/shock pair is statistically significant right now — reported as no tilt "
+            "rather than ranking insignificant coefficients as if they were signals."
+        )
+    except Exception as exc:  # noqa: BLE001
+        tilt_note = f"Sector tilts unavailable: {type(exc).__name__}"
+
+    return RegimeGaugeOut(
+        as_of=stamp,
+        label=label,
+        probabilities=(result.probabilities if result is not None else {}),
+        note=(result.note if result is not None else
+              "No regime read is computable yet: " + "; ".join(view.missing_signals or ())),
+        sub_reads=sub_reads,
+        consequence=consequence,
+        half_life_periods=half_life,
+        half_life_note=half_life_note,
+        sector_tilts=tilts[:12],
+        sector_tilt_note=tilt_note,
+        not_built=[
+            "Recommended gross exposure — §31 names exposure-capping as a regime consequence "
+            "but gives no number for it, and this system has no portfolio-construction or "
+            "sizing layer for one to act on. Not invented.",
+            "Validation against a real historical Sri Lankan regime (§54's Phase 5 gate) — the "
+            "classifier is validated against a synthetic two-regime series, but this system's "
+            "own CBSL macro history is not yet deep enough to cover a real known period such "
+            "as the 2022 sovereign default.",
+        ],
+    )

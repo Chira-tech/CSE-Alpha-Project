@@ -832,3 +832,39 @@ export interface JobStatusEntry {
 export interface JobsStatus {
   jobs: JobStatusEntry[];
 }
+
+/** §31's regime gauge — see `GET /market/regime`. */
+export interface RegimeSubRead {
+  kind: string;
+  label: string | null;
+  detail: string;
+}
+
+export interface RegimeConsequence {
+  margin_of_safety_add_pct: string | null;
+  erp_add_pct: string | null;
+  note: string;
+}
+
+export interface SectorTilt {
+  sector: string;
+  shock: string;
+  direction: string;
+  coefficient: string;
+  p_value: string;
+  constituent_count: number;
+}
+
+export interface RegimeGauge {
+  as_of: string;
+  label: string | null;
+  probabilities: Record<string, string>;
+  note: string;
+  sub_reads: RegimeSubRead[];
+  consequence: RegimeConsequence;
+  half_life_periods: string | null;
+  half_life_note: string;
+  sector_tilts: SectorTilt[];
+  sector_tilt_note: string;
+  not_built: string[];
+}

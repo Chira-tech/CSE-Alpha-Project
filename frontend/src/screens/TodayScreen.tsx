@@ -156,15 +156,19 @@ export function TodayScreen({
             {spread && <SpreadHero spread={spread} />}
 
             <div className="notice notice-neutral">
-              <h3>No regime gauge on this screen yet</h3>
+              <h3>The regime gauge lives on Macro</h3>
               <p className="prose t-body">
-                The Markov regime classifier itself is real and runs live now (see the Journal
-                screen, which freezes a real regime read with every decision) — what's still missing
-                is a dedicated gauge here: the recommended gross exposure, the sector tilts and the
-                ARDL error-correction half-life, plus validation against a real historical Sri Lankan
-                regime, which this system's own macro series aren't deep enough for yet.{" "}
+                It is real and live now: the blended read, the two independent sub-reads behind it
+                (a Markov switching fit on ASPI returns and a rule-based macro composite), what the
+                current regime is already doing to every fair value in the system, §30's
+                error-correction half-life, and the §33 sector tilts that are statistically
+                significant right now. Two parts of it are still genuinely missing and say so
+                there — a recommended gross exposure (§31 names exposure-capping but gives no
+                number for it, and there is no portfolio-sizing layer for one to act on) and
+                validation against a real historical Sri Lankan regime, which this system's own
+                macro series aren't deep enough for yet.{" "}
                 <button className="btn-link" onClick={() => onOpenScreen("macro")}>
-                  See what Macro has today
+                  Open the regime gauge
                 </button>
               </p>
             </div>

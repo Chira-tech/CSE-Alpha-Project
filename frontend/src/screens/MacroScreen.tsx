@@ -1,13 +1,27 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, getIndexHistory, getMarketOverview, getSectorSensitivity, getSpread } from "../api";
+import {
+  ApiRequestError,
+  getIndexHistory,
+  getMarketOverview,
+  getRegimeGauge,
+  getSectorSensitivity,
+  getSpread,
+} from "../api";
 import { Delta } from "../components/Delta";
 import { IndexHistoryChart } from "../components/IndexHistoryChart";
 import { SectorDrilldownPanel } from "../components/SectorDrilldownPanel";
+import { RegimeGaugePanel } from "../components/RegimeGaugePanel";
 import { SectorSensitivityMatrix } from "../components/SectorSensitivityMatrix";
 import { SpreadHero } from "../components/SpreadHero";
 import { ErrorState, PartialNotice, SkeletonCard, SkeletonTable } from "../components/states";
 import { formatIndexValue, formatMagnitude } from "../format";
-import type { IndexHistory, MarketOverview, SectorSensitivity, Spread } from "../types";
+import type {
+  IndexHistory,
+  MarketOverview,
+  RegimeGauge,
+  SectorSensitivity,
+  Spread,
+} from "../types";
 
 /**
  * §7.1 Macro: "the regime, the variables, the project pipeline."
@@ -20,11 +34,18 @@ import type { IndexHistory, MarketOverview, SectorSensitivity, Spread } from "..
  * names as the centre of the layer — the hero spread and the sensitivity
  * matrix — plus the live sector index board that was already here.
  *
- * STILL NOT ON THIS SCREEN: the regime gauge (the classifier exists on
- * the backend but hasn't been validated against real historical Sri
- * Lankan regime periods — this system's own real macro series don't yet
- * span one), the macro variable heatmap, the causality/impulse-response
- * panels, and the national project register. Named here rather than
+ * THE REGIME GAUGE IS NOW ON THIS SCREEN (29 Aug 2026) — the live read,
+ * the two independent sub-reads behind it, what it is already doing to
+ * every fair value, §30 step 2's error-correction half-life and the §33
+ * tilts that are significant right now. Two pieces of it are still
+ * genuinely absent and say so on screen: a recommended gross exposure
+ * (§31 names exposure-capping but gives no number, and no
+ * portfolio-sizing layer exists for one to act on) and validation
+ * against a real historical Sri Lankan regime.
+ *
+ * STILL NOT ON THIS SCREEN: the macro variable heatmap, the
+ * causality/impulse-response panels, and the national project register.
+ * Named here rather than
  * silently omitted.
  */
 export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
@@ -34,6 +55,8 @@ export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
   const [spread, setSpread] = useState<Spread | null>(null);
   const [sensitivity, setSensitivity] = useState<SectorSensitivity | null>(null);
   const [sensitivityError, setSensitivityError] = useState<string | null>(null);
+  const [regime, setRegime] = useState<RegimeGauge | null>(null);
+  const [regimeError, setRegimeError] = useState<string | null>(null);
   // R1 T4.6.4 — which sector's drill-down panel is open, if any.
   const [drilldownSector, setDrilldownSector] = useState<string | null>(null);
 
@@ -52,6 +75,12 @@ export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
     getSectorSensitivity()
       .then(setSensitivity)
       .catch((e) => setSensitivityError(e instanceof ApiRequestError ? e.message : String(e)));
+    // Genuinely slow (a real Markov fit + an ARDL bounds test + the whole
+    // §33 matrix), so it loads alongside everything else rather than
+    // gating the screen on it.
+    getRegimeGauge()
+      .then(setRegime)
+      .catch((e: unknown) => setRegimeError(e instanceof ApiRequestError ? e.message : String(e)));
   }, []);
 
   // The feed includes the all-share index as a sector row; showing it in
@@ -70,13 +99,28 @@ export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
         <p className="prose t-body">
           On the CSE this layer is worth more than the other three combined, because Sri Lankan
           equities move as a bloc with the rate cycle far more than on idiosyncratic news (§G). The
-          hero spread and sector sensitivity matrix below are real, live estimates. Still missing:
-          the regime gauge (the classifier itself exists, but hasn't been validated against a real
-          historical Sri Lankan regime — this system's own macro series aren't deep enough yet), a
-          macro variable heatmap, the causality/impulse-response panels, and the national project
-          register.
+          hero spread, the regime gauge and the sector sensitivity matrix below are all real, live
+          estimates. Still missing: a recommended gross exposure (§31 names exposure-capping but
+          gives no number for it, and there is no portfolio-sizing layer for one to act on),
+          validation of the classifier against a real historical Sri Lankan regime (this system's
+          own macro series aren't deep enough yet), a macro variable heatmap, the
+          causality/impulse-response panels, and the national project register.
         </p>
       </div>
+
+      <section aria-labelledby="regime-heading" className="stack-tight">
+        <h2 id="regime-heading">Regime gauge (§31)</h2>
+        {regimeError && (
+          <ErrorState
+            whatFailed={`The regime gauge could not be loaded: ${regimeError}`}
+            whatItAffects="This section only."
+            whatStillWorks="The hero spread, the sensitivity matrix and the sector board below are loaded independently and are unaffected."
+            whatHappensNext="Reload the screen once the backend is reachable — nothing is cached, so a retry re-fits the model."
+          />
+        )}
+        {!regime && !regimeError && <p className="t-body">Fitting the regime model…</p>}
+        {regime && <RegimeGaugePanel gauge={regime} />}
+      </section>
 
       <section aria-labelledby="spread-heading" className="stack-tight">
         <h2 id="spread-heading">The hero spread (§29)</h2>

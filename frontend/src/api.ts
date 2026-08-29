@@ -25,6 +25,7 @@ import type {
   SecurityListItem,
   Tornado,
   ValuedPortfolio,
+  RegimeGauge,
 } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -217,6 +218,13 @@ export function getSpread() {
 
 export function getSectorSensitivity() {
   return request<SectorSensitivity>("/market/sector-sensitivity");
+}
+
+/** §31's regime gauge. Genuinely slow the first time (a real Markov fit,
+ * an ARDL bounds test and the whole §33 matrix), so callers should load
+ * it alongside the rest of Macro rather than blocking on it. */
+export function getRegimeGauge() {
+  return request<RegimeGauge>("/market/regime");
 }
 
 /** R1 T4.6.4. A real ~18s cost the first time it's called (reuses the
