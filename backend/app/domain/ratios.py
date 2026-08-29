@@ -40,6 +40,7 @@ conventional D/E screen and reach a wrong conclusion.
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 from collections.abc import Callable, Mapping
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
@@ -71,6 +72,20 @@ class LineItem:
     #: their signature; the one caller that reports to a user
     #: (`valuation_view._gather_inputs`) reads it and discloses it.
     basis_note: str | None = None
+    #: The real period this figure's own value was reported for — `None`
+    #: only for a caller that never populates it (this field predates
+    #: `app.domain.ratios`'s own single-period `compute_all` pipeline,
+    #: which selects one period up front and has no cross-period mixing
+    #: to track). `app.domain.valuation_view._confirmable_line_items`
+    #: DOES populate this on every item, including ones pulled from an
+    #: earlier period via its own per-line fallback — see that module's
+    #: `_same_period` helper for why this exists: a MARGIN built by
+    #: dividing two flow figures from two DIFFERENT real periods (a full
+    #: year's EBIT against one quarter's revenue, say) is not a real
+    #: margin at all, and this is the field that lets a caller refuse to
+    #: build one from mismatched dates rather than silently doing the
+    #: division anyway.
+    period_end: dt.date | None = None
 
 
 @dataclasses.dataclass(frozen=True)

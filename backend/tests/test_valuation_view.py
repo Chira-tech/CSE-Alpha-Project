@@ -220,6 +220,34 @@ class TestConfirmableLineItems:
         assert period_end is None
         assert items == {}
 
+    def test_every_item_carries_its_own_real_period_end(self, db_session):
+        """The field `dcf_for`'s and `current_period_fcff_for`'s own
+        cross-period guards (see TestDCFFor/TestCurrentPeriodFCFFFor's
+        regression tests) depend on: an item taken from the anchor
+        period must stamp THAT period, and one pulled from the fallback
+        must stamp its OWN, earlier, real period — never the anchor
+        period it was borrowed to fill in for."""
+        _seed_security(db_session)
+        _seed_confirmed_fundamentals(db_session)  # total_equity, net_income at PERIOD_END
+        stale_period = PERIOD_END - dt.timedelta(days=200)
+        db_session.add(
+            Fundamental(
+                ticker="COMB.N0000", period_end=stale_period, period_type="annual",
+                first_available_date=stale_period + dt.timedelta(days=60), version=1,
+                statement_line="total_assets", value=Decimal(5000), provenance_tier=ProvenanceTier.REPORTED,
+            )
+        )
+        db_session.commit()
+
+        period_end, items, excluded = _confirmable_line_items(db_session, "COMB.N0000", AS_OF)
+
+        assert period_end == PERIOD_END
+        assert items["total_equity"].period_end == PERIOD_END
+        # total_assets has no row at PERIOD_END, so it fell back — and
+        # must carry ITS OWN period, not the anchor's.
+        assert items["total_assets"].period_end == stale_period
+        assert items["total_assets"].basis_note is not None
+
 
 class TestSteadyStateGrowth:
     def test_default_used_when_below_risk_free(self):
@@ -338,6 +366,63 @@ class TestCurrentPeriodFCFFFor:
         view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
         assert view.fcff is None
         assert "operating_profit" in view.excluded_unconfirmed_lines
+
+    def test_refuses_to_sum_figures_from_two_different_real_periods(self, db_session):
+        """Same real, live bug as TestDCFFor's own regression (29 Aug
+        2026) — here reproduced for the informational FCFF figure:
+        operating_profit confirmed ~2 years before the other three
+        inputs must not be silently summed with them as if all four
+        described the same period's cash flow."""
+        _seed_security(db_session, ticker="SWAD.N0000")
+        stale_period = PERIOD_END - dt.timedelta(days=730)
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=stale_period, period_type="annual",
+                    first_available_date=stale_period + dt.timedelta(days=60), version=1,
+                    statement_line="operating_profit", value=Decimal(1000),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=stale_period, period_type="annual",
+                    first_available_date=stale_period + dt.timedelta(days=60), version=1,
+                    statement_line="profit_before_tax", value=Decimal(900),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=stale_period, period_type="annual",
+                    first_available_date=stale_period + dt.timedelta(days=60), version=1,
+                    statement_line="income_tax_expense", value=Decimal(-252),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="depreciation_and_amortisation", value=Decimal(50),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="capital_expenditure", value=Decimal(-80),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="change_in_net_working_capital", value=Decimal(20),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+            ]
+        )
+        db_session.commit()
+
+        view = current_period_fcff_for(db_session, "SWAD.N0000", AS_OF)
+
+        assert view.fcff is None
+        assert any(
+            "depreciation_and_amortisation" in w and str(stale_period) in w for w in view.warnings
+        )
 
 
 class TestWACCFor:
@@ -573,6 +658,84 @@ class TestDCFFor:
         # Baseline (no project) is 0.05 (test_hand_worked_flat_no_growth_view) + 0.01 project adjustment.
         assert view.result.years[0].revenue_growth == Decimal("0.06")
         assert any("national-project-register" in w for w in view.warnings)
+
+    def test_refuses_a_margin_built_from_two_different_real_periods(self, db_session, monkeypatch):
+        """Real, live bug (29 Aug 2026): `_confirmable_line_items`'s own
+        per-line fallback can hand `operating_profit` a value from a
+        genuinely EARLIER confirmed period than `revenue`'s — DPL.N0000's
+        real data has revenue confirmed through 2026-06-30 but operating_
+        profit last confirmed 2024-03-31. Dividing that stale, full-year
+        EBIT by a much shorter, fresher revenue produced a computed
+        operating margin of 106% — an accounting impossibility that then
+        compounded into a DCF fair value nearly 4x every other real
+        anchor. Reproduced here with the exact same shape: revenue at a
+        LATER period than operating_profit, both otherwise valid."""
+        _seed_security(db_session, ticker="SWAD.N0000")
+        stale_period = PERIOD_END - dt.timedelta(days=730)  # ~2 years earlier
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=stale_period, period_type="annual",
+                    first_available_date=stale_period + dt.timedelta(days=60), version=1,
+                    statement_line="operating_profit", value=Decimal(1000),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="revenue", value=Decimal(2000), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="profit_before_tax", value=Decimal(180), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="income_tax_expense", value=Decimal(-50), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="depreciation_and_amortisation", value=Decimal(50),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="capital_expenditure", value=Decimal(-80), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="net_working_capital", value=Decimal(500), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="total_interest_bearing_debt", value=Decimal(500),
+                    provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker="SWAD.N0000", period_end=PERIOD_END, period_type="quarterly",
+                    first_available_date=FIRST_AVAILABLE, version=1,
+                    statement_line="interest_expense", value=Decimal(50), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+            ]
+        )
+        db_session.add(FloatData(ticker="SWAD.N0000", as_of=dt.date(2022, 1, 1), shares_issued=100))
+        db_session.commit()
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        view = dcf_for(db_session, "SWAD.N0000", current_price=Decimal(20), as_of=AS_OF)
+
+        assert view.result is None
+        assert view.fair_value_per_share is None
+        assert any(
+            "operating_profit" in w and str(stale_period) in w and str(PERIOD_END) in w
+            for w in view.warnings
+        )
 
 
 class TestConfirmedDividendsAsOf:

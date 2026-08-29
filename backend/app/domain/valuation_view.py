@@ -233,7 +233,9 @@ def _confirmable_line_items(
             excluded.add(row.statement_line)
             continue
         if row.statement_line not in items:
-            items[row.statement_line] = LineItem(value=row.value, provenance=row.provenance_tier)
+            items[row.statement_line] = LineItem(
+                value=row.value, provenance=row.provenance_tier, period_end=row.period_end
+            )
             if row.statement_line == "net_income":
                 net_income_period_type = row.period_type
 
@@ -256,6 +258,7 @@ def _confirmable_line_items(
         items[row.statement_line] = LineItem(
             value=row.value,
             provenance=row.provenance_tier,
+            period_end=row.period_end,
             basis_note=(
                 f"{row.statement_line} is from the confirmed period ending "
                 f"{row.period_end} — the latest period ({latest_period}) has no confirmed "
@@ -305,6 +308,13 @@ def _confirmable_line_items(
                 value=annualised.value,
                 provenance=items["net_income"].provenance,
                 basis_note=note,
+                # The annualised (TTM, or real-annual-fallback) figure is a
+                # trailing twelve months ENDING at latest_period — treated
+                # as "as of latest_period" for the same-period ratio guard
+                # below, since that's the comparison basis it was built
+                # for (§6's point-in-time gate already governs which real
+                # rows could contribute to it).
+                period_end=latest_period,
             )
         else:
             # Deliberately NOT added to `excluded` — that set's own
@@ -751,6 +761,25 @@ def current_period_fcff_for(
     if tax_result is None or not tax_result.computable:
         missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
 
+    # Same real, live-found bug as `dcf_for`'s own guard (see that
+    # function's docstring comment for the full DPL.N0000 finding):
+    # `_confirmable_line_items`'s per-line fallback can pull these four
+    # figures from four DIFFERENT real periods. Summing a stale year's
+    # EBIT with this quarter's D&A/capex/ΔNWC is not one period's real
+    # cash generation — refused rather than silently added together.
+    ebit_period = (
+        required["operating_profit (EBIT proxy)"].period_end
+        if required["operating_profit (EBIT proxy)"] is not None
+        else None
+    )
+    for name in ("depreciation_and_amortisation", "capital_expenditure", "change_in_net_working_capital"):
+        item = required[name]
+        if item is not None and ebit_period is not None and item.period_end != ebit_period:
+            missing.append(
+                f"{name} (confirmed for {item.period_end}, not the EBIT proxy's own {ebit_period} — "
+                "these four figures must be from the same real period to sum to one period's cash flow)"
+            )
+
     if missing:
         warnings.append(f"FCFF not computable — missing: {', '.join(missing)}.")
         return CurrentPeriodFCFFView(period_end, None, excluded, tuple(warnings))
@@ -1142,6 +1171,44 @@ def dcf_for(
         missing.append("revenue (must be positive to project margins/percentages from)")
     if tax_result is None or not tax_result.computable:
         missing.append("effective_tax_rate (needs income_tax_expense and profit_before_tax)")
+
+    # A REAL, SYSTEMIC BUG, found live (29 Aug 2026) via a manual spot-
+    # check of real fair values: `_confirmable_line_items`'s own per-line
+    # fallback (see that function's own docstring) can hand `operating_
+    # profit` a value from a genuinely EARLIER confirmed period than
+    # `revenue`'s — e.g. DPL.N0000's real data has `revenue` confirmed
+    # through 2026-06-30 but `operating_profit` last confirmed 2024-03-31
+    # (a real ~26-month gap). Dividing that stale, FULL-YEAR EBIT by a
+    # much shorter, fresher revenue figure produced a computed operating
+    # margin of 106% — an accounting impossibility that then compounded
+    # across 10 years of DCF projection into a fair value nearly 4x every
+    # other real anchor (verified: DCF=50.99 vs Justified P/B=12.52,
+    # conservative book=2.62 for this exact real company). A live sweep
+    # found 9 real tickers with a >60% implied operating margin from
+    # exactly this cross-period pairing (ASCO, DPL, LION, LVEF, LVEN,
+    # PAP, SHOT.N/X0000, VPEL — margins ranging 68%-243%).
+    #
+    # Every one of `operating_profit`, `depreciation_and_amortisation`,
+    # `capital_expenditure` and `net_working_capital` gets divided by
+    # `revenue` below to build a "percent of revenue" assumption — that
+    # division is only a real ratio when both sides report the SAME real
+    # period. `net_income`'s own TTM annualisation already stamps its
+    # LineItem's `period_end` as `latest_period` (the trailing-twelve-
+    # months-ENDING-there figure), so this check treats it as matching by
+    # construction; every other line here is checked against its OWN real
+    # `period_end`, never assumed.
+    revenue_period = required["revenue"].period_end if required["revenue"] is not None else None
+    for name in (
+        "operating_profit (EBIT proxy)", "depreciation_and_amortisation",
+        "capital_expenditure", "net_working_capital",
+    ):
+        item = required[name]
+        if item is not None and revenue_period is not None and item.period_end != revenue_period:
+            missing.append(
+                f"{name} (confirmed for {item.period_end}, not revenue's own {revenue_period} — "
+                "a percent-of-revenue assumption from two different real periods is not a real "
+                "ratio, and this system refuses to build one)"
+            )
 
     wacc_view = wacc_for(
         db, ticker, current_price, stamp, regime=regime,
