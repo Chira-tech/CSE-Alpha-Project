@@ -48,6 +48,9 @@ scratch_*
 # resumable-sweep checkpoints (and archived copies) — regenerated on
 # every run, the final .md report next to them is the real audit artifact
 docs/audits/*.partial.jsonl*
+# 28MB of raw third-party financials pulled by scripts/external_crosscheck.py
+# --fetch; re-fetchable, and the .md report is what documents the outcome
+docs/audits/external_fundamentals_cache.jsonl
 # bulk raw market-data exports used by scripts/ingest_manual_price_history.py
 # — hundreds of MB of xlsx, kept on disk locally, never in git
 docs/price data/
