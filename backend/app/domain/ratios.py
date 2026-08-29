@@ -6,15 +6,29 @@ every formula is directly testable against a real filing.
 
 THE GOVERNING CONSTRAINT: this computes only what the available line
 items actually support, and says so loudly about the rest. §12 lists far
-more than is implemented here — ROIC, cash conversion, Piotroski F-Score,
-Altman Z", Beneish M-Score, net debt/EBITDA — and every one of those needs
-line items the current PDF extractor doesn't pull (cash flow from
-operations, debt broken out from total liabilities, D&A, working-capital
-components). Rather than approximate them from what's to hand, each
+more than is implemented here — ROIC, Piotroski F-Score, Beneish
+M-Score, net debt/EBITDA — and every one of those needs line items the
+current PDF extractor doesn't pull (debt broken out from total
+liabilities, D&A, working-capital components as a stock rather than a
+flow). Rather than approximate them from what's to hand, each
 unavailable ratio is declared with the exact inputs it is missing, so the
 UI can say "cannot compute, needs X" instead of showing a number that
 looks precise and is quietly wrong. That is Design Law 3 (§4): "Missing
-is displayed as missing... Silence is a lie in this system."
+is displayed as missing... Silence is a lie in this system." Cash
+conversion IS implemented below, once `cash_flow_from_operations` became
+extractable. §27's Altman Z"-Score is ALSO now real (see the
+`altman_z_double_prime` definition below) — the emerging-market variant
+(Altman, Hartzell & Peck, 1995), not the original 1968 model, and
+deliberately so: the original's X4 term needs MARKET value of equity
+(this system's own `NOT_YET_COMPUTABLE` entry named that as the
+blocker), while Z" uses BOOK value of equity instead, built by Altman
+specifically for non-manufacturers and emerging markets — exactly this
+system's real context, and it removes the live-price dependency
+entirely. `retained_earnings` was the one genuinely missing input
+(added to `app.domain.financial_statement_parsing.CANONICAL_LABELS`,
+measured against 62+18 real filings via `scripts/measure_unmatched_
+labels.py` before being added, this project's own standing rule, never
+guessed).
 
 A specific trap worth naming: total liabilities is NOT debt. Debt/equity
 computed on total liabilities sweeps in trade payables and deferred tax
@@ -264,6 +278,47 @@ DEFINITIONS: tuple[RatioDefinition, ...] = (
         fn=lambda v: _safe_div(v["net_income"] - v["cash_flow_from_operations"], v["total_assets"]),
         guard_note="Not meaningful when total assets is zero.",
     ),
+    # --- Distress detection (§27) ---------------------------------------
+    RatioDefinition(
+        # Altman's EMERGING-MARKET Z"-Score (Altman, Hartzell & Peck,
+        # 1995) — deliberately NOT the original 1968 Z, whose X4 term
+        # needs MARKET value of equity (this module's own docstring
+        # explains why book value is the right, and now computable,
+        # choice for this system). `retained_earnings` was the one
+        # genuinely missing input; measured against real filings before
+        # being added (`app.domain.financial_statement_parsing.
+        # CANONICAL_LABELS`'s own comment).
+        #
+        # Widely-cited bands, PROVISIONAL (see this project's own
+        # "Provisional" marking convention, e.g. `app.domain.valuation_
+        # view.MIN_PLAUSIBLE_JUSTIFIED_PB`): distress < 4.35, grey
+        # 4.35-5.85, safe > 5.85. Not encoded here as a zone label —
+        # `compute_ratio`'s shared `note` field is reserved for the
+        # guard reason when a ratio ISN'T computable, not a dynamic
+        # interpretation of a value that is — so the raw score is
+        # returned and a caller applies the bands itself if it wants to.
+        # Keyed "altman_z" (not "altman_z_double_prime") to match the key
+        # this system's own frontend (`RatioCardGrid.tsx`'s `GROUP_BY_KEY`)
+        # and the removed `NOT_YET_COMPUTABLE` entry both already used —
+        # one stable identifier for "this system's Altman-Z implementation,
+        # whichever variant," with the label naming the variant.
+        key="altman_z",
+        label='Altman Z"-Score (emerging market)',
+        formula='6.56×WC/TA + 3.26×RE/TA + 6.72×EBIT/TA + 1.05×BVE/TL + 3.25',
+        unit=TIMES,
+        required=(
+            "total_current_assets", "total_current_liabilities", "retained_earnings",
+            "operating_profit", "total_assets", "total_equity", "total_liabilities",
+        ),
+        fn=lambda v: (
+            Decimal("6.56") * (v["total_current_assets"] - v["total_current_liabilities"]) / v["total_assets"]
+            + Decimal("3.26") * v["retained_earnings"] / v["total_assets"]
+            + Decimal("6.72") * v["operating_profit"] / v["total_assets"]
+            + Decimal("1.05") * v["total_equity"] / v["total_liabilities"]
+            + Decimal("3.25")
+        ) if v["total_assets"] > 0 and v["total_liabilities"] > 0 else None,
+        guard_note="Not meaningful when total assets or total liabilities is zero or negative.",
+    ),
 )
 
 DEFINITIONS_BY_KEY = {d.key: d for d in DEFINITIONS}
@@ -281,7 +336,10 @@ NOT_YET_COMPUTABLE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # parsing.py) — Piotroski's remaining gap is total_debt and
     # shares_outstanding, not CFO.
     ("piotroski_f_score", "Piotroski F-Score", ("total_debt", "shares_outstanding")),
-    ("altman_z", 'Altman Z"-Score', ("working_capital", "retained_earnings", "ebit", "market_cap")),
+    # altman_z is REMOVED from this list — see the `altman_z` definition
+    # in DEFINITIONS above: the emerging-market Z" variant this system
+    # implements needs book value of equity, not market_cap, and is now
+    # real and computable.
     ("beneish_m", "Beneish M-Score", ("receivables", "gross_ppe", "depreciation", "sga", "total_accruals")),
 )
 

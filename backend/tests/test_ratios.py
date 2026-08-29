@@ -197,11 +197,72 @@ def test_leverage_ratio_is_not_called_debt_to_equity():
 def test_unimplemented_spec_ratios_are_declared_with_their_missing_inputs():
     """§12 specifies these; none is computable from the line items the
     extractor pulls today. They are listed rather than silently absent so
-    the UI can say what is needed."""
+    the UI can say what is needed. altman_z is deliberately NOT in this
+    list — see TestAltmanZDoublePrime below for why the emerging-market
+    Z" variant this system implements needed a different input (book
+    value of equity, not market_cap) and is now real."""
     keys = {k for k, _label, _needs in NOT_YET_COMPUTABLE}
-    for expected in ("roic", "piotroski_f_score", "altman_z", "beneish_m"):
+    for expected in ("roic", "piotroski_f_score", "beneish_m"):
         assert expected in keys
+    assert "altman_z" not in keys
     for _key, _label, needs in NOT_YET_COMPUTABLE:
         assert needs, "every unimplemented ratio must name what it is missing"
     # and none of them accidentally got implemented without their inputs
     assert not (keys & set(DEFINITIONS_BY_KEY))
+
+
+class TestAltmanZDoublePrime:
+    """§27's distress detection — Altman's emerging-market Z"-Score
+    (Altman, Hartzell & Peck, 1995): Z" = 6.56 X1 + 3.26 X2 + 6.72 X3 +
+    1.05 X4 + 3.25. Hand-worked against clean, synthetic numbers (never
+    the real J.F. Packaging fixture above — this system has no real,
+    confirmed `retained_earnings` figure for that company, and inventing
+    one to extend a "real filing" fixture would be exactly the kind of
+    fabricated number this project's own standing rule forbids)."""
+
+    def _items(self, **overrides):
+        base = dict(
+            total_current_assets=Decimal(500), total_current_liabilities=Decimal(200),
+            retained_earnings=Decimal(150), operating_profit=Decimal(100),
+            total_assets=Decimal(1000), total_equity=Decimal(300), total_liabilities=Decimal(500),
+        )
+        base.update(overrides)
+        return items(source=base)
+
+    def test_hand_worked_example(self):
+        """X1=300/1000=0.3, X2=150/1000=0.15, X3=100/1000=0.1,
+        X4=300/500=0.6 (all exact divisions) ->
+        Z" = 6.56(0.3) + 3.26(0.15) + 6.72(0.1) + 1.05(0.6) + 3.25
+           = 1.968 + 0.489 + 0.672 + 0.63 + 3.25 = 7.009"""
+        result = compute_ratio(DEFINITIONS_BY_KEY["altman_z"], self._items())
+        assert result.value == Decimal("7.009")
+        assert result.provenance is ProvenanceTier.REPORTED
+
+    def test_a_distressed_company_scores_well_below_the_safe_band(self):
+        """Negative working capital, accumulated losses, an operating
+        loss: X1=-0.2, X2=-0.5, X3=-0.05, X4=90/900=0.1 ->
+        Z" = 6.56(-0.2)+3.26(-0.5)+6.72(-0.05)+1.05(0.1)+3.25
+           = -1.312-1.63-0.336+0.105+3.25 = 0.077, well under the widely-
+        cited 4.35 distress threshold."""
+        result = compute_ratio(
+            DEFINITIONS_BY_KEY["altman_z"],
+            self._items(
+                total_current_assets=Decimal(100), total_current_liabilities=Decimal(300),
+                retained_earnings=Decimal(-500), operating_profit=Decimal(-50),
+                total_equity=Decimal(90), total_liabilities=Decimal(900),
+            ),
+        )
+        assert result.value == Decimal("0.077")
+
+    def test_non_positive_total_assets_is_not_meaningful_not_a_crash(self):
+        result = compute_ratio(
+            DEFINITIONS_BY_KEY["altman_z"], self._items(total_assets=Decimal(0))
+        )
+        assert result.value is None
+        assert "not meaningful" in (result.note or "").lower()
+
+    def test_non_positive_total_liabilities_is_not_meaningful_not_a_crash(self):
+        result = compute_ratio(
+            DEFINITIONS_BY_KEY["altman_z"], self._items(total_liabilities=Decimal(0))
+        )
+        assert result.value is None

@@ -942,6 +942,18 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
         "other components of equity",  # AHPL — combined, revaluation-dominated proxy (verified end-to-end)
         "revaluation reserve",  # Galadari — pure, but not yet live-extractable (2-column filing)
     ),
+    # §27's Altman Z"-Score needs retained_earnings/total_assets — the one
+    # remaining input `ratios.NOT_YET_COMPUTABLE` still listed it as
+    # missing for. Measured, not guessed, via `scripts/measure_unmatched_
+    # labels.py`'s real sample of 130 real filings: "retained earnings"
+    # printed by 62 distinct companies, "revenue reserves" (the same
+    # concept under a different CSE-era naming convention) by 18 more —
+    # both well past the "used by many companies" bar this project's own
+    # standing rule applies before adding a wording.
+    "retained_earnings": (
+        "retained earnings",  # 62 companies
+        "revenue reserves",  # 18 companies
+    ),
     # A REAL, GENUINE third balance-sheet bucket, found live (18 Aug
     # 2026) on Lanka Walltiles PLC's (LWL.N0000) real interim statement
     # for the period ended 30 June 2026 — NOT an extraction bug. IFRS 5
@@ -1579,6 +1591,7 @@ _COMPONENT_SUBTOTAL_CEILINGS: dict[str, tuple[str, ...]] = {
     "trade_payables": ("total_current_liabilities", "total_liabilities", "total_assets"),
     "total_interest_bearing_debt": ("total_liabilities", "total_assets"),
     "revaluation_reserves": ("total_equity", "total_equity_and_liabilities"),
+    "retained_earnings": ("total_equity", "total_equity_and_liabilities"),
     # §24's balance-sheet set. Each is a component of total assets (or,
     # for the overdraft, of liabilities), so the same too-LARGE misread
     # guard applies. PP&E and investment property are non-current, so
