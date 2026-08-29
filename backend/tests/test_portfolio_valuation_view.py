@@ -234,7 +234,14 @@ class TestTask22ExitPlanFields:
 
     def test_a_real_positive_fair_value_gets_a_full_exit_plan(self, db_session, monkeypatch):
         monkeypatch.setattr(valuation_view, "cost_of_equity_for", self._fake_ke)
-        self._seed_healthy_bank(db_session, "COMB.N0000", price=Decimal(12))
+        # docs/SYSTEM_AUDIT.md §0's Gordon-family collapse means this
+        # fixture's real fair value is 11.208333 (justified P/B alone,
+        # blended with the conservative book anchor — no DCF inputs are
+        # seeded) — price 9 sits between buy-below (8.41) and the fair
+        # value itself, the 'fair' zone, so this test exercises the
+        # "nothing stretched" thesis-intact path deliberately, distinct
+        # from the 'trim'-zone case a higher price would trigger.
+        self._seed_healthy_bank(db_session, "COMB.N0000", price=Decimal(9))
 
         snapshot = store_portfolio_snapshot(db_session, _parsed("COMB.N0000"), source_filename="p.xlsx")
         result = value_portfolio(db_session, snapshot, AS_OF)

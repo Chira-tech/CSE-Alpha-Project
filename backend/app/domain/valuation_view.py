@@ -1912,17 +1912,37 @@ def valuation_summary_for(
         universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
 
+    # THE GORDON-FAMILY COLLAPSE (docs/SYSTEM_AUDIT.md §0, its own headline
+    # finding — "Justified P/B, justified P/E and residual income... are
+    # one Gordon model wearing three hats"). Proved algebraically there and
+    # confirmed live on every company checked: with this module's own
+    # steady-state payout (`1 - g/ROE`, see `relative_valuation_for`'s own
+    # comment) and this system's flat-ROE baseline (`roe_forecast_path=
+    # (roe,)`, `terminal_roe=roe` — the only forecast this system can
+    # honestly make, per `_gather_inputs`'s own docstring), residual income
+    # and justified P/E/P/S are not independent corroborating reads of
+    # justified P/B — they are the IDENTICAL number (residual income) or a
+    # KNOWN, fixed rescaling of it (P/E by (1+g); P/S by net_margin x
+    # (1+g)). Feeding all four into `triangulate` as separate anchors
+    # doesn't diversify the blend, it OVER-WEIGHTS one single read by up to
+    # 4x and manufactures a falsely tight `dispersion_pct` that then
+    # UNDER-states the margin-of-safety dispersion component (§25) for
+    # exactly the companies where this system has the LEAST genuine
+    # independent corroboration (no DCF, no confirmed conservative book).
+    #
+    # Fixed here, not by suppressing the other three's OWN computation
+    # (they still compute and still display on the company file, each with
+    # the existing warning naming the exact relationship) but by never
+    # letting more than ONE of them reach `triangulate`. Justified P/B is
+    # the canonical representative — the base identity every other Gordon-
+    # family figure here is proven to be a fixed function OF, needing no
+    # extra "steady-state payout" assumption layered on top the way P/E
+    # and P/S do.
     anchors: list[ValuationAnchor] = []
     if jpb.fair_value_per_share is not None:
         anchors.append(ValuationAnchor("Justified P/B", "relative", jpb.fair_value_per_share))
-    if ri.result is not None and ri.result.value_per_share is not None:
-        anchors.append(ValuationAnchor("Residual income", "intrinsic", ri.result.value_per_share))
     if dcf_view.fair_value_per_share is not None:
         anchors.append(ValuationAnchor("FCFF DCF", "intrinsic", dcf_view.fair_value_per_share))
-    if rel_view.fair_value_pe is not None:
-        anchors.append(ValuationAnchor("Justified P/E", "relative", rel_view.fair_value_pe))
-    if rel_view.fair_value_ps is not None:
-        anchors.append(ValuationAnchor("Justified P/S", "relative", rel_view.fair_value_ps))
     # §22/§24's asset leg — a real anchor for every archetype now, and
     # the reason the blend can no longer go negative when the Gordon-
     # family earnings anchors above are suppressed for a low-but-positive-
@@ -2003,14 +2023,17 @@ def valuation_summary_for(
                 ladder = None
 
     note = (
-        f"{len(anchors)} of §18-26's real triangulation anchors were live-computable for "
-        f"this company ({', '.join(a.method for a in anchors) or 'none'}) — any missing "
-        "ones above need data this system doesn't have for THIS company yet (a confirmed "
-        "dividend, enough revenue history, etc. — see each anchor's own view for the "
-        "specific reason). Justified P/B, Residual income, FCFF DCF, Justified P/E and "
-        "Justified P/S are all genuine, live-wireable anchors as of 23 Aug 2026; SOTP is "
-        "the one §18-26 model still blocked on a real missing data source rather than a "
-        "wiring gap (see this module's own docstring)."
+        f"{len(anchors)} of this company's real triangulation anchors were live-computable "
+        f"({', '.join(a.method for a in anchors) or 'none'}) — any missing ones need data "
+        "this system doesn't have for THIS company yet (a confirmed dividend, enough "
+        "revenue history, a positive mid-cycle ROE, etc. — see each anchor's own view for "
+        "the specific reason). Residual income, Justified P/E and Justified P/S all still "
+        "compute and display on the company file, but do NOT also count as separate "
+        "triangulation anchors here (docs/SYSTEM_AUDIT.md §0): under this system's flat-ROE "
+        "baseline they are proven to be the identical number as Justified P/B, or a fixed "
+        "rescaling of it, not independent corroboration — Justified P/B is kept as the one "
+        "Gordon-family anchor. SOTP is the one §18-26 model still blocked on a real missing "
+        "data source rather than a wiring gap (see this module's own docstring)."
     )
     if sanity_result is not None and sanity_result.blocked:
         note += (

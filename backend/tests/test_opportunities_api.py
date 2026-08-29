@@ -68,10 +68,13 @@ def test_a_confirmed_ticker_with_a_computable_ladder_is_ranked(client, db_sessio
     assert len(body["ranked"]) == 1
     candidate = body["ranked"][0]
     assert candidate["ticker"] == "COMB.N0000"
-    # FV now blends in the conservative book (NAV floor) anchor (§24), so
-    # current 12 lands in the 'fair' band rather than 'strong_accumulate'.
-    assert candidate["price_ladder_zone"] == "fair"
-    assert candidate["verdict"] == "Hold"
+    # docs/SYSTEM_AUDIT.md §0's Gordon-family collapse: only justified P/B
+    # (15.0) counts as a triangulation anchor now, blended with the
+    # conservative book (NAV floor) anchor (§24) since no DCF inputs are
+    # seeded — FV = 11.208333, and current price 12 lands in the 'trim'
+    # band.
+    assert candidate["price_ladder_zone"] == "trim"
+    assert candidate["verdict"] == "Trim"
     assert candidate["decision_confidence"] == "low"
     assert Decimal(candidate["gap_to_buy_below_pct"]) is not None
     assert body["excluded"] == []

@@ -73,10 +73,14 @@ class TestRecordDecisionFor:
         assert decision.market_price_at_decision == Decimal(12)
         # Same known-good hand-worked fixture as test_valuation_view.py's
         # TestValuationSummaryFor.test_end_to_end_bank_triangulation_and_ladder:
-        # the two Gordon anchors at 15.0 blended with the conservative
-        # book (NAV floor) anchor at 8.5 → 12.725, with real dispersion.
-        assert abs(decision.fv_blended - Decimal("12.725")) < Decimal("0.001")
-        assert decision.dispersion > Decimal("0.4")
+        # docs/SYSTEM_AUDIT.md §0's Gordon-family collapse means only
+        # justified P/B (15.0) counts as a triangulation anchor, blended
+        # with the conservative book (NAV floor) anchor at 8.5, renormalised
+        # since "intrinsic" has no anchor in this fixture (no DCF inputs
+        # seeded) → 11.208333, with real dispersion between two genuinely
+        # different reads.
+        assert abs(decision.fv_blended - Decimal("11.208333")) < Decimal("0.001")
+        assert decision.dispersion > Decimal("0.5")
         assert decision.buy_below is not None
         assert decision.fair_value is not None
         assert decision.trim_above is not None

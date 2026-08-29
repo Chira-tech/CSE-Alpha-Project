@@ -110,12 +110,17 @@ class TestOpportunityRankingFor:
         assert len(view.ranked) == 1
         candidate = view.ranked[0]
         assert candidate.ticker == "COMB.N0000"
-        # With the conservative book (NAV floor) anchor now blended in for
-        # every archetype (§24), FV = 12.725 and current 12 sits in the
-        # 'fair' band rather than 'strong_accumulate'. Still ranked (has a
-        # zone and a gap); the verdict/confidence are surfaced too now.
-        assert candidate.price_ladder_zone == "fair"
-        assert candidate.verdict == "Hold"
+        # docs/SYSTEM_AUDIT.md §0's Gordon-family collapse: only justified
+        # P/B (15.0) counts as a triangulation anchor (residual income is
+        # the identical number under this system's flat-ROE baseline, so
+        # it no longer also enters the blend); no DCF inputs are seeded,
+        # so "intrinsic" is genuinely missing and the blend renormalises
+        # across just relative + the conservative book (NAV floor) anchor
+        # → FV = 11.208333, and current price 12 sits in the 'trim' band.
+        # Still ranked (has a zone and a gap); the verdict/confidence are
+        # surfaced too.
+        assert candidate.price_ladder_zone == "trim"
+        assert candidate.verdict == "Trim"
         assert candidate.decision_confidence == "low"
         assert candidate.gap_to_buy_below_pct is not None
         assert view.excluded == ()

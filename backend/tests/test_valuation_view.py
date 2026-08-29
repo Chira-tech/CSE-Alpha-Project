@@ -790,36 +790,52 @@ class TestValuationSummaryFor:
         )
 
         assert summary.routing.archetype == "bank"
-        # The two Gordon-family anchors land at 15.0 (see the two hand-worked
-        # tests above), and the conservative book (NAV floor) anchor now
-        # ALSO participates for every archetype: reported book per share
-        # 10.0, blanket-haircut to 8.5 (no revaluation_reserves line
-        # matched in this fixture). All three §24 categories are populated.
-        assert summary.triangulation.missing_categories == ()
+        # docs/SYSTEM_AUDIT.md §0's Gordon-family collapse: residual income
+        # is the IDENTICAL number as justified P/B under this system's
+        # flat-ROE baseline (both land at 15.0, see the two hand-worked
+        # tests above), so only justified P/B counts as the one Gordon-
+        # family triangulation anchor — residual income still computes
+        # and still displays, it just no longer ALSO enters `triangulate`.
+        # No DCF inputs are seeded (no capex/D&A/WC/revenue), so
+        # "intrinsic" is genuinely empty — not a bug, an honest reflection
+        # of what this fixture actually has. The conservative book (NAV
+        # floor) anchor participates for every archetype: reported book
+        # per share 10.0, blanket-haircut to 8.5 (no revaluation_reserves
+        # line matched in this fixture).
+        assert summary.triangulation.missing_categories == ("intrinsic",)
         assert summary.conservative_book.value_per_share == Decimal("8.500000")
         assert summary.conservative_book.confidence == "low"
-        # bank weights: intrinsic 0.40, asset_sotp 0.35, relative 0.25 →
-        # 0.40*15 + 0.35*8.5 + 0.25*15 = 12.725
-        assert abs(summary.triangulation.blended_fair_value_per_share - Decimal("12.725")) < Decimal("0.001")
-        # A real second, structurally different anchor → real dispersion now.
-        assert summary.triangulation.dispersion_pct > Decimal("0.4")
+        # bank weights: asset_sotp 0.35, relative 0.25 (intrinsic missing,
+        # renormalised across the two present categories) →
+        # (0.25/0.60)*15 + (0.35/0.60)*8.5 = 6.25 + 4.958333... = 11.208333...
+        assert abs(
+            summary.triangulation.blended_fair_value_per_share - Decimal("11.208333")
+        ) < Decimal("0.001")
+        # Exactly two anchors now (justified P/B, conservative book) — a
+        # real, structurally different second read, so dispersion is real,
+        # not the falsely-tight ~0% two identical Gordon-family anchors
+        # used to manufacture.
+        assert summary.triangulation.dispersion_pct > Decimal("0.5")
 
         # base 0.10 + dispersion component (capped at 0.15) = 0.25
         assert summary.margin_of_safety.total_pct == Decimal("0.25")
         assert summary.margin_of_safety.is_lower_bound
 
-        # FV=12.725, MoS=25% → buy_below = 9.544; current 12 sits in the
-        # 'fair' band (between buy_below and fair value).
+        # FV=11.208333, MoS=25% → trim_threshold = FV itself = 11.208333;
+        # current price 12 sits ABOVE it (but below exit_threshold =
+        # FV*1.15 = 12.889583) → 'trim', not 'fair' — a real consequence
+        # of the corrected, lower, no-longer-double-counted fair value.
         assert summary.price_ladder is not None
-        assert summary.price_ladder.current_zone == "fair"
+        assert summary.price_ladder.current_zone == "trim"
         assert summary.current_price == Decimal(12)
 
-        # The final decision: 'Hold' (fair band), and LOW confidence
-        # because ROE rests on a single seeded period and the two anchor
-        # families disagree by ~51%.
-        assert summary.decision.verdict == "Hold"
+        # The final decision: 'Trim' (the price ladder's own zone), LOW
+        # confidence because ROE rests on a single seeded period, only 2
+        # anchors exist, and they disagree by >35%.
+        assert summary.decision.verdict == "Trim"
         assert summary.decision.confidence == "low"
         assert any("single period" in f for f in summary.decision.confidence_factors)
+        assert any("2 triangulation anchor" in f for f in summary.decision.confidence_factors)
         # No capex/D&A/WC seeded for COMB.N0000 in this fixture — informational
         # only, and correctly absent rather than silently zero.
         assert summary.current_period_fcff.fcff is None
@@ -827,6 +843,38 @@ class TestValuationSummaryFor:
         # ticker today (§8/§9's confirm-queue workflow isn't built yet).
         assert summary.gordon_growth_ddm.result is None
         assert "No confirmed DIVIDEND_CASH" in summary.gordon_growth_ddm.warnings[0]
+
+    def test_the_gordon_family_counts_as_one_triangulation_anchor_not_several(
+        self, db_session, monkeypatch
+    ):
+        """docs/SYSTEM_AUDIT.md §0's own headline finding, verified
+        directly rather than only incidentally through a fixed-up
+        fixture: residual income is proven to be the IDENTICAL fair
+        value as justified P/B under this system's flat-ROE baseline
+        (both real, both still independently computed and displayed),
+        and justified P/E/P/S are each a KNOWN fixed rescaling of it.
+        None of the three may ALSO count as a separate triangulation
+        anchor — only justified P/B does."""
+        _seed_security(db_session)
+        _seed_confirmed_fundamentals(db_session)
+        _seed_shares(db_session, shares=100)
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+
+        summary = valuation_summary_for(
+            db_session, "COMB.N0000", archetype="bank", current_price=Decimal(12), as_of=AS_OF
+        )
+
+        # Residual income is STILL a real, independently computed, equal
+        # value — it simply doesn't ALSO enter the blend.
+        assert summary.residual_income.result is not None
+        assert summary.residual_income.result.value_per_share == summary.justified_pb.fair_value_per_share
+
+        # Only 2 anchors reached triangulation: justified P/B and the
+        # conservative book anchor — never 3 or 4 from one Gordon-family
+        # read counted several times over.
+        assert "only 2 triangulation anchor" in " ".join(summary.decision.confidence_factors)
+        assert "Justified P/B" in summary.note
+        assert "Residual income" not in summary.note.split("(")[1].split(")")[0]
 
     def test_no_confirmed_data_gives_no_anchors_and_no_ladder(self, db_session, monkeypatch):
         _seed_security(db_session)
