@@ -2197,3 +2197,42 @@ def test_end_to_end_echannellings_real_filing_reconciles_correctly():
         "total_current_liabilities": Decimal("219185791"),
         "total_liabilities": Decimal("238125232"),
     }
+
+
+class TestRealWorldLabelVariants:
+    """Label wordings verified against real CSE filings on 29 Aug 2026.
+
+    `operating_profit` was missing for 227 of 283 tickers and
+    `capital_expenditure` for 215, which together were what actually
+    blocked §18's FCFF DCF from valuing anyone. Neither gap was a
+    valuation-logic problem: the filings simply do not use the single
+    wording each canonical key started with.
+    """
+
+    def test_results_from_operating_activities_is_operating_profit(self):
+        # JKH.N0000 p9/p15, KHL.N0000 p3/p8, CCS.N0000 p2 (July 2026 interims)
+        assert match_canonical_label("Results from operating activities") == "operating_profit"
+
+    def test_purchase_and_construction_is_capital_expenditure(self):
+        # JKH.N0000 p12, KHL.N0000 p6 — neither uses the "acquisition of..." form
+        assert match_canonical_label(
+            "Purchase and construction of property, plant and equipment"
+        ) == "capital_expenditure"
+
+    def test_depreciation_and_amortisation_of_named_assets(self):
+        assert match_canonical_label(
+            "Depreciation of property, plant and equipment"
+        ) == "depreciation_expense"
+        assert match_canonical_label("Amortisation of intangible assets") == "amortisation_expense"
+
+    def test_neighbouring_operating_lines_do_not_collide(self):
+        """These sit directly above/below "Results from operating
+        activities" on the same real income statements. Matching is an
+        exact lookup, and this pins that it stays exact — a substring or
+        prefix rule would silently turn either into operating profit."""
+        assert match_canonical_label("Other operating income") is None
+        assert match_canonical_label("Other operating expenses") is None
+        # And the cash-flow subtotal keeps its own distinct key.
+        assert match_canonical_label(
+            "Operating profit before working capital changes"
+        ) == "operating_profit_before_working_capital_changes"

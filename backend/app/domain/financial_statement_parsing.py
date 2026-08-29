@@ -579,7 +579,15 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
         # already established for a different line.
         "gross profit / (loss)",
     ),
-    "operating_profit": ("operating profit",),
+    # "results from operating activities" is the standard IFRS wording on
+    # CSE filings and was the single biggest extraction gap in the system:
+    # `operating_profit` was missing for 227 of 283 tickers, which alone
+    # blocked §18's DCF. Verified on three independent real filings
+    # (JKH.N0000 p9/p15, KHL.N0000 p3/p8, CCS.N0000 p2, all July 2026
+    # interims). Matching is an exact lookup on the normalised label, so
+    # the neighbouring "other operating income"/"other operating expenses"
+    # lines on those same pages cannot collide with it.
+    "operating_profit": ("operating profit", "results from operating activities"),
     "profit_before_tax": ("profit before tax",),
     "income_tax_expense": (
         "income tax expense",
@@ -646,8 +654,18 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # the primary statements (e.g. a PP&E movement note) would be a real
     # false-positive risk; on the cash-flow-statement page specifically
     # it has never meant anything else in either filing checked so far.
-    "depreciation_expense": ("depreciation",),  # SWAD
-    "amortisation_expense": ("amortization",),  # SWAD
+    # "depreciation of property, plant and equipment" verified on
+    # JKH.N0000 p13 and KHL.N0000 p6. Those filings ALSO print a separate
+    # "depreciation of right-of-use assets" line, which first-occurrence-
+    # wins does not add in; that understates D&A, which understates FCFF
+    # and therefore fair value — the safe direction — and summing across
+    # occurrences is deliberately not done here because the same labels
+    # reappear on segment-note pages and would double-count.
+    "depreciation_expense": ("depreciation", "depreciation of property, plant and equipment"),  # SWAD
+    # "amortisation of intangible assets" verified on JKH.N0000 p13 and
+    # KHL.N0000 p6 (both also carry an ROU-amortisation line — same
+    # safe-direction note as depreciation_expense above).
+    "amortisation_expense": ("amortization", "amortisation of intangible assets"),  # SWAD
     # Capital expenditure — genuinely NEW as of this filing. J.F.
     # Packaging PLC's equivalent label ("Purchase & Construction of
     # Property, Plant & Equipment & Intangible Assets") wraps across two
@@ -658,7 +676,14 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # Assets" as a separate, smaller line this key deliberately excludes,
     # so a company with material intangible capex will read slightly
     # low here, a real, stated incompleteness rather than a silent one.
-    "capital_expenditure": ("acquisition of property, plant and equipment",),  # SWAD
+    # "purchase and construction of property, plant and equipment" is the
+    # real cash-flow wording on both JKH.N0000 (p12) and KHL.N0000 (p6) —
+    # neither uses the "acquisition of..." form this list started with.
+    # capital_expenditure was missing for 215 of 283 tickers.
+    "capital_expenditure": (
+        "acquisition of property, plant and equipment",  # SWAD
+        "purchase and construction of property, plant and equipment",
+    ),
     # The two bookend subtotals of the operating-activities working-
     # capital section — verified on BOTH real filings, and the reason
     # `change_in_net_working_capital` below can be derived at all without
