@@ -3875,6 +3875,64 @@ asset/NAV, or §20.1's cross-sectional peer multiples. **The DCF is the
 one real second opinion within reach, and is now the highest-value
 remaining build for the product's output.**
 
+### Derived line items backfilled — the DCF produces its first real fair value
+
+- [x] **`derive_additional_line_items` had only ever run at INGESTION
+      time.** It is real, tested and correct, but it computes its three
+      canonical concepts against one filing's freshly-extracted values —
+      so every row stored before it existed never got the derivation, and
+      nothing had ever revisited them. The inputs were sitting in the
+      database the whole time; the arithmetic had simply never been run
+      over them:
+
+          depreciation_expense                      132 tickers, 1,919 rows
+          depreciation_and_amortisation (derived)    10 tickers,    43 rows
+          operating_profit_before_working_capital_changes   149 tickers
+          cash_generated_from_operations                    159 tickers
+          net_working_capital (derived)              13 tickers,    13 rows
+
+      224 tickers had confirmed `revenue`; requiring D&A collapsed that to
+      4 and `net_working_capital` to **0**. That, not the valuation math,
+      was why §18's DCF valued nobody.
+- [x] **`scripts/backfill_derived_line_items.py` wrote 7,721 derived rows
+      across 235 tickers** — `net_working_capital` for 196, D&A for 132,
+      `change_in_net_working_capital` for 114. Hand-verified against
+      RIL.N0000's real figures: (inventories 10,332,937,000 +
+      trade_receivables 7,156,046,000) − trade_payables 5,782,933,000 =
+      11,706,050,000, matching the derivation exactly.
+      - **Provenance is `DERIVED`, not Reported.** Ingestion writes its
+        derived drafts as AI_ASSISTED, correctly, because at that moment
+        the INPUTS are unconfirmed extractions too. Here every input
+        already passes `can_enter_valuation`, so the output carries §8's
+        own `DERIVED` tier — labelled as computed rather than reported,
+        never promoted, and no human confirmation bypassed.
+      - **`first_available_date` is the LATEST of the inputs'** — a
+        derived figure could not have been known before every component
+        was public (§6).
+      - **One disclosed relaxation**: `DERIVED_SUMS` requires BOTH
+        depreciation and amortisation, which is right at ingestion but too
+        strict against confirmed data (21 tickers have a confirmed
+        `amortisation_expense` against 132 with depreciation). D&A is
+        taken as depreciation alone where no amortisation line exists,
+        said so on every such row, and it errs safely: D&A is added back
+        in §18.1's FCFF, so understating it understates fair value.
+- [x] **DPL.N0000 produced this system's first real FCFF DCF fair value —
+      50.99 against a price of 13.40** — and universe-wide, one ticker now
+      shows >50% dispersion. That number finally means what it should:
+      a structurally different model disagreeing, rather than the
+      arithmetic of `(1+g)`.
+
+**Where the DCF stands, measured as the ENGINE sees it** (not "the ticker
+has this line somewhere" — `_confirmable_line_items` resolves one anchor
+period with a three-year per-line fallback): **6 tickers have every DCF
+input in scope**, up from 0. The remaining blockers are now extraction,
+not derivation, and are named precisely: `operating_profit` missing for
+227 tickers, `capital_expenditure` for 215, `depreciation_and_
+amortisation` for 205, `total_interest_bearing_debt` for 162,
+`income_tax_expense` for 148. Extracting operating profit and capex from
+more filings is the concrete next build — nothing else stands between
+this engine and a genuine second opinion at scale.
+
 ### Full system audit (29 Aug 2026)
 
 Backend 1385 tests, frontend typecheck/build/zone-guard, `compileall`,
