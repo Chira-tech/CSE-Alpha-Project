@@ -587,8 +587,44 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # interims). Matching is an exact lookup on the normalised label, so
     # the neighbouring "other operating income"/"other operating expenses"
     # lines on those same pages cannot collide with it.
-    "operating_profit": ("operating profit", "results from operating activities"),
-    "profit_before_tax": ("profit before tax",),
+    #
+    # The variants below were measured the same way as
+    # `capital_expenditure`'s (see that key's comment for the method).
+    #
+    # Deliberately EXCLUDED, and these matter more than the additions:
+    #   - "other operating income" (28 companies, the single most common
+    #     unmatched label near this line) is a REVENUE COMPONENT sitting
+    #     a few rows above operating profit, not a subtotal. Matching it
+    #     would put a small income line into every DCF as if it were EBIT.
+    #   - "operating profit/(loss) before working capital changes" (7)
+    #     and "operating profit before changes in operating assets and
+    #     liabilities" (2) are the CASH-FLOW statement's opening subtotal,
+    #     a different figure entirely — they are added to
+    #     `operating_profit_before_working_capital_changes` below instead.
+    #   - "total operating income" (1) is a financial-firm line, and
+    #     financials are correctly never routed to an FCFF DCF.
+    #   - "profit before tax from continuing operations" and its
+    #     relatives are PBT, already a different canonical key.
+    #   - "profit/(loss) from operations after net finance expense" is
+    #     AFTER finance costs, so it is not EBIT.
+    "operating_profit": (
+        "operating profit",
+        "results from operating activities",
+        "profit from operations",  # 13 companies
+        "profit from operating activities",  # 6
+        "profit/(loss) from operations",  # 3
+        "profit / (loss) from operations",  # 3
+        "profit/ (loss) from operating activities",  # 2
+        "operating profit/ (loss)",  # 2
+        "operating profit / (loss)",
+        "operating profit/(loss)",
+    ),
+    # "profit before taxation" is the same figure spelled the longer way
+    # on 21 of the 130 filings measured — see `capital_expenditure`'s
+    # comment for the method. PBT drives the effective tax rate §18's DCF
+    # and WACC's cost of debt both need, so this wording being unmatched
+    # was blocking those for every company that uses it.
+    "profit_before_tax": ("profit before tax", "profit before taxation"),
     "income_tax_expense": (
         "income tax expense",
         # Swadeshi Industrial Works PLC's real FY2025/26 income statement
@@ -680,9 +716,54 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # real cash-flow wording on both JKH.N0000 (p12) and KHL.N0000 (p6) —
     # neither uses the "acquisition of..." form this list started with.
     # capital_expenditure was missing for 215 of 283 tickers.
+    # The wordings below were MEASURED, not guessed, by
+    # `scripts/measure_unmatched_labels.py`: it re-parsed 130 real
+    # non-financial filings already on file, collected every label that
+    # parsed as a line item on a primary-statement page but matched no
+    # canonical key, and ranked them by how many DISTINCT companies print
+    # them. Counts in comments are that measurement. The long tail is
+    # mostly punctuation and pluralisation drift around the same three
+    # words ("&" vs "and", "equipments", a stray space before the comma),
+    # which exact-match cannot absorb and which is why this line was
+    # missing for 113 of 177 non-financial tickers.
+    #
+    # Deliberately EXCLUDED, having been looked at:
+    #   - "acquisition of investment property" / "acquisition of
+    #     intangible assets and capital work-in-progress" — real lines,
+    #     but neither is PP&E, and this key is PP&E (see below).
+    #   - "disposal / (acquisition) of property, plant and equipment..."
+    #     — the sign depends on which way that filing nets it out.
+    #   - "additions of mature and immature plantations net of sale of
+    #     timber" — net of disposals, so not gross capex.
+    #
+    # PP&E only, unchanged from this key's original scope: a company with
+    # material intangible capex reads slightly low here. NOTE that this
+    # understates capex, which OVERSTATES FCFF and therefore fair value —
+    # the unsafe direction, and the one real caveat on this key. It is
+    # kept only because changing the key's meaning is a separate decision
+    # from fixing its coverage; the compound "...& intangible assets"
+    # wordings are left unmatched rather than silently widening it.
     "capital_expenditure": (
         "acquisition of property, plant and equipment",  # SWAD
         "purchase and construction of property, plant and equipment",
+        "purchase of property, plant and equipment",  # 11 companies
+        "acquisition of property, plant & equipment",  # 9
+        "purchase of property, plant & equipment",  # 6
+        "purchase and construction of property, plant & equipment",  # 3
+        "acquisition and construction of property, plant and equipment",  # 3
+        "purchase of property, plant & equipments",  # 2
+        "purchase & construction of property, plant & equipment",  # 2
+        "acquisition of property , plant & equipment",  # 2 (space before comma)
+        "purchases of property, plant and equipment",
+        "purchase of property plant and equipment",
+        "purchase of property and equipment",
+        "purchase and constructions of property, plant & equipment",
+        "acquisition of property plant & equipment",
+        "acquisition of property,plant,equipment",
+        "acquisition of property, plant & equipments",
+        "additions to property, plant & equipment",
+        "addition to property, plant & equipment",
+        "capital expenditure",
     ),
     # The two bookend subtotals of the operating-activities working-
     # capital section — verified on BOTH real filings, and the reason
@@ -699,12 +780,22 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # `cash_flow_from_operations`'s own docstring already distinguishes
     # from CFO) needed a second wording, same as every other cash-flow
     # line here.
+    # The loss-period and "operating assets and liabilities" variants
+    # below are the same measured sweep as `operating_profit`'s, and are
+    # the wordings deliberately kept OUT of that key (see its comment) —
+    # this is the line they actually belong to. Both bookends feed
+    # `change_in_net_working_capital`, and so §18's FCFF.
     "operating_profit_before_working_capital_changes": (
         "operating profit before working capital changes",  # JFP + SWAD, identical
+        "operating profit/(loss) before working capital changes",  # 7 companies
+        "operating profit / (loss) before working capital changes",  # 2
+        "operating profit before changes in operating assets and liabilities",  # 2
     ),
     "cash_generated_from_operations": (
         "cash generated from/ (used in) operations",  # JFP
         "cash generated from operations",  # SWAD
+        "cash (used in) / generated from operations",  # 2
+        "cash generated from / (used in) operations",  # 2
     ),
     # WACC's cost-of-debt input — verified on Swadeshi Industrial Works
     # PLC's real balance sheet, where "Interest Bearing Loans and

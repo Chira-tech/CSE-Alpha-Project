@@ -55,3 +55,4 @@ docs/audits/external_dividends_cache.jsonl
 # bulk raw market-data exports used by scripts/ingest_manual_price_history.py
 # — hundreds of MB of xlsx, kept on disk locally, never in git
 docs/price data/
+backend/scripts/.pdf_cache/

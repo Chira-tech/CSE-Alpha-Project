@@ -111,7 +111,8 @@ fundamentals ─ point_in_time ─ provenance(§8) ─→ valuation_view._confir
 |---|---|---|
 | L1 | Gordon family is one model, not three | §0 above |
 | L2 | Only **56 of 283** tickers produce a fair value | live `opportunity_ranking_for` run |
-| L3 | FCFF DCF runs for a **single-digit** number of tickers. Counting tickers with *at least one* confirmed row per line (a generous bound — a DCF needs a recent one *plus* history): `operating_profit` missing for **211/294**, `capital_expenditure` **199**, `amortisation_expense` **273**, `depreciation_expense` **162**, `total_interest_bearing_debt` **136**, `income_tax_expense` **91**. The 29 Aug label-variant sweep improved operating_profit (227→211) and capex (215→199) | re-queried 29 Aug |
+| L3 | FCFF DCF runs for a **single-digit** number of tickers. `operating_profit` is missing for 211/294 and `capital_expenditure` for 199/294 — but **that headline overstates the fixable gap**, see L3a | re-queried 29 Aug |
+| L3a | **59 of the 294 are banks, finance companies or insurers, and correctly have neither line.** `valuation_router` already lists "Free cash flow" among their `meaningless_metrics`, so an FCFF DCF is never routed to them; chasing these lines for financials would be building toward a model that must not run. A further 58 have no archetype (L4), so their routing is blocked regardless. The **real target is the 177 non-financial tickers**, of which only **28 have both lines** — 113 are missing each. That, not 211, is the number to move | measured by archetype 29 Aug |
 | L4 | **58 of 294** tickers have no archetype, which blocks §16 routing entirely by design | `securities.archetype IS NULL` |
 | L5 | SOTP unwired — no segment/ownership data source exists | `_NOT_YET_BUILT` |
 | L6 | Gate 2 can never pass: `securities` has **no free-float column**, and no shareholding-disclosure ingestion exists. Gate 3 likewise has no Beneish/audit/related-party source | `coverage_gates.py` |
@@ -147,12 +148,41 @@ reason given):
 
 ### Prerequisite that gates items 3-6
 
-`operating_profit` and `capital_expenditure` extraction (L3). A
-normalized-earnings engine over 5-10 years of history, or a DCF
+`operating_profit` and `capital_expenditure` extraction — but scoped to
+the **177 non-financial tickers** (L3a), where only 28 currently have
+both. A normalized-earnings engine over 5-10 years of history, or a DCF
 confidence score built on FCFF stability, cannot be computed for
 companies whose income-statement and cash-flow lines are not extracted.
-A reconcile sweep applying the label variants added 29 Aug is in
-progress and is the cheapest lever on this.
+
+**A tempting shortcut that was tested and rejected.** `operating_profit`
+looks derivable from lines already confirmed, via the standard EBIT
+identity `operating_profit = profit_before_tax + interest_expense`, which
+would have newly covered 53 of the 113 missing tickers at zero
+extraction cost. It was validated against the 190 real rows that carry
+all three figures, and it fails:
+
+| | within 1% | within 10% | median error |
+|---|---|---|---|
+| annual (n=80) | 1% | 25% | −6.0% |
+| quarterly (n=110) | 2% | 19% | +19.1% |
+
+with a p10/p90 spread of −90% to +234%, overstating in 111 of 190 cases
+— the direction that inflates FCFF and therefore fair value. A figure
+that wrong in the unsafe direction, while looking exactly as precise as
+a reported one, is precisely what §23 and this codebase's own
+"never a fabricated number" rule exist to prevent. **Not implemented.**
+(The check also surfaced that `interest_expense` carries mixed signs —
+median −0.05× |PBT| — a separate data-quality issue worth its own pass.)
+
+So extraction is the only sound lever. This module's standing rule is
+that a canonical label is added only after being seen on a real filing,
+never guessed. The gap is therefore **measured** rather than patched
+speculatively:
+`scripts/measure_unmatched_labels.py` re-parses filings already on file,
+collects every label that parses as a line item but matches no canonical
+key, and ranks those wordings by how many distinct companies print them.
+Wordings used by many companies are worth adding; a wording used by one
+is that company's own phrasing and stays unmatched.
 
 ---
 
