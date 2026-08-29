@@ -36,7 +36,10 @@ import type {
  * year of daily rows would otherwise make this the single largest
  * response on the page for a table showing five rows at a time. */
 const PRICE_PAGE_SIZE_OPTIONS = [5, 10, 25, 50] as const;
-const DEFAULT_PRICE_PAGE_SIZE = 5;
+// TASK 2.1 (product-owner brief): "Company -> price history: 10 days" —
+// 10, not 5, is the default; the 5 option stays for a reader who wants a
+// tighter window.
+const DEFAULT_PRICE_PAGE_SIZE = 10;
 
 const rowHeadStyle = {
   background: "none",

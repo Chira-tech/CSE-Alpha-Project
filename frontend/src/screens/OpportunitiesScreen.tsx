@@ -8,7 +8,9 @@ import { formatPrice, UNAVAILABLE } from "../format";
 import type { OpportunityCandidate, OpportunityRanking } from "../types";
 
 const PAGE_SIZE_OPTIONS = [10, 15, 20, 30] as const;
-const DEFAULT_PAGE_SIZE = 15;
+// TASK 2.1 (product-owner brief): "Opportunities tab: 20, sorted best
+// rank first" — 20 is the specified default; 15 stayed as an option.
+const DEFAULT_PAGE_SIZE = 20;
 
 /**
  * §7.1 Opportunities: "the ranked board, the screener, the watchlist."

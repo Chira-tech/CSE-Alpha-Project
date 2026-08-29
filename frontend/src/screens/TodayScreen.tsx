@@ -46,6 +46,13 @@ export function TodayScreen({
   const [portfolio, setPortfolio] = useState<ValuedPortfolio | null | undefined>(undefined);
   const [opportunities, setOpportunities] = useState<OpportunityRanking | null | undefined>(undefined);
   const [aspiHistory, setAspiHistory] = useState<IndexHistory | null>(null);
+  // TASK 2.1 (product-owner brief): this preview card shows 5 ranked
+  // opportunities with a "Show 5 more" that APPENDS rather than paginates
+  // away — deliberately not `usePagination`/`PaginationControls`
+  // (`components/PaginatedTable.tsx`), which is the right shape for the
+  // full Opportunities screen's own table but a "Previous" control makes
+  // no sense on a homepage teaser card that only ever grows.
+  const [boardShown, setBoardShown] = useState(5);
 
   useEffect(() => {
     getMarketOverview()
@@ -332,7 +339,7 @@ export function TodayScreen({
                   </tr>
                 </thead>
                 <tbody>
-                  {opportunities.ranked.slice(0, 3).map((c) => (
+                  {opportunities.ranked.slice(0, boardShown).map((c) => (
                     <tr key={c.ticker}>
                       <th scope="row" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
                         {c.ticker}
@@ -353,7 +360,12 @@ export function TodayScreen({
                 </tbody>
               </table>
             </div>
-            <div style={{ marginTop: "var(--s4)" }}>
+            <div className="row" style={{ marginTop: "var(--s4)", gap: "var(--s3)" }}>
+              {boardShown < opportunities.ranked.length && (
+                <button onClick={() => setBoardShown((n) => n + 5)}>
+                  Show 5 more ({opportunities.ranked.length - boardShown} remaining)
+                </button>
+              )}
               <button onClick={() => onOpenScreen("opportunities")}>
                 Open Opportunities ({opportunities.ranked.length} ranked)
               </button>
