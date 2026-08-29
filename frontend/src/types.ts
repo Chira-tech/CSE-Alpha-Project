@@ -634,6 +634,28 @@ export interface ValuedPosition {
   /** R1 T4.5.4: real, calmly-styled flags — never a fabricated
    * "thesis break" (needs §45's decision record, not built yet). */
   attention_flags: AttentionFlag[];
+
+  /** TASK 2.2 (product-owner brief): the exit plan. */
+  trim_above_price: string | null;
+  /** (price / fair value) - 1 — worded plainly on screen, e.g. "14%
+   * above fair value" / "22% below fair value". */
+  overvaluation_pct: string | null;
+  /** The nearest of the price ladder's own four thresholds to the
+   * current price — a real, disclosed substitute for §28's own
+   * not-yet-built five-trigger framework (see the backend's own
+   * `ValuedPosition.nearest_trigger_label` docstring). */
+  nearest_trigger_label: string | null;
+  nearest_trigger_price: string | null;
+  nearest_trigger_distance_pct: string | null;
+  /** `app.domain.decision.compute_decision`'s own verdict/confidence —
+   * the same call the company file shows for this ticker. */
+  decision_verdict: string | null;
+  decision_confidence: string | null;
+  /** "intact" (no attention flags) / "weakening" (one or more) — NOT
+   * §42's own drift-vs-purchase-baseline monitor, which doesn't exist;
+   * see the backend's own docstring for why this is a disclosed,
+   * honest substitute rather than a fabricated three-state ladder. */
+  thesis_status: string | null;
 }
 
 export interface AttentionFlag {

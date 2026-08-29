@@ -179,8 +179,122 @@ def test_a_quarantined_holding_shows_price_but_withholds_fair_value(db_session):
     assert pos.buy_below_price is None
     assert pos.sell_above_price is None
     assert pos.margin_of_safety_pct is None
+
+    # TASK 2.2's own exit-plan fields must be withheld too — a
+    # quarantined ticker gets no exit price or overvaluation figure
+    # derived from a number that failed sanity.
+    assert pos.trim_above_price is None
+    assert pos.overvaluation_pct is None
+    assert pos.nearest_trigger_label is None
+    assert pos.nearest_trigger_price is None
+    assert pos.nearest_trigger_distance_pct is None
+    assert pos.decision_verdict is None
+    assert pos.decision_confidence is None
     assert pos.dispersion_pct is None
     assert any("quarantined" in w for w in pos.warnings)
+
+
+class TestTask22ExitPlanFields:
+    """TASK 2.2 (product-owner brief): trim/exit prices, overvaluation,
+    nearest trigger, decision verdict, thesis status — and sorting the
+    portfolio by nearest trigger rather than P&L."""
+
+    def _fake_ke(self, db, ticker, as_of=None, *, regime=None, universe_liquidity_ratios=None, universe_liquidity_percentiles=None):
+        return CostOfEquityResult(
+            ke=Decimal("0.15"), risk_free_rate=Decimal("0.12"), beta=Decimal("1.0"),
+            erp_effective=Decimal("0.07"), beta_times_erp=Decimal("0.07"), size_premium=None,
+            illiquidity_premium=None, implied_erp_cross_check=None, is_lower_bound=True,
+            missing_components=(), note="stub",
+        )
+
+    def _seed_healthy_bank(self, db_session, ticker, *, price=Decimal(12)):
+        db_session.add(Security(ticker=ticker, name="Healthy Bank PLC", archetype="bank"))
+        db_session.add_all(
+            [
+                Fundamental(
+                    ticker=ticker, period_end=dt.date(2021, 12, 31), period_type="annual",
+                    first_available_date=dt.date(2022, 3, 7), version=1, statement_line="total_equity",
+                    value=Decimal(1000), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+                Fundamental(
+                    ticker=ticker, period_end=dt.date(2021, 12, 31), period_type="annual",
+                    first_available_date=dt.date(2022, 3, 7), version=1, statement_line="net_income",
+                    value=Decimal(200), provenance_tier=ProvenanceTier.REPORTED,
+                ),
+            ]
+        )
+        db_session.add(FloatData(ticker=ticker, as_of=dt.date(2022, 1, 1), shares_issued=100))
+        db_session.add(
+            PriceDaily(
+                ticker=ticker, date=AS_OF, close=price, adj_factor=Decimal(1),
+                fetched_at=dt.datetime.now(dt.timezone.utc),
+            )
+        )
+        db_session.commit()
+
+    def test_a_real_positive_fair_value_gets_a_full_exit_plan(self, db_session, monkeypatch):
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", self._fake_ke)
+        self._seed_healthy_bank(db_session, "COMB.N0000", price=Decimal(12))
+
+        snapshot = store_portfolio_snapshot(db_session, _parsed("COMB.N0000"), source_filename="p.xlsx")
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        pos = result.positions[0]
+
+        assert pos.blended_fair_value_per_share is not None
+        # trim_above = fair value itself, same number as blended_fair_value_per_share.
+        assert pos.trim_above_price == pos.blended_fair_value_per_share
+        # sell_above (exit_threshold) = fair value x 1.15.
+        assert pos.sell_above_price == pos.trim_above_price * Decimal("1.15")
+        # overvaluation_pct = (price / fair value) - 1, plain arithmetic.
+        expected_overvaluation = (pos.live_current_price / pos.blended_fair_value_per_share) - 1
+        assert pos.overvaluation_pct == expected_overvaluation
+        # A real verdict/confidence came from the same decision engine the
+        # company file uses.
+        assert pos.decision_verdict is not None
+        assert pos.decision_confidence in ("high", "medium", "low")
+        # No real attention flags on this fixture (nothing to trend on
+        # with a single period) -> thesis reads intact.
+        assert pos.thesis_status == "intact"
+        # A real nearest trigger was found among the four ladder thresholds.
+        assert pos.nearest_trigger_label in (
+            "Strong accumulate", "Buy below", "Trim above", "Exit above",
+        )
+        assert pos.nearest_trigger_distance_pct is not None
+
+    def test_positions_sort_by_nearest_trigger_not_by_pnl(self, db_session, monkeypatch):
+        """A position sitting right on a ladder boundary must rank
+        BEFORE one that has gained far more but sits well clear of any
+        boundary — TASK 2.2's own rule 2."""
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", self._fake_ke)
+        # ONBOUNDARY.N0000: price sits right at the fair value itself
+        # (distance ~0%) — needs attention now.
+        self._seed_healthy_bank(db_session, "ONBOUNDARY.N0000", price=Decimal(15))
+        # BIGGAIN.N0000: a huge unrealised gain (bought at 1, now
+        # trading far below every real ladder threshold) — a great P&L
+        # story, but nothing urgent about it today.
+        self._seed_healthy_bank(db_session, "BIGGAIN.N0000", price=Decimal(1))
+
+        parsed = ParsedPortfolio(
+            positions=(
+                ParsedPosition(
+                    ticker="BIGGAIN.N0000", quantity=Decimal(1000), avg_price=Decimal(1),
+                    total_cost=Decimal(1000), traded_price=Decimal(1), market_value=Decimal(1000),
+                    unrealized_gain_loss=Decimal(0),
+                ),
+                ParsedPosition(
+                    ticker="ONBOUNDARY.N0000", quantity=Decimal(1000), avg_price=Decimal(15),
+                    total_cost=Decimal(15000), traded_price=Decimal(15), market_value=Decimal(15000),
+                    unrealized_gain_loss=Decimal(0),
+                ),
+            ),
+            stated_total_cost=Decimal(16000), stated_total_market_value=Decimal(16000),
+            identity_check_passed=True, identity_check_note="ok",
+        )
+        snapshot = store_portfolio_snapshot(db_session, parsed, source_filename="p.xlsx")
+        result = value_portfolio(db_session, snapshot, AS_OF)
+
+        tickers_in_order = [p.ticker for p in result.positions]
+        assert tickers_in_order.index("ONBOUNDARY.N0000") < tickers_in_order.index("BIGGAIN.N0000")
 
 
 class TestPortfolioValueTrend:

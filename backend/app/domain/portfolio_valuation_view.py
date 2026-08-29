@@ -89,6 +89,55 @@ class ValuedPosition:
     state at purchase to compare against, which doesn't exist yet, named
     honestly in this module's own docstring rather than faked here)."""
 
+    # --- TASK 2.2 (product-owner brief): exit plan / overvaluation -------
+
+    trim_above_price: Decimal | None
+    """= the blended fair value itself (`price_ladder.trim_threshold`) —
+    TASK 2.2's own "trim_above = fair value (start scaling out)". Exposed
+    under this name, alongside `buy_below_price`/`sell_above_price`, for
+    the same reason `sell_above_price` already is: a HELD position reads
+    the ladder as a sell plan, not a buy plan."""
+
+    overvaluation_pct: Decimal | None
+    """`(live_current_price / blended_fair_value_per_share) - 1` — TASK
+    2.2's own plain-worded number ("14% above fair value" / "22% below
+    fair value"). `None` whenever either input is missing, same as every
+    other derived field here — never computed from a quarantined or
+    sanity-withheld fair value."""
+
+    nearest_trigger_label: str | None
+    nearest_trigger_price: Decimal | None
+    nearest_trigger_distance_pct: Decimal | None
+    """TASK 2.2 asks for "the nearest exit trigger from exit_triggers()
+    (§28)... which of the five is closest." §28's own five-trigger
+    framework does not exist anywhere in this codebase (verified directly
+    — no `exit_triggers` function, no §28 module) and is real, separate,
+    unbuilt work, not a display gap over already-computed numbers the way
+    the brief's own text assumes. This is the honest, real substitute
+    available today: the nearest of the price ladder's own four
+    thresholds (strong-accumulate / buy-below / trim-above / exit-above)
+    to the current price, signed (positive = price must rise to reach it,
+    negative = price must fall). `None` together when no ladder exists."""
+
+    decision_verdict: str | None
+    decision_confidence: str | None
+    """`app.domain.decision.compute_decision`'s own verdict/confidence —
+    computed for every ticker as part of `valuation_summary_for` since
+    the system-wide valuation upgrade; threaded through here so a holder
+    sees the same call the company file shows, not a second, potentially
+    disagreeing read built locally.  `None` when quarantined/withheld,
+    same as the other derived fields."""
+
+    thesis_status: str | None
+    """`"intact"` (no real attention flags raised) or `"weakening"` (one
+    or more raised — see `attention_flags`). NOT §42's own thesis-drift
+    monitor, which needs a frozen purchase-time baseline to compare
+    against (§45's decision record) and does not exist in this system —
+    named honestly rather than faked as a three-state "intact / weakening
+    / broken" ladder the brief's own text describes. `None`, not
+    "intact", when this system cannot form a real read at all (no
+    security record, so no trend data to check)."""
+
 
 @dataclass(frozen=True)
 class AttentionFlag:
@@ -153,6 +202,26 @@ def _attention_flags(
     return tuple(flags)
 
 
+def _nearest_trigger(
+    current_price: Decimal | None, ladder,
+) -> tuple[str | None, Decimal | None, Decimal | None]:
+    """See `ValuedPosition.nearest_trigger_label`'s own docstring for why
+    this is a real, disclosed substitute for §28's own not-yet-built
+    five-trigger framework, built from the four thresholds the price
+    ladder already computes."""
+    if current_price is None or ladder is None or current_price == 0:
+        return None, None, None
+    candidates = (
+        ("Strong accumulate", ladder.strong_accumulate_threshold),
+        ("Buy below", ladder.buy_below_price),
+        ("Trim above", ladder.trim_threshold),
+        ("Exit above", ladder.exit_threshold),
+    )
+    label, price = min(candidates, key=lambda c: abs(c[1] - current_price))
+    distance_pct = (price - current_price) / current_price
+    return label, price, distance_pct
+
+
 def value_position(
     db: Session,
     position: PortfolioPosition,
@@ -204,6 +273,30 @@ def value_position(
         live_market_value = position.quantity * live_price
         live_unrealized_gain_loss = live_market_value - position.total_cost
 
+    # TASK 2.2: every derived exit-plan field below reads through this ONE
+    # gate — `effective_ladder` is None whenever quarantined OR withheld
+    # by TASK 0.1's plausibility gate, so none of them can ever be
+    # computed from a number that failed sanity (the brief's own rule 1).
+    effective_ladder = None if quarantined else summary.price_ladder
+    effective_fair_value = None if quarantined else summary.triangulation.blended_fair_value_per_share
+
+    overvaluation_pct = None
+    if live_price is not None and effective_fair_value not in (None, Decimal(0)):
+        overvaluation_pct = (live_price / effective_fair_value) - Decimal(1)
+
+    nearest_label, nearest_price, nearest_distance = _nearest_trigger(live_price, effective_ladder)
+
+    attention_flags_result = (
+        _attention_flags(
+            db, position.ticker, as_of, effective_ladder.current_zone if effective_ladder else None,
+        )
+        if security is not None
+        else ()
+    )
+    thesis_status = None
+    if security is not None and not quarantined:
+        thesis_status = "weakening" if attention_flags_result else "intact"
+
     return ValuedPosition(
         ticker=position.ticker, quantity=position.quantity, avg_price=position.avg_price,
         total_cost=position.total_cost,
@@ -211,24 +304,24 @@ def value_position(
         snapshot_unrealized_gain_loss=position.unrealized_gain_loss,
         live_current_price=live_price, live_market_value=live_market_value,
         live_unrealized_gain_loss=live_unrealized_gain_loss,
-        blended_fair_value_per_share=(
-            None if quarantined else summary.triangulation.blended_fair_value_per_share
-        ),
-        price_ladder_zone=(
-            None if quarantined or summary.price_ladder is None else summary.price_ladder.current_zone
-        ),
-        buy_below_price=(
-            None if quarantined or summary.price_ladder is None else summary.price_ladder.buy_below_price
-        ),
-        sell_above_price=(
-            None if quarantined or summary.price_ladder is None else summary.price_ladder.exit_threshold
-        ),
+        blended_fair_value_per_share=effective_fair_value,
+        price_ladder_zone=effective_ladder.current_zone if effective_ladder is not None else None,
+        buy_below_price=effective_ladder.buy_below_price if effective_ladder is not None else None,
+        sell_above_price=effective_ladder.exit_threshold if effective_ladder is not None else None,
+        trim_above_price=effective_ladder.trim_threshold if effective_ladder is not None else None,
+        overvaluation_pct=overvaluation_pct,
+        nearest_trigger_label=nearest_label,
+        nearest_trigger_price=nearest_price,
+        nearest_trigger_distance_pct=nearest_distance,
+        decision_verdict=None if quarantined else summary.decision.verdict,
+        decision_confidence=None if quarantined else summary.decision.confidence,
+        thesis_status=thesis_status,
         margin_of_safety_pct=None if quarantined else summary.margin_of_safety.total_pct,
         dispersion_pct=None if quarantined else summary.triangulation.dispersion_pct,
         warnings=(
             tuple(warnings)
             + summary.triangulation.warnings
-            + (summary.price_ladder.warnings if summary.price_ladder is not None else ())
+            + (effective_ladder.warnings if effective_ladder is not None else ())
             # TASK 0.1/2.2: a blended fair value existed but TASK 0.1's
             # plausibility gate withheld it — `price_ladder` is None for
             # this reason specifically (not "no anchors"), and that
@@ -245,13 +338,7 @@ def value_position(
                 else ()
             )
         ),
-        attention_flags=(
-            _attention_flags(
-                db, position.ticker, as_of, summary.price_ladder.current_zone if summary.price_ladder else None,
-            )
-            if security is not None
-            else ()
-        ),
+        attention_flags=attention_flags_result,
     )
 
 
@@ -298,6 +385,20 @@ def value_portfolio(
         sum((v.live_market_value for v in priced), Decimal(0)) if priced else None
     )
     total_cost = sum((v.total_cost for v in valued), Decimal(0))
+
+    # TASK 2.2's own rule 2: "Sort the portfolio by nearest trigger, not
+    # by P&L. What needs attention first is not the same as what has
+    # gained most." Ascending by absolute distance to the nearest price-
+    # ladder threshold — a position sitting right on a boundary (either
+    # direction) surfaces first; a position with no computable trigger
+    # (quarantined, withheld, or no ladder at all) sorts last rather than
+    # being silently treated as either urgent or safe.
+    valued.sort(
+        key=lambda v: (
+            v.nearest_trigger_distance_pct is None,
+            abs(v.nearest_trigger_distance_pct) if v.nearest_trigger_distance_pct is not None else Decimal(0),
+        )
+    )
 
     return ValuedPortfolio(
         snapshot_id=snapshot.id, as_of=stamp, positions=tuple(valued),

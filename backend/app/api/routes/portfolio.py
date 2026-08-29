@@ -168,6 +168,14 @@ class ValuedPositionOut(BaseModel):
     dispersion_pct: Decimal | None
     warnings: list[str]
     attention_flags: list[AttentionFlagOut]
+    trim_above_price: Decimal | None
+    overvaluation_pct: Decimal | None
+    nearest_trigger_label: str | None
+    nearest_trigger_price: Decimal | None
+    nearest_trigger_distance_pct: Decimal | None
+    decision_verdict: str | None
+    decision_confidence: str | None
+    thesis_status: str | None
 
 
 class ValuedPortfolioOut(BaseModel):
@@ -219,6 +227,11 @@ def current_holdings_valued(db: Session = Depends(get_db)) -> ValuedPortfolioOut
                 attention_flags=[
                     AttentionFlagOut(key=f.key, label=f.label, detail=f.detail) for f in p.attention_flags
                 ],
+                trim_above_price=p.trim_above_price, overvaluation_pct=p.overvaluation_pct,
+                nearest_trigger_label=p.nearest_trigger_label, nearest_trigger_price=p.nearest_trigger_price,
+                nearest_trigger_distance_pct=p.nearest_trigger_distance_pct,
+                decision_verdict=p.decision_verdict, decision_confidence=p.decision_confidence,
+                thesis_status=p.thesis_status,
             )
             for p in result.positions
         ],
