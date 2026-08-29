@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.domain.macro import SERIES_ASPI, SERIES_MARKET_PER
 from app.domain.macro_view import (
+    core_tier_hero_spread,
     current_spread,
     latest_observation,
     risk_free_observation,
@@ -197,10 +198,21 @@ class SpreadOut(BaseModel):
     tbill_source: str | None = None
     spread: Decimal | None = None
     history: list[SpreadPoint] = []
+    core_tier_available: bool = False
+    core_tier_company_count: int = 0
+    core_tier_required_company_count: int = 0
+    core_tier_market_earnings_yield: Decimal | None = None
+    core_tier_note: str = ""
+    """TASK 3.3's OWN Core-tier-restricted hero spread — a distinct,
+    additional read from the exchange-published figure above, never a
+    replacement for it. See `app.domain.macro_view.core_tier_hero_
+    spread`'s own docstring for why `core_tier_available` is honestly
+    `False` today and exactly what real, named gap blocks it."""
 
 
 @router.get("/spread", response_model=SpreadOut)
 def equity_tbill_spread(db: Session = Depends(get_db)) -> SpreadOut:
+    core_tier = core_tier_hero_spread(db)
     current = current_spread(db)
     if current is None:
         missing: list[str] = []
@@ -210,7 +222,14 @@ def equity_tbill_spread(db: Session = Depends(get_db)) -> SpreadOut:
             missing.append(
                 "364-day T-bill yield (run `python -m app.cli cbsl --days 10`)"
             )
-        return SpreadOut(available=False, missing=missing)
+        return SpreadOut(
+            available=False, missing=missing,
+            core_tier_available=core_tier.available,
+            core_tier_company_count=core_tier.core_tier_company_count,
+            core_tier_required_company_count=core_tier.required_company_count,
+            core_tier_market_earnings_yield=core_tier.market_earnings_yield,
+            core_tier_note=core_tier.note,
+        )
 
     return SpreadOut(
         available=True,
@@ -222,6 +241,11 @@ def equity_tbill_spread(db: Session = Depends(get_db)) -> SpreadOut:
         tbill_obs_date=current.tbill_obs_date,
         tbill_source=current.tbill_source,
         spread=current.spread,
+        core_tier_available=core_tier.available,
+        core_tier_company_count=core_tier.core_tier_company_count,
+        core_tier_required_company_count=core_tier.required_company_count,
+        core_tier_market_earnings_yield=core_tier.market_earnings_yield,
+        core_tier_note=core_tier.note,
         history=[
             SpreadPoint(
                 obs_date=p.obs_date,

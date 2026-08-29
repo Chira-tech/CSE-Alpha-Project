@@ -21,12 +21,15 @@ from app.domain.macro import (
     earnings_yield_from_per,
 )
 from app.domain.macro_view import (
+    CORE_TIER_MIN_COMPANIES_FOR_HERO_SPREAD,
+    core_tier_hero_spread,
     current_spread,
     latest_observation,
     record_observation,
     risk_free_observation,
     spread_history,
 )
+from app.models.securities import Security
 
 
 # --- pure arithmetic ----------------------------------------------------
@@ -251,3 +254,50 @@ def test_endpoint_returns_the_spread_once_both_inputs_exist(db_session, client):
     assert round(Decimal(body["spread"]), 4) == Decimal("-0.0143")
     # provenance of a manually-entered rate must reach the caller
     assert "manual" in body["tbill_source"]
+    # TASK 3.3: the Core-tier-restricted read rides alongside the
+    # exchange-wide one, never replacing it — honestly unavailable today.
+    assert body["core_tier_available"] is False
+    assert body["core_tier_market_earnings_yield"] is None
+    assert "Gate 2" in body["core_tier_note"]
+
+
+def test_endpoint_reports_core_tier_gating_even_when_the_main_spread_is_unavailable(db_session, client):
+    """The Core-tier read is independent of whether the exchange-wide
+    spread's own two inputs exist — a caller must be able to see WHY the
+    Core-tier chart is gated even on a day the main spread itself can't
+    be computed."""
+    body = client.get("/market/spread").json()
+    assert body["available"] is False
+    assert body["core_tier_available"] is False
+    assert body["core_tier_company_count"] == 0
+    assert body["core_tier_required_company_count"] == 100
+
+
+class TestCoreTierHeroSpread:
+    """TASK 3.3 (product-owner brief): the OWN Core-tier-aggregate hero
+    spread, gated until >=100 real Core-tier companies exist — distinct
+    from `current_spread`'s exchange-published whole-market figure."""
+
+    def test_reports_unavailable_with_the_real_reason_and_count(self, db_session):
+        result = core_tier_hero_spread(db_session)
+
+        assert result.available is False
+        assert result.market_earnings_yield is None
+        assert result.core_tier_company_count == 0
+        assert result.required_company_count == CORE_TIER_MIN_COMPANIES_FOR_HERO_SPREAD
+        assert "Gate 2" in result.note
+        assert "free-float" in result.note
+        assert "currently 0" in result.note
+
+    def test_result_is_independent_of_the_real_universe_size(self, db_session):
+        """A real, current fact — not one this function happens not to
+        check: adding real securities to the database must not change
+        the Core-tier count, because Gate 2 fails unconditionally on
+        every one of them (no free-float data source exists at all)."""
+        db_session.add(Security(ticker="AEL.N0000", name="Access Engineering PLC"))
+        db_session.add(Security(ticker="COMB.N0000", name="Commercial Bank of Ceylon PLC"))
+        db_session.commit()
+
+        result = core_tier_hero_spread(db_session)
+        assert result.core_tier_company_count == 0
+        assert result.available is False

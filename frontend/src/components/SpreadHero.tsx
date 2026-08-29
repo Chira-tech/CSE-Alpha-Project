@@ -84,6 +84,7 @@ export function SpreadHero({ spread }: { spread: Spread }) {
             <li key={m}>{m}</li>
           ))}
         </ul>
+        <CoreTierNote spread={spread} />
       </div>
     );
   }
@@ -135,7 +136,36 @@ export function SpreadHero({ spread }: { spread: Spread }) {
       )}
 
       {spread.history.length > 1 && <Sparkline history={spread.history} />}
+
+      <CoreTierNote spread={spread} />
     </div>
+  );
+}
+
+/**
+ * TASK 3.3 (product-owner brief): this system's OWN Core-tier-restricted
+ * `market_earnings_yield` — a second, additional read the brief asks
+ * for on top of the exchange-published figure above, gated until >=100
+ * real Core-tier companies exist. Honestly renders as a progress note,
+ * never a fabricated chart, whichever state it's in — see the backend's
+ * own `core_tier_hero_spread` docstring for exactly why it reads 0
+ * today (§11.1 Gate 2 has no real free-float data source to read from
+ * yet) rather than a stale or guessed count.
+ */
+function CoreTierNote({ spread }: { spread: Spread }) {
+  if (spread.core_tier_available && spread.core_tier_market_earnings_yield !== null) {
+    return (
+      <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
+        This system's own Core-tier earnings yield:{" "}
+        {(Number(spread.core_tier_market_earnings_yield) * 100).toFixed(2)}% across{" "}
+        {spread.core_tier_company_count} Core-tier companies.
+      </p>
+    );
+  }
+  return (
+    <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
+      {spread.core_tier_note}
+    </p>
   );
 }
 

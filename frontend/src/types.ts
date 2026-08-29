@@ -579,6 +579,16 @@ export interface Spread {
   tbill_source: string | null;
   spread: string | null;
   history: SpreadPoint[];
+  /** TASK 3.3 (product-owner brief): this system's OWN Core-tier-
+   * restricted hero spread — additional to, never a replacement for,
+   * the exchange-published figure above. Honestly `false` today (see
+   * `core_tier_note`) — §11.1 Gate 2 (structural) needs a free-float
+   * data source this system does not ingest anywhere yet. */
+  core_tier_available: boolean;
+  core_tier_company_count: number;
+  core_tier_required_company_count: number;
+  core_tier_market_earnings_yield: string | null;
+  core_tier_note: string;
 }
 
 export interface PortfolioPosition {

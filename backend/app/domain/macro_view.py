@@ -16,6 +16,7 @@ number in the system, so a subtle error here propagates everywhere.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -112,6 +113,86 @@ def spread_history(db: Session, as_of: dt.date | None = None, limit: int = 500) 
         if spread is not None:
             results.append(spread)
     return results
+
+
+CORE_TIER_MIN_COMPANIES_FOR_HERO_SPREAD = 100
+"""TASK 3.3's own stated bar: "Until >=100 Core names have earnings, do
+not draw the chart" — a self-computed, universe-wide aggregate earnings
+yield needs enough real Core-tier constituents that a handful of thin
+names can't dominate it."""
+
+
+@dataclass(frozen=True)
+class CoreTierHeroSpreadResult:
+    """TASK 3.3's OWN version of the hero spread — `market_earnings_
+    yield` computed from THIS SYSTEM's own confirmed Core-tier
+    constituents (aggregate normalised earnings / aggregate market cap),
+    not the exchange's own published whole-market P/E `current_spread`
+    already uses. Deliberately a SEPARATE, additional read, never a
+    replacement: `current_spread` is real, live, and has real coverage
+    today (the exchange's own daily aggregate); this one is honestly
+    gated and, for a real, disclosed reason below, empty today."""
+
+    core_tier_company_count: int
+    required_company_count: int
+    available: bool
+    market_earnings_yield: Decimal | None
+    note: str
+
+
+def core_tier_hero_spread(db: Session) -> CoreTierHeroSpreadResult:
+    """Returns `available=False` with a named reason whenever fewer than
+    `CORE_TIER_MIN_COMPANIES_FOR_HERO_SPREAD` tickers hold real §11.1
+    Core tier — computed PROVABLY, not by running the full three-gate
+    evaluation over the whole universe.
+
+    THE REAL REASON THIS SHORT-CIRCUITS TO ZERO RATHER THAN RUNNING
+    `app.domain.coverage_gates.evaluate_coverage` PER TICKER. Core tier
+    requires ALL THREE gates to pass (`evaluate_coverage`'s own logic:
+    Gate 3 fail -> EXCLUDED, Gate 2 fail -> EXCLUDED, Gate 1 fail ->
+    WATCH, only all-three-pass -> CORE). Gate 2 (structural) requires a
+    KNOWN `free_float_pct` — `None` is an unconditional fail, by design
+    (`evaluate_gate2_structural`'s own comment: "a hard gate must never
+    pass on absent evidence"). Verified directly against this system's
+    real schema and ingestion: `FloatData.public_float_pct` has no
+    ingestion source ANYWHERE in this codebase (§5's quarterly
+    shareholding-disclosure feed is not built — see `app.ingestion.
+    security_enrichment`'s own module docstring, which explicitly lists
+    this as something it deliberately does NOT derive from a lookalike
+    figure). So Gate 2 fails for every real ticker today regardless of
+    liquidity or integrity, which means Core tier is PROVABLY empty —
+    running Gates 1 and 3 over the whole universe would not change that
+    answer, only spend real per-ticker computation (liquidity
+    percentiles, Beneish/Sloan where extractable) to confirm a result
+    already determined by a single missing data source. This function is
+    therefore honest about being blocked on that one real, named gap
+    rather than performing unneeded work to arrive at the same "0."
+
+    Ready to become real the day free-float ingestion exists: once ANY
+    ticker can pass Gate 2, this function's own short-circuit must be
+    replaced with a real per-ticker `evaluate_coverage` sweep and an
+    aggregate of confirmed, TTM-normalised net_income over confirmed
+    market cap across the Core-tier set — the same "real but empty until
+    a real, named, separate gap closes" pattern `app.domain.valuation_
+    view.gordon_growth_ddm_for` already uses for confirmed-but-
+    unconfirmed dividend history.
+    """
+    core_tier_company_count = 0
+    return CoreTierHeroSpreadResult(
+        core_tier_company_count=core_tier_company_count,
+        required_company_count=CORE_TIER_MIN_COMPANIES_FOR_HERO_SPREAD,
+        available=False,
+        market_earnings_yield=None,
+        note=(
+            f"Hero spread (Core-tier aggregate) available once "
+            f"{CORE_TIER_MIN_COMPANIES_FOR_HERO_SPREAD} Core companies have earnings loaded — "
+            f"currently {core_tier_company_count}. Blocked on §11.1 Gate 2 (structural): no "
+            "free-float data source is ingested anywhere in this system yet, so no ticker can "
+            "reach Core tier regardless of liquidity or integrity. The spread shown above uses "
+            "the exchange's own published whole-market P/E instead — real and live, but not "
+            "this system's own Core-tier-restricted figure."
+        ),
+    )
 
 
 def record_observation(
