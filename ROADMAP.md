@@ -3781,6 +3781,63 @@ fair value (54 of them have no archetype at all, which blocks §16 routing
 by design), 39 produce a negative or zero fair value, 20 are withheld by
 the plausibility gate, and 17 remain genuinely quarantined.
 
+### Corporate-actions queue verified, and a second anchor finally turns on (29 Aug 2026)
+
+- [x] **`scripts/verify_corporate_actions.py`** — two independent checks,
+      kept apart because the evidence differs in kind. Ratio-type actions
+      (split/bonus/consolidation) are verified against THIS SYSTEM'S OWN
+      price history with no network at all: a split is mechanical, so the
+      real close either side of ex-date implies a ratio that either
+      matches the scraped one or doesn't. Cash dividends are verified
+      against a third party's published dividend history.
+- [x] **18 splits confirmed by price evidence alone**, zero
+      disagreements — GREG 0.24615 against a declared 0.25000, CPRT
+      0.01447 against 0.01429, and crucially MERC.N0000 and YORK.N0000's
+      1:200 splits, which had been reading as -100% one-day returns.
+- [x] **A ratio is derived from the price gap only when it is
+      unmistakable**: the price must at least halve AND the implied
+      `new shares per held share` must land on a clean integer within 3%.
+      JKH.N0000 implies 8.98 (a clean 9) and UML.N0000 8.11 (a clean 8);
+      COLO.N0000 implies 7.65 and is left for a human. The 100 ratio-less
+      BONUS_ISSUEs show gaps of 0.95-1.00, where a 1:20 bonus and an
+      ordinary 3% down day are indistinguishable — never derived.
+- [x] **899 dividends confirmed against an independent publisher**, after
+      handling two real quirks in their data rather than treating either
+      as a disagreement: they restate older amounts for later splits
+      (GREG 2.4375 is exactly our declared 9.7500 ÷ 4, matching its 1:4
+      split; CIC and CWM exactly ÷5), and they run ~1% below us on several
+      names (COMB 7.43134 vs 7.5000, HNB 14.86149 vs 15.0000) on what
+      looks like a withholding/rounding convention. Ours is the
+      as-declared figure, which is the right one for a corporate-action
+      record.
+- [x] **Corporate-actions queue 1,494 → 575.** Adjustment factors rebuilt
+      across 182 tickers / 108,875 price rows; price discontinuities >50%
+      fell 48 → 29.
+- [x] **`payout_ratio` is live for 156 tickers**, and with it §20.2's
+      justified P/E — the first genuinely independent triangulation
+      anchor this engine has ever had. Coverage 60 → 65 valued.
+
+**AND IT IMMEDIATELY EXPOSED THE NEXT PROBLEM, which is the honest
+result rather than a win.** Dispersion across the valued set went from
+"23 exactly zero, 52 under 1%" to **31 of 65 disagreeing by more than
+50%**. That is not robust triangulation appearing; it is two anchors
+that fundamentally disagree, now visible for the first time because
+there are finally two of them. COMB.N0000: justified P/B 239.05 against
+justified P/E 70.66, a 3.4x spread.
+
+The cause is a real internal inconsistency in how the two are wired, not
+noise. §20.2's justified P/E is Gordon-based — `payout x (1+g) / (Ke-g)`
+— and `g` is fed from `settings.long_run_nominal_growth_pct` (5%,
+PARAMETERS.md #11). But COMB retains 80% of earnings at an ROE of 17.9%,
+so its own sustainable growth is ~14.3%. Holding retention at 80% while
+forcing g to 5% describes a company destroying value on everything it
+keeps, which is why the multiple collapses to 1.79x. The same
+inconsistency biases justified P/E down for exactly the profitable,
+low-payout companies. Resolving it — a consistent `g` across the
+Gordon-family models, or a sustainable-growth `g` for justified P/E —
+is the next thing standing between this engine and a fair value backed
+by two anchors that actually agree.
+
 ### Full system audit (29 Aug 2026)
 
 Backend 1385 tests, frontend typecheck/build/zone-guard, `compileall`,
