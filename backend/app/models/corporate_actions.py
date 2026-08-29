@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Index, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -18,6 +18,13 @@ class CorporateAction(Base):
     confirmed status."""
 
     __tablename__ = "corporate_actions"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created. These
+    # indexes existed in the database but not on the model, so
+    # `alembic revision --autogenerate` would have emitted a migration
+    # DROPPING them (found in the 29 Aug audit via `alembic check`).
+        Index("ix_corporate_actions_ticker", "ticker"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String(20), ForeignKey("securities.ticker"), nullable=False)

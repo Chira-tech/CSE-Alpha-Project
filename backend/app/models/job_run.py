@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import Index, Boolean, DateTime, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -25,6 +25,14 @@ class JobRun(Base):
     """
 
     __tablename__ = "job_runs"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created. These
+    # indexes existed in the database but not on the model, so
+    # `alembic revision --autogenerate` would have emitted a migration
+    # DROPPING them (found in the 29 Aug audit via `alembic check`).
+        Index("ix_job_runs_job", "job"),
+        Index("ix_job_runs_status", "status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job: Mapped[str] = mapped_column(String(50), nullable=False)

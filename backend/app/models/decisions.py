@@ -27,7 +27,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import JSON, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Index, JSON, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -36,6 +36,13 @@ from app.models.enums import DecisionAction
 
 class Decision(Base):
     __tablename__ = "decisions"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created. These
+    # indexes existed in the database but not on the model, so
+    # `alembic revision --autogenerate` would have emitted a migration
+    # DROPPING them (found in the 29 Aug audit via `alembic check`).
+        Index("ix_decisions_ticker", "ticker"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)

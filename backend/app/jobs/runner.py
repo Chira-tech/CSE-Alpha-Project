@@ -62,6 +62,7 @@ from app.ingestion.financial_pdf_extractor import (
     sweep_stale_fundamentals,
 )
 from app.ingestion.market_internals import ingest_market_internals
+from app.ingestion.bootstrap import bootstrap_securities
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.ingestion.security_enrichment import enrich_securities
 from app.jobs.registry import JOBS, job_definition
@@ -210,6 +211,11 @@ def _run_capture_prices(db: Session, run: JobRun) -> int:
     session_date = infer_session_date(rows)
     if session_date is None:
         raise RuntimeError("could not determine session date from feed; nothing written")
+    # Register newly-seen tickers before writing their prices — see the
+    # same call in `app.jobs.scheduler`'s EOD job for the real orphaned-row
+    # gap this closes. Idempotent, no extra request, never overwrites.
+    _set_progress(db, run, 60, "Registering any newly-listed securities...")
+    bootstrap_securities(db, rows)
     _set_progress(db, run, 70, f"Writing {len(rows)} rows for session {session_date}...")
     return upsert_eod_prices(db, session_date, rows)
 

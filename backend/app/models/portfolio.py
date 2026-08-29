@@ -30,7 +30,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Index, DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -60,6 +60,13 @@ class PortfolioSnapshot(Base):
 
 class PortfolioPosition(Base):
     __tablename__ = "portfolio_positions"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created — see
+    # the same note on `CorporateAction`; without it
+    # `alembic revision --autogenerate` would emit a DROP for these.
+        Index("ix_portfolio_positions_snapshot_id", "snapshot_id"),
+        Index("ix_portfolio_positions_ticker", "ticker"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     snapshot_id: Mapped[int] = mapped_column(ForeignKey("portfolio_snapshots.id"), nullable=False)

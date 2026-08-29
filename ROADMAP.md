@@ -3781,6 +3781,76 @@ fair value (54 of them have no archetype at all, which blocks §16 routing
 by design), 39 produce a negative or zero fair value, 20 are withheld by
 the plausibility gate, and 17 remain genuinely quarantined.
 
+### Full system audit (29 Aug 2026)
+
+Backend 1385 tests, frontend typecheck/build/zone-guard, `compileall`,
+DB `quick_check`, a fresh `alembic upgrade head`, all 58 API endpoints
+and a sanity sweep over every valued ticker — all green, and the sweep
+found **0 implausible fair values** among the 60. Four real findings, of
+which three are now fixed:
+
+- [x] **Newly-listed tickers were silently invisible.** The daily EOD job
+      and the manual Run Capture job both wrote prices via
+      `upsert_eod_prices` WITHOUT calling `bootstrap_securities` — only
+      `run_bootstrap` did. So a company could list, trade, and get price
+      rows with no `securities` row at all, making it invisible to every
+      screen (they all join through `securities`) with nothing reporting
+      it. Found via `PRAGMA foreign_key_check`: 6 orphaned rows across
+      AUTO/BREW/SLND/SWAD, all genuinely listed, all first traded in the
+      preceding week. Fixed at the source — both jobs now register
+      newly-seen tickers from the SAME already-fetched rows (no extra
+      request, never overwrites a hand-set archetype) — and the universe
+      was refreshed. `foreign_key_check` is now clean; securities 290 →
+      294.
+- [x] **`alembic revision --autogenerate` would have DROPPED ten real
+      indexes.** `alembic check` failed: the migrations had created
+      indexes (`ix_corporate_actions_ticker`, `ix_job_runs_status`, the
+      portfolio and national-project ones, …) that the model classes
+      never declared, so autogenerate saw them as removable. Pre-existing
+      drift, not introduced by this session's work. Fixed additively by
+      declaring all ten on the models — no schema change, and a fresh
+      migrate still produces the same 18 tables / 16 indexes. The one
+      remaining `alembic check` difference is benign and documented: a
+      `provenance_tier` column is VARCHAR(1) in SQLite against the
+      model's native `Enum`, because `ProvenanceTier`'s members are
+      single-character codes.
+- [x] **Factor library share classes — examined and deliberately NOT
+      changed.** `factor_series_view._load_shares_issued` sorts on each
+      listed line's own share count rather than the issuer's total. Unlike
+      the valuation bug fixed earlier the same day, this is not a
+      numerator/denominator mismatch — `own price × own shares` is
+      internally consistent and is the ordinary security-level convention
+      for a size sort. Changing it would move SMB/HML/MOM/LIQ and
+      everything downstream (Carhart, timing battery, §38 composite score)
+      with no validation that the result is better. Recorded in that
+      function's own docstring as a deliberate convention with its one
+      real cost stated: the 20 `.X0000` lines sort into a smaller size
+      bucket than their issuer as a whole.
+
+**THE FINDING THAT MATTERS MOST, AND IT IS NOT FIXED — §24 triangulation
+is blending one model, not several.** Justified P/B (§20.2) and residual
+income (§19.3) return byte-identical fair values on every company checked
+(HNB.N0000 both 321.14, RIL.N0000 both 47.61). That is not a bug in
+either: `residual_income_for` is called with `roe_forecast_path=(roe,)`,
+`terminal_roe=roe` and `terminal_growth=g` — the deliberate flat
+"no view" baseline this file already records — and under flat ROE the
+residual-income model reduces algebraically to exactly
+`BVPS × (ROE − g) / (Ke − g)`, which IS justified P/B. Same three inputs,
+same answer, by construction.
+
+The consequence is real and product-visible: measured across the 60
+valued tickers, **23 report exactly 0% dispersion and 52 report under
+1%**. Only 6 have genuinely differing anchors. So for ~87% of companies
+the "triangulated" fair value is one model counted twice, and a
+near-zero `dispersion_pct` — which a user would reasonably read as
+"independent models strongly agree" — actually means "there is only one
+model". Every other §18-26 anchor (FCFF DCF, justified P/E, justified
+P/S, Gordon-growth DDM, hard book/NAV, current-period FCFF, SOTP)
+returns nothing for these companies, because each needs line items or a
+dividend/segment history that is still not extracted. Naming this
+precisely rather than leaving the dispersion figure to imply a
+robustness the engine does not currently have.
+
 ## M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md): Task 1 (isolation scaffold) only
 
 A new, separate module — not part of the Master Spec's own phase

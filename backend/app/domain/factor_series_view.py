@@ -160,6 +160,24 @@ def _load_price_history(db: Session) -> dict[str, list[tuple[dt.date, Decimal, D
 def _load_shares_issued(db: Session) -> dict[str, list[tuple[dt.date, int]]]:
     """A REAL reconstructed history, not a single snapshot held constant.
 
+    PER LISTED LINE, DELIBERATELY — NOT summed across an issuer's share
+    classes the way `app.domain.market_cap_view.latest_shares_issued_all_
+    classes` does for valuation. Raised in the 29 Aug 2026 audit and kept
+    as-is on purpose, because the two cases are genuinely different:
+    dividing a company-wide `total_equity` by one class's share count is
+    an unambiguous numerator/denominator mismatch (it produced HNB.X0000's
+    2,400 book value against a true ~487), whereas `own price x own
+    shares` is internally consistent and is the ordinary security-level
+    convention for a size sort. Which of the two a factor library SHOULD
+    use for a dual-class issuer is a methodology choice with no single
+    right answer, and changing it here would silently move SMB/HML/MOM/LIQ
+    and everything downstream of them (Carhart certification, the timing
+    battery, the §38 composite score) with no validation that the result
+    is better. Its one real cost, stated rather than hidden: the 20
+    `.X0000` non-voting lines are sorted on their own class's market cap,
+    so a large bank's non-voting line sits in a smaller size bucket than
+    the issuer as a whole would.
+
     `float_data` in this system's real dev database carries exactly one
     real `shares_issued` snapshot per ticker (captured 2026-08-18/19,
     `app.ingestion.security_enrichment`'s own current-state-only scrape

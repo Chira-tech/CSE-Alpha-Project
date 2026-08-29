@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Boolean, Date, Integer, String
+from sqlalchemy import Index, Boolean, Date, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -35,6 +35,13 @@ class IssuerRegistry(Base):
     """
 
     __tablename__ = "issuer_registry"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created. These
+    # indexes existed in the database but not on the model, so
+    # `alembic revision --autogenerate` would have emitted a migration
+    # DROPPING them (found in the 29 Aug audit via `alembic check`).
+        Index("ix_issuer_registry_delisted", "delisted"),
+    )
 
     issuer_code: Mapped[str] = mapped_column(String(20), primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)

@@ -38,6 +38,7 @@ from app.jobs.second_source_reconciliation import StaleComparisonError, check_ag
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
 from app.ingestion.market_internals import ingest_market_internals
+from app.ingestion.bootstrap import bootstrap_securities
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
 from app.models.securities import Security
@@ -70,6 +71,22 @@ def _job_eod_snapshot() -> None:
             logger.error("EOD snapshot: could not determine session date from feed; nothing written")
             return
 
+        # Register any ticker in the feed we don't already know about,
+        # BEFORE writing its prices. Same rows, no extra request, and
+        # `bootstrap_securities` never overwrites an existing row (a
+        # human's hand-set archetype/sector is safe).
+        #
+        # A REAL GAP THIS CLOSES (found in the 29 Aug audit): only
+        # `run_bootstrap` did this, so the daily job happily wrote prices
+        # for tickers with no `securities` row at all — 6 such orphaned
+        # rows across AUTO/BREW/SLND/SWAD, every one a genuinely listed
+        # company that had just started trading again. They were invisible
+        # to the entire product (every screen joins through `securities`)
+        # and silently so: a real company could list, trade, and never be
+        # valued, with nothing anywhere reporting it.
+        new_securities, _known = bootstrap_securities(db, rows)
+        if new_securities:
+            logger.info("EOD snapshot: registered %d newly-seen securities", new_securities)
         written = upsert_eod_prices(db, session_date, rows)
         logger.info("EOD snapshot: wrote %d rows for session %s", written, session_date)
     except Exception:

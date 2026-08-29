@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Index, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -104,6 +104,13 @@ class NationalProjectTickerImpact(Base):
     split `CorporateAction`'s ratio/ex_date fields already use."""
 
     __tablename__ = "national_project_ticker_impacts"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created — see
+    # the same note on `CorporateAction`; without it
+    # `alembic revision --autogenerate` would emit a DROP for these.
+        Index("ix_national_project_ticker_impacts_project_id", "project_id"),
+        Index("ix_national_project_ticker_impacts_ticker", "ticker"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(

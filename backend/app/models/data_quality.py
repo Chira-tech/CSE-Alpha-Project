@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String
+from sqlalchemy import Index, Boolean, DateTime, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -16,6 +16,12 @@ class DataAlert(Base):
     human resolves it. This table is that quarantine record."""
 
     __tablename__ = "data_alerts"
+    __table_args__ = (
+    # Declared here to match what the migrations actually created — see
+    # the same note on `CorporateAction`; without it
+    # `alembic revision --autogenerate` would emit a DROP for these.
+        Index("ix_data_alerts_ticker_resolved", "ticker", "resolved"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)
