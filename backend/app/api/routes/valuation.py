@@ -60,6 +60,12 @@ from app.models.securities import Security
 router = APIRouter(prefix="/valuation", tags=["valuation"])
 
 
+def _price_point_out(pp) -> "PricePointOut | None":
+    if pp is None:
+        return None
+    return PricePointOut(label=pp.label, price=pp.price, pct_from_current=pp.pct_from_current)
+
+
 class AnchorOut(BaseModel):
     method: str
     category: str
@@ -280,6 +286,37 @@ class RegimeOut(BaseModel):
     warnings: list[str]
 
 
+class ConservativeBookOut(BaseModel):
+    period_end: dt.date | None
+    value_per_share: Decimal | None
+    basis: str
+    confidence: str
+    warnings: list[str]
+
+
+class PricePointOut(BaseModel):
+    label: str
+    price: Decimal
+    pct_from_current: Decimal | None
+
+
+class DecisionOut(BaseModel):
+    """The final buy-point / sell-point call. `verdict` is one of Strong
+    Buy / Buy / Accumulate / Hold / Trim / Sell / Insufficient data /
+    Withheld; `confidence` is high / medium / low and GATES the verdict
+    (a low-confidence name can never read Strong Buy or Buy). Every
+    number in `rationale` and `confidence_factors` is stated, never a
+    bare label."""
+
+    verdict: str
+    confidence: str
+    buy_point: PricePointOut | None
+    take_profit_point: PricePointOut | None
+    strong_sell_point: PricePointOut | None
+    rationale: list[str]
+    confidence_factors: list[str]
+
+
 class CompanyValuationOut(BaseModel):
     ticker: str
     as_of: dt.date
@@ -300,6 +337,8 @@ class CompanyValuationOut(BaseModel):
     margin_of_safety: MarginOfSafetyOut
     sanity: SanityOut | None
     price_ladder: PriceLadderOut | None
+    conservative_book: ConservativeBookOut
+    decision: DecisionOut
     note: str
 
     @classmethod
@@ -503,6 +542,22 @@ class CompanyValuationOut(BaseModel):
                 if s.price_ladder
                 else None
             ),
+            conservative_book=ConservativeBookOut(
+                period_end=s.conservative_book.period_end,
+                value_per_share=s.conservative_book.value_per_share,
+                basis=s.conservative_book.basis,
+                confidence=s.conservative_book.confidence,
+                warnings=list(s.conservative_book.warnings),
+            ),
+            decision=DecisionOut(
+                verdict=s.decision.verdict,
+                confidence=s.decision.confidence,
+                buy_point=_price_point_out(s.decision.buy_point),
+                take_profit_point=_price_point_out(s.decision.take_profit_point),
+                strong_sell_point=_price_point_out(s.decision.strong_sell_point),
+                rationale=list(s.decision.rationale),
+                confidence_factors=list(s.decision.confidence_factors),
+            ),
             note=s.note,
         )
 
@@ -545,6 +600,11 @@ class ScenarioOut(BaseModel):
     base_value_per_share: Decimal
     bull_value_per_share: Decimal
     note: str
+    inversion_detected: bool
+    """True when the raw DCF re-runs were non-monotonic and had to be
+    reordered to satisfy §10's `bear <= base <= bull`. The three values
+    above are always ordered; this flag says whether that ordering was
+    free or forced (forced → treat the spread as low confidence)."""
 
 
 class ScenarioSetOut(BaseModel):
@@ -575,6 +635,7 @@ def get_scenarios(ticker: str, db: Session = Depends(get_db)) -> ScenarioSetOut:
                 base_value_per_share=view.result.base_value_per_share,
                 bull_value_per_share=view.result.bull_value_per_share,
                 note=view.result.note,
+                inversion_detected=view.result.inversion_detected,
             )
             if view.result is not None
             else None

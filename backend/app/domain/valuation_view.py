@@ -120,6 +120,7 @@ from app.config import settings
 from app.domain.asset_based_valuation import HardBookResult, compute_hard_book
 from app.domain.cost_of_equity_view import cost_of_equity_for
 from app.domain.dcf import DCFAssumptions, DCFResult, compute_fcff, dcf_equity_value
+from app.domain.decision import DecisionInputs, DecisionResult, compute_decision
 from app.domain.wacc import WACCResult, compute_cost_of_debt, compute_wacc
 from app.domain.dividend_residual_income import (
     GordonGrowthResult,
@@ -133,6 +134,7 @@ from app.domain.macro_engine_view import RegimeView, regime_for
 from app.domain.market_cap_view import latest_shares_issued_all_classes
 from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
+from app.domain.normalization import NormalisedRatio, normalise_ratio, per_period_roe
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
 from app.domain.provenance import can_enter_valuation
@@ -164,6 +166,26 @@ from app.models.enums import CorporateActionType
 #: regardless of age — this bound is the point past which disclosure stops
 #: being enough.
 _LINE_FALLBACK_MAX_AGE_DAYS = 1095
+
+#: Below this, a computed justified P/B multiple is treated as outside the
+#: model's meaningful range and the anchor is suppressed in favour of the
+#: conservative book (NAV floor) anchor, rather than emitting a fair value
+#: that is a small fraction of tangible book for a profitable going
+#: concern. Provisional. Anchored on §22 rule 5's "liquidation value is an
+#: absolute floor" logic: a profitable company is worth at least a
+#: meaningful fraction of its book, never ~0.1x it — a sub-0.3x justified
+#: multiple is the formula in its unstable regime near ROE == g, not a
+#: real read.
+MIN_PLAUSIBLE_JUSTIFIED_PB = Decimal("0.30")
+
+#: Blanket haircut applied to REPORTED book value per share when a
+#: company's `revaluation_reserves` line could not be matched, so the
+#: conservative book anchor never silently trusts a possibly revaluation-
+#: inflated equity figure at face value (§22: "reported book value in
+#: [plantations, property, hotels] is inflated by property revaluation").
+#: Provisional; only used on the low-confidence fallback path, always
+#: disclosed.
+UNVERIFIED_BOOK_HAIRCUT = Decimal("0.85")
 
 
 def _confirmable_line_items(
@@ -316,6 +338,37 @@ def _confirmed_statement_line_history(
     return sorted(by_period.items())
 
 
+def _confirmed_annual_history(
+    db: Session, ticker: str, statement_line: str, as_of: dt.date
+) -> list[tuple[dt.date, Decimal]]:
+    """Like `_confirmed_statement_line_history` but restricted to
+    `period_type == "annual"` rows — what a mid-cycle normalisation needs.
+    An annual row is twelve months of the flow as the company itself
+    reported it (nothing scaled), so a median across several of them is a
+    genuine through-cycle figure rather than a mix of cumulative interim
+    stubs. Same point-in-time (`fundamentals_as_of`) and §8 provenance
+    filtering as every other confirmed-history query here."""
+    rows = fundamentals_as_of(db, ticker, as_of, statement_line=statement_line)
+    by_period: dict[dt.date, Decimal] = {
+        row.period_end: row.value
+        for row in rows
+        if row.period_type == "annual" and can_enter_valuation(row.provenance_tier)
+    }
+    return sorted(by_period.items())
+
+
+def _normalised_roe_for(db: Session, ticker: str, as_of: dt.date) -> NormalisedRatio:
+    """§5's mid-cycle ROE for one company: per-year `net_income ÷
+    total_equity` across every confirmed ANNUAL period visible as of this
+    date, run through `app.domain.normalization.normalise_ratio` (median +
+    confidence grade). Returns a `NormalisedRatio` with `value=None` when
+    no paired annual history exists at all — the caller then falls back to
+    the single-period ROE, disclosed as low confidence."""
+    ni_hist = _confirmed_annual_history(db, ticker, "net_income", as_of)
+    eq_hist = _confirmed_annual_history(db, ticker, "total_equity", as_of)
+    return normalise_ratio(per_period_roe(ni_hist, eq_hist), label="ROE")
+
+
 def _trailing_cagr(history: list[tuple[dt.date, Decimal]]) -> Decimal | None:
     """§18.2's own stated primary source for DCF Years 1-2 growth:
     "Trailing 3-year CAGR". Computed here over however much confirmed
@@ -372,6 +425,25 @@ class LiveValuationInputs:
 
     period_end: dt.date | None
     roe: Decimal | None
+    """The EFFECTIVE ROE every §19-20 anchor uses — the mid-cycle
+    (median) figure from `_normalised_roe_for` when a confirmed annual
+    history exists, otherwise the single latest period's ROE. Which one it
+    is, and how confident, is in `roe_basis` / `roe_confidence`."""
+
+    roe_single_period: Decimal | None
+    """The latest single period's ROE, always — kept beside `roe` so a
+    caller can see how far the mid-cycle figure moved the raw one (a big
+    gap is itself a cyclicality signal)."""
+
+    roe_basis: str
+    roe_confidence: str
+    """`"high"` / `"medium"` / `"low"` / `"none"` — flows straight into
+    the decision engine's confidence grade."""
+
+    roe_spread_pct: Decimal | None
+    """(max - min) ÷ |median| of the annual ROE history — a through-cycle
+    dispersion read (§24: "dispersion is a signal")."""
+
     cost_of_equity: Decimal | None
     growth_rate: Decimal
     book_value_per_share: Decimal | None
@@ -423,15 +495,45 @@ def _gather_inputs(
         if item.basis_note:
             warnings.append(item.basis_note)
 
-    roe = None
+    roe_single_period = None
     if items:
         roe_result = next((r for r in compute_all(items) if r.key == "return_on_equity"), None)
         if roe_result is not None and roe_result.computable:
-            roe = roe_result.value
+            roe_single_period = roe_result.value
         else:
             warnings.append(
                 "ROE not computable from confirmed fundamentals"
                 + (f" ({roe_result.note})" if roe_result and roe_result.note else ".")
+            )
+
+    # §5: value on the mid-cycle figure, not one year of a cycle. The
+    # single-period ROE going below the steady-state growth rate in a
+    # weak year is exactly what drove justified P/B and residual income
+    # NEGATIVE for cyclicals and holding companies before this.
+    normalised = _normalised_roe_for(db, ticker, as_of)
+    if normalised.value is not None:
+        roe = normalised.value
+        roe_basis = normalised.basis
+        roe_confidence = normalised.confidence
+        for w in normalised.warnings:
+            warnings.append(w)
+        if roe_single_period is not None and roe != 0 and abs(
+            (roe_single_period - roe) / roe
+        ) > Decimal("0.5"):
+            warnings.append(
+                f"Latest-period ROE ({roe_single_period:.2%}) is far from the mid-cycle "
+                f"median ({roe:.2%}) — this company is in an unusually strong or weak year; "
+                "the anchors use the mid-cycle figure."
+            )
+    else:
+        roe = roe_single_period
+        roe_basis = "single most recent period only (no confirmed annual history to normalise)"
+        roe_confidence = "low" if roe_single_period is not None else "none"
+        if roe_single_period is not None:
+            warnings.append(
+                "ROE could not be normalised over a cycle — no paired confirmed ANNUAL "
+                "net_income/total_equity history for this company yet. Using the single "
+                "latest period, treated as low confidence."
             )
 
     ke_result = cost_of_equity_for(
@@ -458,6 +560,10 @@ def _gather_inputs(
     return LiveValuationInputs(
         period_end=period_end,
         roe=roe,
+        roe_single_period=roe_single_period,
+        roe_basis=roe_basis,
+        roe_confidence=roe_confidence,
+        roe_spread_pct=normalised.spread_pct,
         cost_of_equity=ke_result.ke,
         growth_rate=growth_rate,
         book_value_per_share=book_value_per_share,
@@ -495,7 +601,48 @@ def justified_price_to_book_for(
     if inputs.roe is None or inputs.cost_of_equity is None:
         return JustifiedPBView(inputs, None, None)
 
+    formula = "(ROE - g) ÷ (Ke - g)"
+
+    # SUPPRESS OUTSIDE THE MODEL'S MEANINGFUL RANGE — the same Gordon-
+    # family guard `relative_valuation_for` already applies to justified
+    # P/E and P/S, now applied to P/B too. A company whose mid-cycle ROE
+    # is at or below the steady-state growth rate cannot compound book
+    # value at `g` from retained earnings, so `(ROE - g)` is zero or
+    # negative and the "fair value" it produces is an arithmetic
+    # artifact, not a read. This was the single largest cause of
+    # NEGATIVE blended fair values across cyclicals and holding
+    # companies (see the system-wide valuation upgrade doc, §5, §10).
+    # The conservative book (NAV floor) anchor carries these names
+    # instead.
+    if inputs.roe <= inputs.growth_rate:
+        return JustifiedPBView(
+            inputs,
+            JustifiedMultipleResult(
+                "justified_pb", None, formula,
+                f"Mid-cycle ROE ({inputs.roe:.2%}) is at or below the steady-state growth "
+                f"rate ({inputs.growth_rate:.2%}) — the Gordon-family P/B has no meaningful "
+                "value here. The conservative book (NAV floor) anchor is used for this "
+                "company instead.",
+            ),
+            None,
+        )
+
     result = justified_price_to_book(inputs.roe, inputs.growth_rate, inputs.cost_of_equity)
+
+    if result.value is not None and result.value < MIN_PLAUSIBLE_JUSTIFIED_PB:
+        return JustifiedPBView(
+            inputs,
+            JustifiedMultipleResult(
+                "justified_pb", None, formula,
+                f"Implied justified P/B ({result.value:.2f}x) is below "
+                f"{MIN_PLAUSIBLE_JUSTIFIED_PB}x — the formula is in its unstable regime near "
+                "ROE == g and would value a profitable going concern at a small fraction of "
+                "tangible book. Suppressed in favour of the conservative book (NAV floor) "
+                "anchor (§22 rule 5).",
+            ),
+            None,
+        )
+
     fair_value = (
         result.value * inputs.book_value_per_share
         if result.value is not None and inputs.book_value_per_share is not None
@@ -527,6 +674,14 @@ def residual_income_for(
     )
 
     if inputs.roe is None or inputs.cost_of_equity is None or inputs.book_value_per_share is None:
+        return ResidualIncomeView(inputs, None)
+
+    # Same Gordon-family guard as justified P/B above — under this
+    # system's flat-ROE baseline, residual income with `terminal_roe ==
+    # roe` and `terminal_growth == g` collapses to exactly `BVPS x (ROE -
+    # g)/(Ke - g)`, so a mid-cycle ROE at or below `g` produces the same
+    # negative artifact. The conservative book anchor carries the name.
+    if inputs.roe <= inputs.growth_rate:
         return ResidualIncomeView(inputs, None)
 
     result = compute_residual_income(
@@ -1224,6 +1379,82 @@ def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Har
 
 
 @dataclass(frozen=True)
+class ConservativeBookAnchorView:
+    """§22 / §24's asset-side leg, promoted to a real triangulation
+    anchor. A per-share, deliberately conservative book value that every
+    archetype gets — the floor a going concern is worth regardless of
+    what a Gordon-family earnings multiple says, and the primary anchor
+    for the asset- and NAV-led archetypes §24's weight table names
+    (property 0.55, conglomerate/holding 0.55, bank/finance and cyclical
+    0.35). Its whole purpose here is that the blended fair value can no
+    longer go negative or near-zero the way it did when justified P/B and
+    residual income were the only inputs (see the system-wide valuation
+    upgrade doc §4, §11)."""
+
+    period_end: dt.date | None
+    value_per_share: Decimal | None
+    basis: str
+    confidence: str
+    """`"medium"` when a real `revaluation_reserves` line was stripped
+    (hard book); `"low"` on the blanket-haircut fallback when no such
+    line was matched."""
+
+    warnings: tuple[str, ...]
+
+
+def conservative_book_anchor_for(
+    db: Session, ticker: str, as_of: dt.date | None = None
+) -> ConservativeBookAnchorView:
+    """Reuses `hard_book_for` (which already extracts `total_equity` and,
+    where matched, `revaluation_reserves`) and turns it into a usable
+    asset anchor:
+
+      - `revaluation_reserves` matched → hard book per share as-is
+        (revaluation already stripped), confidence `"medium"`.
+      - not matched → REPORTED book per share x `UNVERIFIED_BOOK_HAIRCUT`,
+        confidence `"low"`, with the reason stated — so an unmatched
+        real reserve (§22's "reported book value is revaluation-inflated"
+        risk) cannot silently pass through at face value.
+
+    `None` value only when `total_equity` or `shares_issued` is genuinely
+    unavailable — never a fabricated figure.
+    """
+    stamp = as_of or dt.date.today()
+    hb = hard_book_for(db, ticker, stamp)
+    warnings: list[str] = list(hb.warnings)
+    if hb.result is None or hb.result.hard_book_per_share is None:
+        return ConservativeBookAnchorView(
+            period_end=hb.period_end, value_per_share=None,
+            basis="unavailable — total_equity or shares_issued missing", confidence="none",
+            warnings=tuple(warnings),
+        )
+
+    reval_matched = not any("No revaluation_reserves line found" in w for w in hb.warnings)
+    if reval_matched:
+        value = hb.result.hard_book_per_share
+        basis = "hard book per share (reported equity less matched revaluation reserves, §22 rule 1)"
+        confidence = "medium"
+    else:
+        value = hb.result.hard_book_per_share * UNVERIFIED_BOOK_HAIRCUT
+        basis = (
+            f"reported book per share x {UNVERIFIED_BOOK_HAIRCUT} — no revaluation_reserves "
+            "line was matched for this company, so a blanket haircut is applied rather than "
+            "trusting a possibly revaluation-inflated equity figure (§22)"
+        )
+        confidence = "low"
+        warnings.append(
+            "Conservative book anchor uses a blanket haircut on reported book value — a "
+            "matched revaluation-reserve line would replace it with the real stripped figure."
+        )
+
+    if value <= 0:
+        warnings.append("Conservative book value per share is not positive — anchor omitted.")
+        return ConservativeBookAnchorView(hb.period_end, None, basis, confidence, tuple(warnings))
+
+    return ConservativeBookAnchorView(hb.period_end, value, basis, confidence, tuple(warnings))
+
+
+@dataclass(frozen=True)
 class RelativeValuationView:
     """§20.2's justified P/E and justified P/S — the two sub-multiples of
     relative valuation beyond justified P/B (which already runs, above,
@@ -1555,6 +1786,19 @@ class CompanyValuationSummary:
     conflated with the other two, since the third case has a specific,
     actionable reason (`sanity.block_reasons`) the first two don't."""
 
+    conservative_book: ConservativeBookAnchorView
+    """§22/§24's asset-side leg, now a real triangulation anchor for
+    every archetype (see `conservative_book_anchor_for`). This is what
+    stops the blended fair value going negative when the Gordon-family
+    earnings anchors are suppressed for a low-ROE name."""
+
+    decision: DecisionResult
+    """The final buy-point / sell-point call — verdict, confidence, and
+    the three price levels, each with its gap to the current price. This
+    is the single field a screen or a human should read to answer 'what
+    now?'; everything above it is the working. See
+    `app.domain.decision.compute_decision`."""
+
     note: str
 
 
@@ -1662,6 +1906,7 @@ def valuation_summary_for(
         universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
     )
     hard_book_view = hard_book_for(db, ticker, stamp)
+    conservative_book_view = conservative_book_anchor_for(db, ticker, stamp)
     rel_view = relative_valuation_for(
         db, ticker, current_price, stamp, regime=regime_label,
         universe_liquidity_ratios=universe_ratios, universe_liquidity_percentiles=universe_percentiles,
@@ -1678,6 +1923,23 @@ def valuation_summary_for(
         anchors.append(ValuationAnchor("Justified P/E", "relative", rel_view.fair_value_pe))
     if rel_view.fair_value_ps is not None:
         anchors.append(ValuationAnchor("Justified P/S", "relative", rel_view.fair_value_ps))
+    # §22/§24's asset leg — a real anchor for every archetype now, and
+    # the reason the blend can no longer go negative when the Gordon-
+    # family earnings anchors above are suppressed for a low-but-positive-
+    # ROE name. NOT included when the mid-cycle ROE is negative: a
+    # company currently destroying equity is distressed (§27), and its
+    # book value is not a floor — manufacturing a positive fair value
+    # from book alone there would read a loss-maker as investable. Such a
+    # name gets no blended fair value and the decision engine reports
+    # "Insufficient data" with the loss-making reason.
+    mid_cycle_roe = jpb.inputs.roe
+    book_anchor_suppressed_for_losses = mid_cycle_roe is not None and mid_cycle_roe <= 0
+    if conservative_book_view.value_per_share is not None and not book_anchor_suppressed_for_losses:
+        anchors.append(
+            ValuationAnchor(
+                "Conservative book (NAV floor)", "asset_sotp", conservative_book_view.value_per_share
+            )
+        )
 
     triangulation = triangulate(routing, tuple(anchors))
 
@@ -1755,11 +2017,34 @@ def valuation_summary_for(
             " TASK 0.1's plausibility gate withheld the fair value and price ladder "
             f"despite a blended figure existing — failed: {', '.join(sanity_result.blocked_by)}."
         )
+    if book_anchor_suppressed_for_losses:
+        note += (
+            f" The conservative book anchor was also suppressed — mid-cycle ROE "
+            f"({mid_cycle_roe:.2%}) is negative, so this is a distressed / loss-making name "
+            "(§27) and its book value is not treated as a valuation floor."
+        )
+
+    decision = compute_decision(
+        DecisionInputs(
+            blended_fair_value=triangulation.blended_fair_value_per_share,
+            current_price=current_price,
+            zone=ladder.current_zone if ladder is not None else None,
+            buy_below_price=ladder.buy_below_price if ladder is not None else None,
+            take_profit_price=ladder.trim_threshold if ladder is not None else None,
+            strong_sell_price=ladder.exit_threshold if ladder is not None else None,
+            anchor_count=len(anchors),
+            dispersion_pct=triangulation.dispersion_pct,
+            roe_confidence=jpb.inputs.roe_confidence,
+            sanity_blocked=bool(sanity_result is not None and sanity_result.blocked),
+            sanity_warned=bool(sanity_result is not None and sanity_result.warned_by),
+            sanity_block_reasons=tuple(sanity_result.block_reasons) if sanity_result is not None else (),
+        )
+    )
 
     return CompanyValuationSummary(
         ticker=ticker, as_of=stamp, current_price=current_price, routing=routing, justified_pb=jpb,
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
         gordon_growth_ddm=ddm_view, hard_book=hard_book_view, relative_valuation=rel_view,
         regime=regime_view, triangulation=triangulation, margin_of_safety=mos, sanity=sanity_result,
-        price_ladder=ladder, note=note,
+        price_ladder=ladder, conservative_book=conservative_book_view, decision=decision, note=note,
     )

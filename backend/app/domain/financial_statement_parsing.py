@@ -836,6 +836,57 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "inventories": ("inventories",),  # JFP + SWAD, identical
     "trade_receivables": ("trade and other receivables",),  # JFP + SWAD, identical
     "trade_payables": ("trade and other payables",),  # JFP + SWAD, identical
+    # ---- §24's balance-sheet set, measured the same way as
+    # `capital_expenditure`'s wordings (see that key's comment). NONE of
+    # these five had a canonical key at all before, which is why the
+    # canonical metrics layer could not compute net debt, tangible
+    # equity, FCFE or Altman Z for ANY company: `cash` simply did not
+    # exist as a concept in this pipeline.
+    #
+    # `cash_and_cash_equivalents`: the plain wording also appears at the
+    # FOOT of the cash-flow statement, but the balance sheet precedes it
+    # in every filing shape seen, and first-occurrence-wins therefore
+    # takes the balance-sheet figure — which is the one §24 means by
+    # "cash". The cash-flow statement's own opening/closing lines carry
+    # their own longer wordings ("...at the beginning of the period"),
+    # so they cannot collide with this.
+    "cash_and_cash_equivalents": (
+        "cash and cash equivalents",  # 53 companies
+        "cash & cash equivalents",  # 18
+        "cash in hand and at bank",  # 15
+        "cash and bank balances",  # 8
+        "cash & bank balances",  # 7
+        "cash in hand & bank",  # 4
+        "cash in hand & at bank",  # 4
+        "cash in hand",  # 3
+    ),
+    # Overdrafts are borrowings, not negative cash: net debt has to add
+    # them back. Kept as their own key rather than folded into
+    # `total_interest_bearing_debt`, because on these filings the
+    # overdraft sits in current liabilities SEPARATELY from the borrowing
+    # lines that key already matches, and summing them here would double
+    # count for any company whose debt line already includes it.
+    "bank_overdraft": (
+        "bank overdraft",  # 47
+        "bank overdrafts",  # 35
+    ),
+    "property_plant_and_equipment": (
+        "property, plant and equipment",  # 45
+        "property, plant & equipment",  # 36
+        "property,plant and equipment",  # 2
+        "property plant and equipment",
+        "property plant & equipment",
+    ),
+    # Tangible equity = total_equity - intangible_assets, so this is the
+    # input §24's "tangible equity" needs.
+    "intangible_assets": (
+        "intangible assets",  # 68
+        "intangible asset",
+    ),
+    "investment_property": (
+        "investment property",  # 26
+        "investment properties",  # 19
+    ),
     "advances_and_prepayments": ("advances and prepayments",),  # SWAD
     "amounts_due_from_related_parties_trade": ("amounts due from related parties - trade",),  # JFP
     "amounts_due_from_related_parties_non_trade": ("amounts due from related parties - non trade",),  # JFP
@@ -1528,6 +1579,16 @@ _COMPONENT_SUBTOTAL_CEILINGS: dict[str, tuple[str, ...]] = {
     "trade_payables": ("total_current_liabilities", "total_liabilities", "total_assets"),
     "total_interest_bearing_debt": ("total_liabilities", "total_assets"),
     "revaluation_reserves": ("total_equity", "total_equity_and_liabilities"),
+    # §24's balance-sheet set. Each is a component of total assets (or,
+    # for the overdraft, of liabilities), so the same too-LARGE misread
+    # guard applies. PP&E and investment property are non-current, so
+    # they are NOT bounded by total_current_assets; cash is current, so
+    # it is.
+    "cash_and_cash_equivalents": ("total_current_assets", "total_assets"),
+    "bank_overdraft": ("total_current_liabilities", "total_liabilities", "total_assets"),
+    "property_plant_and_equipment": ("total_non_current_assets", "total_assets"),
+    "intangible_assets": ("total_non_current_assets", "total_assets"),
+    "investment_property": ("total_non_current_assets", "total_assets"),
 }
 #: A little slack for real group-vs-company column mismatches and ordinary
 #: publication rounding — every real over-correction found so far breaches

@@ -110,7 +110,13 @@ class TestOpportunityRankingFor:
         assert len(view.ranked) == 1
         candidate = view.ranked[0]
         assert candidate.ticker == "COMB.N0000"
-        assert candidate.price_ladder_zone == "strong_accumulate"  # matches the known-good hand-worked case
+        # With the conservative book (NAV floor) anchor now blended in for
+        # every archetype (§24), FV = 12.725 and current 12 sits in the
+        # 'fair' band rather than 'strong_accumulate'. Still ranked (has a
+        # zone and a gap); the verdict/confidence are surfaced too now.
+        assert candidate.price_ladder_zone == "fair"
+        assert candidate.verdict == "Hold"
+        assert candidate.decision_confidence == "low"
         assert candidate.gap_to_buy_below_pct is not None
         assert view.excluded == ()
 
@@ -133,16 +139,20 @@ class TestOpportunityRankingFor:
         assert [c.ticker for c in view.ranked] == ["CHEAP.N0000", "DEAR.N0000"]
         assert view.ranked[0].gap_to_buy_below_pct < view.ranked[1].gap_to_buy_below_pct
 
-    def test_a_negative_blended_fair_value_is_excluded_with_a_named_reason_not_a_fake_zone(
+    def test_a_loss_making_name_is_excluded_with_a_named_reason_not_a_fake_zone(
         self, db_session, monkeypatch
     ):
         """Real, live finding (18 Aug 2026): CBNK.N0000/EAST.N0000/
-        JKH.N0000's real confirmed figures currently blend to a negative
-        fair value. `compute_price_ladder` already refuses to build
-        zones from a non-positive fair value — this view must surface
-        that as an excluded candidate with the real warning, never as a
-        ranked candidate with a nonsensical zone. Reproduced here with a
-        negative net_income driving a negative residual-income anchor."""
+        JKH.N0000's real confirmed figures used to blend to a NEGATIVE
+        fair value from a below-`g` ROE. That artifact is now closed at
+        the source: the Gordon-family anchors are suppressed when ROE is
+        at or below `g`, and the conservative book anchor is ALSO
+        suppressed when mid-cycle ROE is negative — a company destroying
+        equity is distressed (§27) and its book is not a valuation
+        floor. So a deeply loss-making name produces NO blended fair
+        value at all and is surfaced as excluded-with-reason, never a
+        ranked candidate with a nonsensical zone or a manufactured
+        positive fair value."""
         _seed_security(db_session, "NEG.N0000", "Negative PLC")
         _seed_confirmed_fundamentals(db_session, "NEG.N0000", total_equity=Decimal(1000), net_income=Decimal(-500))
         _seed_shares(db_session, "NEG.N0000")
@@ -154,7 +164,9 @@ class TestOpportunityRankingFor:
         assert len(view.excluded) == 1
         assert view.excluded[0].ticker == "NEG.N0000"
         assert view.excluded[0].price_ladder_zone is None
-        assert any("fair_value must be positive" in w for w in view.excluded[0].warnings)
+        assert view.excluded[0].blended_fair_value_per_share is None
+        assert view.excluded[0].verdict == "Insufficient data"
+        assert any("No triangulated fair value" in w for w in view.excluded[0].warnings)
 
     def test_no_confirmed_universe_gives_an_empty_view_not_an_error(self, db_session):
         view = opportunity_ranking_for(db_session, AS_OF)

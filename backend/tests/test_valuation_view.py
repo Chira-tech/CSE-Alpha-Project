@@ -790,19 +790,36 @@ class TestValuationSummaryFor:
         )
 
         assert summary.routing.archetype == "bank"
-        # Both anchors land at 15.0 (see the two hand-worked tests above) →
-        # dispersion is exactly zero, and "asset_sotp" has no anchor at all.
-        assert summary.triangulation.missing_categories == ("asset_sotp",)
-        assert abs(summary.triangulation.blended_fair_value_per_share - Decimal("15")) < Decimal("0.001")
-        assert summary.triangulation.dispersion_pct == Decimal(0)
+        # The two Gordon-family anchors land at 15.0 (see the two hand-worked
+        # tests above), and the conservative book (NAV floor) anchor now
+        # ALSO participates for every archetype: reported book per share
+        # 10.0, blanket-haircut to 8.5 (no revaluation_reserves line
+        # matched in this fixture). All three §24 categories are populated.
+        assert summary.triangulation.missing_categories == ()
+        assert summary.conservative_book.value_per_share == Decimal("8.500000")
+        assert summary.conservative_book.confidence == "low"
+        # bank weights: intrinsic 0.40, asset_sotp 0.35, relative 0.25 →
+        # 0.40*15 + 0.35*8.5 + 0.25*15 = 12.725
+        assert abs(summary.triangulation.blended_fair_value_per_share - Decimal("12.725")) < Decimal("0.001")
+        # A real second, structurally different anchor → real dispersion now.
+        assert summary.triangulation.dispersion_pct > Decimal("0.4")
 
-        assert summary.margin_of_safety.total_pct == Decimal("0.10")  # base only, rest unavailable
+        # base 0.10 + dispersion component (capped at 0.15) = 0.25
+        assert summary.margin_of_safety.total_pct == Decimal("0.25")
         assert summary.margin_of_safety.is_lower_bound
 
-        # FV=15, MoS=10% → strong_accumulate = 15*0.82=12.30; current=12 is below it.
+        # FV=12.725, MoS=25% → buy_below = 9.544; current 12 sits in the
+        # 'fair' band (between buy_below and fair value).
         assert summary.price_ladder is not None
-        assert summary.price_ladder.current_zone == "strong_accumulate"
+        assert summary.price_ladder.current_zone == "fair"
         assert summary.current_price == Decimal(12)
+
+        # The final decision: 'Hold' (fair band), and LOW confidence
+        # because ROE rests on a single seeded period and the two anchor
+        # families disagree by ~51%.
+        assert summary.decision.verdict == "Hold"
+        assert summary.decision.confidence == "low"
+        assert any("single period" in f for f in summary.decision.confidence_factors)
         # No capex/D&A/WC seeded for COMB.N0000 in this fixture — informational
         # only, and correctly absent rather than silently zero.
         assert summary.current_period_fcff.fcff is None

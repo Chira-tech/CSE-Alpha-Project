@@ -68,6 +68,10 @@ def test_a_confirmed_ticker_with_a_computable_ladder_is_ranked(client, db_sessio
     assert len(body["ranked"]) == 1
     candidate = body["ranked"][0]
     assert candidate["ticker"] == "COMB.N0000"
-    assert candidate["price_ladder_zone"] == "strong_accumulate"
+    # FV now blends in the conservative book (NAV floor) anchor (§24), so
+    # current 12 lands in the 'fair' band rather than 'strong_accumulate'.
+    assert candidate["price_ladder_zone"] == "fair"
+    assert candidate["verdict"] == "Hold"
+    assert candidate["decision_confidence"] == "low"
     assert Decimal(candidate["gap_to_buy_below_pct"]) is not None
     assert body["excluded"] == []

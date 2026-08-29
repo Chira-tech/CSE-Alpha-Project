@@ -89,20 +89,18 @@ class TestValuePortfolio:
         result = value_portfolio(db_session, snapshot, AS_OF)
         assert result.total_cost == Decimal("20000.0")
 
-    def test_a_negative_blended_fair_value_carries_its_real_warning_not_silence(self, db_session, monkeypatch):
+    def test_a_loss_making_holding_carries_its_real_warning_not_silence(self, db_session, monkeypatch):
         """Real bug, found live (18 Aug 2026) browser-testing the
-        Portfolio screen against the real dev DB: CBNK.N0000's real
-        confirmed figures blend to a negative fair value, and
-        `app.domain.price_ladder.compute_price_ladder` already refuses
-        to build a zone from it — but `value_position` only ever copied
-        `summary.triangulation.warnings` into the position's own
-        `warnings`, never `summary.price_ladder.warnings`, so the real,
-        already-computed "fair_value must be positive" explanation
-        silently never reached the position at all. The Opportunities
-        screen (a different call site reading the same `valuation_
-        summary_for` output) already surfaced this correctly, which is
-        how the gap was found — comparing what the two screens showed
-        for the same real ticker."""
+        Portfolio screen against the real dev DB: a deeply loss-making
+        holding used to blend to a NEGATIVE fair value. That artifact is
+        now closed at the source — the Gordon-family anchors are
+        suppressed when ROE <= g and the conservative book anchor is
+        suppressed when mid-cycle ROE is negative (§27 distress) — so
+        there is simply no blended fair value, and the position must
+        still carry the real reason ("nothing to blend"), never
+        silence. This regression exists because `value_position` once
+        copied only `summary.triangulation.warnings` and not
+        `summary.price_ladder.warnings`; both paths are covered now."""
         db_session.add(Security(ticker="NEG.N0000", name="Negative PLC", archetype="bank"))
         db_session.add_all(
             [
@@ -142,7 +140,8 @@ class TestValuePortfolio:
         pos = result.positions[0]
 
         assert pos.price_ladder_zone is None
-        assert any("fair_value must be positive" in w for w in pos.warnings)
+        assert pos.blended_fair_value_per_share is None
+        assert any("nothing to blend" in w for w in pos.warnings)
 
 
 def test_a_quarantined_holding_shows_price_but_withholds_fair_value(db_session):

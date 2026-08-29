@@ -31,6 +31,8 @@ class OpportunityCandidateOut(BaseModel):
     buy_below_price: Decimal | None
     gap_to_buy_below_pct: Decimal | None
     dispersion_pct: Decimal | None
+    verdict: str
+    decision_confidence: str
     warnings: list[str]
 
     @classmethod
@@ -40,7 +42,8 @@ class OpportunityCandidateOut(BaseModel):
             blended_fair_value_per_share=c.blended_fair_value_per_share,
             margin_of_safety_pct=c.margin_of_safety_pct, price_ladder_zone=c.price_ladder_zone,
             buy_below_price=c.buy_below_price, gap_to_buy_below_pct=c.gap_to_buy_below_pct,
-            dispersion_pct=c.dispersion_pct, warnings=list(c.warnings),
+            dispersion_pct=c.dispersion_pct, verdict=c.verdict,
+            decision_confidence=c.decision_confidence, warnings=list(c.warnings),
         )
 
 

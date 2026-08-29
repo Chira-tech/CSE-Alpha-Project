@@ -68,6 +68,13 @@ class ScenarioSet:
     base_value_per_share: Decimal
     bull_value_per_share: Decimal
     note: str
+    inversion_detected: bool = False
+    """True when the RAW re-run values were not monotonic (`bear > base`
+    or `base > bull`) and had to be reordered for display. §10 of the
+    system-wide valuation upgrade doc requires `bear <= base <= bull`
+    before any scenario result is shown; a violation also means the
+    base-case DCF assumption set is unstable, so a caller should treat
+    the whole scenario spread as low confidence when this is set."""
 
 
 def build_scenario_set(
@@ -112,14 +119,44 @@ def build_scenario_set(
     if confirmed_project_bull_revenue_growth_delta == 0:
         note += " Bull omits the confirmed-project uplift §23 also calls for (project register, Phase 5)."
 
+    raw_bear = dcf_equity_value(bear).value_per_share
+    raw_base = dcf_equity_value(base).value_per_share
+    raw_bull = dcf_equity_value(bull).value_per_share
+
+    # §10: enforce bear <= base <= bull BEFORE returning. A non-monotonic
+    # set is a real, observed failure (DPL.N0000: raw bear -15.06 / base
+    # 50.99 / bull 12.52 — the exact inversion §10 names). These ARE
+    # scenario values — the SAME pure DCF engine re-run with percentile-
+    # and discount-rate-shifted assumptions — not mislabelled model
+    # outputs, so §10's "reorder only if genuinely scenario values"
+    # condition is met: sort the three by value and keep the base case
+    # clamped into [bear, bull] so it stays the central figure it is
+    # meant to be. The inversion itself is surfaced (`inversion_detected`
+    # + `note`) rather than silently smoothed over, because it signals
+    # the base assumption set is pathological.
+    inversion = not (raw_bear <= raw_base <= raw_bull)
+    if inversion:
+        low, mid, high = sorted([raw_bear, raw_base, raw_bull])
+        bear_value, bull_value = low, high
+        base_value = min(max(raw_base, low), high)
+        note += (
+            f" WARNING (§10): raw scenario values were non-monotonic "
+            f"(bear {raw_bear:.2f} / base {raw_base:.2f} / bull {raw_bull:.2f}) — reordered "
+            "by value for display. This signals the base-case DCF assumptions are unstable; "
+            "treat the scenario spread as low confidence."
+        )
+    else:
+        bear_value, base_value, bull_value = raw_bear, raw_base, raw_bull
+
     return ScenarioSet(
         bear=bear,
         base=base,
         bull=bull,
-        bear_value_per_share=dcf_equity_value(bear).value_per_share,
-        base_value_per_share=dcf_equity_value(base).value_per_share,
-        bull_value_per_share=dcf_equity_value(bull).value_per_share,
+        bear_value_per_share=bear_value,
+        base_value_per_share=base_value,
+        bull_value_per_share=bull_value,
         note=note,
+        inversion_detected=inversion,
     )
 
 

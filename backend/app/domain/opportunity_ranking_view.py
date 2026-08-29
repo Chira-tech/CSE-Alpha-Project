@@ -80,6 +80,14 @@ class OpportunityCandidate:
     buy_below_price: Decimal | None
     gap_to_buy_below_pct: Decimal | None
     dispersion_pct: Decimal | None
+    verdict: str
+    """The final call from `app.domain.decision.compute_decision` —
+    Strong Buy / Buy / Accumulate / Hold / Trim / Sell / Insufficient
+    data / Withheld. Populated even for `excluded` candidates (it will
+    read 'Insufficient data' or 'Withheld' there), so a screen never has
+    to infer the reason from an absence."""
+
+    decision_confidence: str
     warnings: tuple[str, ...]
 
 
@@ -232,7 +240,7 @@ def _opportunity_ranking_for_uncached(db: Session, stamp: dt.date) -> Opportunit
                 ticker=ticker, name=name, archetype=archetype, current_price=price,
                 blended_fair_value_per_share=None, margin_of_safety_pct=Decimal(0),
                 price_ladder_zone=None, buy_below_price=None, gap_to_buy_below_pct=None,
-                dispersion_pct=None,
+                dispersion_pct=None, verdict="Withheld", decision_confidence="low",
                 warnings=(
                     f"{ticker!r} is quarantined — its stored adjustment factors failed the §7 "
                     "reconciliation check against real corporate actions, so its numbers are not "
@@ -273,6 +281,8 @@ def _opportunity_ranking_for_uncached(db: Session, stamp: dt.date) -> Opportunit
             buy_below_price=ladder.buy_below_price if ladder is not None else None,
             gap_to_buy_below_pct=ladder.gap_to_buy_below_pct if ladder is not None else None,
             dispersion_pct=summary.triangulation.dispersion_pct,
+            verdict=summary.decision.verdict,
+            decision_confidence=summary.decision.confidence,
             warnings=tuple(warnings),
         )
 

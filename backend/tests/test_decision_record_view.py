@@ -72,9 +72,11 @@ class TestRecordDecisionFor:
         assert decision.action == DecisionAction.BUY
         assert decision.market_price_at_decision == Decimal(12)
         # Same known-good hand-worked fixture as test_valuation_view.py's
-        # TestValuationSummaryFor.test_end_to_end_bank_triangulation_and_ladder.
-        assert abs(decision.fv_blended - Decimal("15")) < Decimal("0.001")
-        assert decision.dispersion == Decimal(0)
+        # TestValuationSummaryFor.test_end_to_end_bank_triangulation_and_ladder:
+        # the two Gordon anchors at 15.0 blended with the conservative
+        # book (NAV floor) anchor at 8.5 → 12.725, with real dispersion.
+        assert abs(decision.fv_blended - Decimal("12.725")) < Decimal("0.001")
+        assert decision.dispersion > Decimal("0.4")
         assert decision.buy_below is not None
         assert decision.fair_value is not None
         assert decision.trim_above is not None
