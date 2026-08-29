@@ -38,6 +38,11 @@ JOBS: dict[str, JobDefinition] = {
     "capture_corporate_actions": JobDefinition("capture_corporate_actions", "Corporate actions scan", 600),
     "enrich_securities": JobDefinition("enrich_securities", "Security enrichment (shares, market cap)", 600),
     "recompute": JobDefinition("recompute", "Rebuild valuations", 60),
+    # Pure recomputation from already-stored confirmed corporate actions —
+    # no network at all, so the estimate is real CPU time, not API pacing.
+    "rebuild_adjustment_factors": JobDefinition(
+        "rebuild_adjustment_factors", "Rebuild §7 total-return adjustment factors", 30
+    ),
     "rebuild_factor_series": JobDefinition(
         "rebuild_factor_series", "Rebuild §35 weekly factor return series", 180
     ),

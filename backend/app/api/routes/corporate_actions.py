@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.jobs.adjustment_factors import rebuild_adjustment_factors_for_ticker
 from app.domain.corporate_actions import (
     ActionKind,
     CorporateActionEvent,
@@ -226,6 +227,20 @@ def confirm_draft(action_id: int, body: ReviewRequest, db: Session = Depends(get
     row.confirmed_by = body.actor
     row.confirmed_at = dt.datetime.now(dt.timezone.utc)
     db.commit()
+
+    # Confirming an action is what MAKES it price-affecting (§7/§8), so the
+    # stored total-return adjustment factors for this ticker are now stale
+    # by definition. Rebuilt here rather than left for a nightly job: the
+    # 29 Aug 2026 audit found `adj_factor` had NEVER been written at all,
+    # leaving CDB.N0000's real 1:9 split reading as a -90% one-day return
+    # in every return-based computation (beta -> Ke -> every fair value,
+    # momentum, the factor series, sector sensitivity). One ticker,
+    # recomputed from already-stored data with no network call, so this is
+    # cheap enough to do synchronously and keeps the invariant "confirmed
+    # actions and stored factors always agree" true at all times.
+    rebuild_adjustment_factors_for_ticker(db, row.ticker)
+    db.commit()
+
     db.refresh(row)
     return CorporateActionOut.from_model(row)
 

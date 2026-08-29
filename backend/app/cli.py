@@ -18,6 +18,7 @@ from app.db.session import SessionLocal
 from app.domain.macro import SERIES_TBILL_364D
 from app.domain.macro_view import current_spread, record_observation
 from app.ingestion.bootstrap import run_bootstrap
+from app.jobs.adjustment_factors import rebuild_all_adjustment_factors
 from app.ingestion.cbsl_client import CbslClient
 from app.ingestion.cbsl_loader import ingest_range
 from app.ingestion.index_history_loader import ingest_index_history
@@ -547,6 +548,43 @@ def cmd_auto_confirm_fundamentals(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_rebuild_adjustment_factors(args: argparse.Namespace) -> int:
+    """Build and STORE the §7 total-return adjustment-factor series from
+    confirmed corporate actions.
+
+    Nothing in this system ever wrote `prices_daily.adj_factor` before
+    (29 Aug 2026 audit): `price_loader` sets 1.0 on insert and only the
+    nightly reconciliation CHECK ever recomputed it, so every consumer
+    that multiplies `close * adj_factor` — beta, the factor series,
+    sector sensitivity, momentum, the price-change columns — was silently
+    using the raw close. CDB.N0000's 1:9 split read as a real -90% day.
+    """
+    db = SessionLocal()
+    try:
+        def on_progress(i: int, total: int, ticker: str) -> None:
+            if i == 1 or i % 50 == 0 or i == total:
+                print(f"  [{i}/{total}] {ticker}", file=sys.stderr)
+
+        summary = rebuild_all_adjustment_factors(db, on_progress=on_progress)
+        print(
+            f"Done. {summary['price_rows_changed']} price row(s) updated across "
+            f"{summary['tickers_changed']} of {summary['tickers_scanned']} tickers."
+        )
+        unusable = summary.get("tickers_with_unusable_events") or {}
+        if unusable:
+            print(
+                f"\n{len(unusable)} ticker(s) have a confirmed action INSIDE the price "
+                f"window whose ratio could not be computed — their factors are "
+                f"UNDER-adjusted until the underlying figure is filled in:"
+            )
+            for ticker, reasons in list(unusable.items())[:20]:
+                print(f"   {ticker}: {'; '.join(reasons)}")
+    finally:
+        db.close()
+    return 0
+
+
 def cmd_backfill_prices(args: argparse.Namespace) -> int:
     """Backfill ~1 year of daily price history per company from
     companyChartDataByStock — fills gaps only, never touches a date
@@ -856,6 +894,13 @@ def main(argv: list[str] | None = None) -> int:
         "Everything not promoted is left AI_ASSISTED with its band written on it.",
     )
     p_ac.set_defaults(func=cmd_auto_confirm_fundamentals)
+
+    p_af = sub.add_parser(
+        "rebuild-adjustment-factors",
+        help="build and store the §7 total-return adjustment factors from confirmed "
+        "corporate actions (nothing ever wrote these before — see the command's docstring)",
+    )
+    p_af.set_defaults(func=cmd_rebuild_adjustment_factors)
 
     p_bp = sub.add_parser(
         "backfill-prices",

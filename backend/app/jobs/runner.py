@@ -65,6 +65,7 @@ from app.ingestion.market_internals import ingest_market_internals
 from app.ingestion.bootstrap import bootstrap_securities
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.ingestion.security_enrichment import enrich_securities
+from app.jobs.adjustment_factors import rebuild_all_adjustment_factors
 from app.jobs.registry import JOBS, job_definition
 from app.models.fundamentals import Fundamental
 from app.models.job_run import JobRun
@@ -218,6 +219,19 @@ def _run_capture_prices(db: Session, run: JobRun) -> int:
     bootstrap_securities(db, rows)
     _set_progress(db, run, 70, f"Writing {len(rows)} rows for session {session_date}...")
     return upsert_eod_prices(db, session_date, rows)
+
+
+def _run_rebuild_adjustment_factors(db: Session, run: JobRun) -> int:
+    """§7's total-return adjustment factors, rebuilt from confirmed
+    corporate actions. Safety net behind the synchronous rebuild that
+    `POST /corporate-actions/{id}/confirm` already does — see
+    `app.jobs.adjustment_factors` for the real gap this closes."""
+    def on_progress(i: int, total: int, ticker: str) -> None:
+        if i % 25 == 0 or i == total:
+            _set_progress(db, run, int(i / max(total, 1) * 100), f"{ticker} ({i}/{total})")
+
+    summary = rebuild_all_adjustment_factors(db, on_progress=on_progress)
+    return int(summary["price_rows_changed"])
 
 
 def _run_capture_market(db: Session, run: JobRun) -> int:
@@ -395,6 +409,7 @@ _RUNNERS = {
     "capture_corporate_actions": _run_capture_corporate_actions,
     "enrich_securities": _run_enrich_securities,
     "recompute": _run_recompute,
+    "rebuild_adjustment_factors": _run_rebuild_adjustment_factors,
     "rebuild_factor_series": _run_rebuild_factor_series,
     "refresh_stale_fundamentals": _run_refresh_stale_fundamentals,
 }
