@@ -21,6 +21,8 @@ silently drop from the ranking that's supposed to identify it as thin.
 from __future__ import annotations
 
 import datetime as dt
+import statistics
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -32,6 +34,32 @@ from app.models.prices import PriceDaily
 from app.models.securities import Security
 
 DEFAULT_LOOKBACK_DAYS = 400
+GATE1_WINDOW_SESSIONS = 60
+"""§11.1 Gate 1's own window — matches `Gate1Inputs.median_daily_
+turnover_60d_lkr`/`days_traded_last_60`'s naming, but as real TRADING
+SESSIONS, not calendar days. A REAL bug in this module's own first
+version, found live (30 Aug 2026) applying this exact liquidity gate to
+the real dev universe: treating "60" as 60 CALENDAR days made
+`days_traded_last_60 >= 45` mathematically impossible for any real
+5-day-trading-week stock to ever clear — a 60-calendar-day span
+contains at most ~43 weekdays before subtracting a single holiday, so
+EVERY real ticker failed, including SAMP.N0000 and JKH.N0000, the
+exchange's own two most liquid names (turnover in the tens of millions
+of rupees a day). "60d" in standard equity-liquidity usage (a "50-day
+moving average" means 50 TRADING days, universally) means the last 60
+real sessions the stock traded ON, not 60 calendar days regardless of
+weekends — corrected here to count backward through real stored
+sessions instead of a calendar cutoff."""
+
+STALE_HISTORY_CUTOFF_DAYS = 180
+"""A real, disclosed outer bound on `liquidity_snapshot_for`'s own
+session-counting fix above: without SOME calendar bound, a ticker that
+stopped trading entirely 2 years ago would still report its old
+sessions as "the last 60," reading as currently liquid when it is
+anything but. Six months is generous relative to Gate 1's own ~60-
+session/~3-month target window — long enough that a stock genuinely
+still trading normally is never caught by it, short enough that a
+stock that has gone quiet is not read as liquid from stale history."""
 
 
 def _ticker_turnovers(db: Session, ticker: str, as_of: dt.date, lookback_days: int) -> dict[dt.date, Decimal]:
@@ -51,6 +79,85 @@ def _ticker_turnovers(db: Session, ticker: str, as_of: dt.date, lookback_days: i
         .order_by(PriceDaily.date)
     ).all()
     return {row.date: row.close * row.volume for row in rows}
+
+
+@dataclass(frozen=True)
+class LiquiditySnapshot:
+    median_daily_turnover_60d_lkr: Decimal
+    """Median of REAL raw turnover (close x volume) over the real
+    TRADED sessions among the trailing `GATE1_WINDOW_SESSIONS` real
+    session ROWS on file (not a calendar-day cutoff — see that
+    constant's own docstring for why) — §11.1 Gate 1's own named input.
+    A session with no real trading at all (volume 0) is not counted as
+    a zero-turnover session; it simply isn't in the sample, the same
+    "real data only, never a synthetic zero" discipline this project
+    applies everywhere else — a company that trades rarely should show
+    a small SAMPLE, not a median dragged toward zero by manufactured
+    non-trading sessions."""
+
+    days_traded_60d: int
+    """Real sessions with volume > 0 among the same trailing
+    `GATE1_WINDOW_SESSIONS` real session rows — the actual §11.1 Gate 1
+    fact this represents ("traded 6 of the last 60 real sessions")."""
+
+    days_of_real_history_available: int
+    """How many real session ROWS this ticker actually has on file
+    (on or before `as_of`), capped at `GATE1_WINDOW_SESSIONS` — NOT
+    assumed to always equal the full window. A ticker with 20 real
+    session rows on file (a genuinely recent listing, or a system whose
+    own forward capture hasn't run long enough yet) reports 20 here,
+    never a manufactured 60 — a caller (`app.domain.coverage_gates.
+    gate1_liquidity_reason`) needs this figure to tell "this stock
+    genuinely doesn't trade often" apart from "not enough real sessions
+    exist yet to judge that"."""
+
+
+def liquidity_snapshot_for(
+    db: Session, ticker: str, as_of: dt.date, *, window_sessions: int = GATE1_WINDOW_SESSIONS
+) -> LiquiditySnapshot:
+    """Never `None` — a ticker with zero real session rows on file gets
+    the real, honest `(0, 0, 0)` snapshot rather than an absence a
+    caller would have to special-case. `(0, 0)` fails §11.1 Gate 1's own
+    thresholds exactly the same way a thin-but-nonzero snapshot does,
+    through the same comparison, which is the correct, uniform
+    treatment — a stock that never traded is not a special case of
+    illiquidity, it is the most extreme real case of it.
+
+    Windowed by real SESSION ROWS, not a calendar-day cutoff — see
+    `GATE1_WINDOW_SESSIONS`'s own docstring for the real bug this
+    closes (a 60-CALENDAR-day window can never contain 45 real trading
+    days for a normal 5-day week, so every real ticker failed the
+    days-traded check unconditionally under the first version of this
+    function). Also bounded by `STALE_HISTORY_CUTOFF_DAYS`: a ticker
+    whose real sessions are all older than that is not "liquid based on
+    history," it has gone quiet — resurrecting six-month-old trading as
+    "current" liquidity would be a different, real mistake in the other
+    direction from the calendar-day bug this function already fixes."""
+    rows = db.scalars(
+        select(PriceDaily)
+        .where(
+            PriceDaily.ticker == ticker,
+            PriceDaily.date <= as_of,
+            PriceDaily.date >= as_of - dt.timedelta(days=STALE_HISTORY_CUTOFF_DAYS),
+            PriceDaily.close.is_not(None),
+        )
+        .order_by(PriceDaily.date.desc())
+        .limit(window_sessions)
+    ).all()
+    days_available = len(rows)
+
+    traded_rows = [r for r in rows if r.volume and r.volume > 0]
+    if not traded_rows:
+        return LiquiditySnapshot(
+            median_daily_turnover_60d_lkr=Decimal(0), days_traded_60d=0,
+            days_of_real_history_available=days_available,
+        )
+    turnovers = [row.close * row.volume for row in traded_rows]
+    return LiquiditySnapshot(
+        median_daily_turnover_60d_lkr=Decimal(str(statistics.median(turnovers))),
+        days_traded_60d=len(traded_rows),
+        days_of_real_history_available=days_available,
+    )
 
 
 def _ticker_amihud_ratio(

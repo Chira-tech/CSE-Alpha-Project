@@ -44,11 +44,17 @@ def test_a_confirmed_ticker_with_a_computable_ladder_is_ranked(client, db_sessio
         ]
     )
     db_session.add(FloatData(ticker="COMB.N0000", as_of=dt.date(2022, 1, 1), shares_issued=100))
-    db_session.add(
+    # TASK "are these opportunities really worth buying" (30 Aug 2026):
+    # opportunity_ranking_for now runs a real §11.1 Gate 1 liquidity
+    # check before ranking a candidate — 50 real-shaped sessions at real
+    # volume, comfortably clearing the real turnover bar, not one bare day.
+    now = dt.datetime.now(dt.timezone.utc)
+    db_session.add_all(
         PriceDaily(
-            ticker="COMB.N0000", date=dt.date.today(), close=Decimal(12), adj_factor=Decimal(1),
-            fetched_at=dt.datetime.now(dt.timezone.utc),
+            ticker="COMB.N0000", date=dt.date.today() - dt.timedelta(days=i), close=Decimal(12),
+            volume=1_000_000, adj_factor=Decimal(1), fetched_at=now,
         )
+        for i in range(50)
     )
     db_session.commit()
 

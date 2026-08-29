@@ -5,7 +5,11 @@ import datetime as dt
 from decimal import Decimal
 
 from app.domain.liquidity import MIN_OBSERVATIONS
-from app.domain.liquidity_view import liquidity_percentile_for, universe_amihud_ratios
+from app.domain.liquidity_view import (
+    liquidity_percentile_for,
+    liquidity_snapshot_for,
+    universe_amihud_ratios,
+)
 from app.models.prices import PriceDaily
 from app.models.securities import Security
 
@@ -61,6 +65,103 @@ class TestUniverseAmihudRatios:
 
         assert universe_amihud_ratios(db_session, AS_OF) == {}
         assert liquidity_percentile_for(db_session, "TOOTHIN.N0000", AS_OF) is None
+
+
+class TestLiquiditySnapshotFor:
+    """Found live (30 Aug 2026) auditing real ranked "opportunities":
+    the ranking had no liquidity check at all, so a stock trading a few
+    thousand rupees a day could rank as a top "Accumulate" purely on
+    discount-to-book. This is the real-data half of the fix."""
+
+    def test_a_real_median_and_day_count_over_the_window(self, db_session):
+        base = AS_OF - dt.timedelta(days=59)
+        # 60 real trading days, close=100 flat, volume varies so the
+        # median is unambiguous (sorted: ..., 1000, 2000, 3000, ...).
+        closes = [Decimal(100)] * 60
+        volumes = list(range(1000, 61000, 1000))
+        _seed_ticker(db_session, "REAL.N0000", closes, volumes, base)
+
+        snap = liquidity_snapshot_for(db_session, "REAL.N0000", AS_OF)
+
+        assert snap.days_traded_60d == 60
+        # median volume = 30500 (60 even values) -> turnover = 100 * 30500
+        assert snap.median_daily_turnover_60d_lkr == Decimal("3050000")
+        assert snap.days_of_real_history_available == 60
+
+    def test_a_ticker_with_no_real_trading_gets_the_honest_zero_snapshot(self, db_session):
+        db_session.add(Security(ticker="DEAD.N0000", name="DEAD.N0000"))
+        db_session.commit()
+
+        snap = liquidity_snapshot_for(db_session, "DEAD.N0000", AS_OF)
+
+        assert snap.days_traded_60d == 0
+        assert snap.median_daily_turnover_60d_lkr == Decimal(0)
+        assert snap.days_of_real_history_available == 0
+
+    def test_real_history_available_is_capped_at_the_window_even_with_deeper_data(self, db_session):
+        base = AS_OF - dt.timedelta(days=399)  # far deeper than the 60-day window
+        closes = [Decimal(100)] * 400
+        volumes = [1000] * 400
+        _seed_ticker(db_session, "LONGHISTORY.N0000", closes, volumes, base)
+
+        snap = liquidity_snapshot_for(db_session, "LONGHISTORY.N0000", AS_OF)
+        assert snap.days_of_real_history_available == 60
+
+    def test_real_history_available_reflects_a_real_recent_listing_or_shallow_capture(self, db_session):
+        """Found live (30 Aug 2026): this system's own forward-captured
+        price history doesn't span 60 real SESSION ROWS for any ticker
+        yet, including the exchange's own most liquid names. A caller
+        needs this real figure to tell "this stock genuinely doesn't
+        trade" apart from "not enough real sessions exist yet to judge
+        that"."""
+        base = AS_OF - dt.timedelta(days=19)
+        closes = [Decimal(100)] * 20
+        volumes = [50_000_000] * 20  # genuinely liquid, just newly on file
+        _seed_ticker(db_session, "RECENT.N0000", closes, volumes, base)
+
+        snap = liquidity_snapshot_for(db_session, "RECENT.N0000", AS_OF)
+        assert snap.days_of_real_history_available == 20
+        assert snap.days_traded_60d == 20
+
+    def test_zero_volume_sessions_are_not_counted_as_traded_days(self, db_session):
+        """A stored row with volume=0 (a session with no real trade, but
+        a placeholder row on file) must not count toward days_traded —
+        it isn't a real trading day."""
+        base = AS_OF - dt.timedelta(days=9)
+        closes = [Decimal(100)] * 10
+        volumes = [0, 0, 0, 0, 0, 0, 0, 0, 500, 500]
+        _seed_ticker(db_session, "MOSTLYDEAD.N0000", closes, volumes, base)
+
+        snap = liquidity_snapshot_for(db_session, "MOSTLYDEAD.N0000", AS_OF)
+        assert snap.days_traded_60d == 2
+
+    def test_only_counts_the_most_recent_60_real_sessions_not_a_calendar_span(self, db_session):
+        """A ticker with real sessions on EVERY calendar day for 100
+        real days must only count the most recent 60 real SESSION rows
+        — not all 100, and not filtered by a calendar cutoff either
+        (the real bug this whole fix closes: "60" means 60 real
+        sessions, never 60 calendar days)."""
+        base = AS_OF - dt.timedelta(days=99)
+        closes = [Decimal(100)] * 100
+        volumes = [1000] * 100
+        _seed_ticker(db_session, "LONGRUNNING.N0000", closes, volumes, base)
+
+        snap = liquidity_snapshot_for(db_session, "LONGRUNNING.N0000", AS_OF)
+        assert snap.days_traded_60d == 60
+        assert snap.days_of_real_history_available == 60
+
+    def test_sessions_older_than_the_real_stale_cutoff_do_not_count_as_current_liquidity(self, db_session):
+        """A ticker whose only real trading happened over six months ago
+        has gone quiet — its old sessions must not be resurrected as
+        "the last 60" just because nothing more recent exists on file."""
+        base = AS_OF - dt.timedelta(days=200)
+        closes = [Decimal(100)] * 20
+        volumes = [50_000_000] * 20  # would be very liquid, if current
+        _seed_ticker(db_session, "GONEQUIET.N0000", closes, volumes, base)
+
+        snap = liquidity_snapshot_for(db_session, "GONEQUIET.N0000", AS_OF)
+        assert snap.days_traded_60d == 0
+        assert snap.days_of_real_history_available == 0
 
 
 class TestUniversePercentilesSharing:

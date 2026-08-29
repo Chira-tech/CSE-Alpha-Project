@@ -176,7 +176,12 @@ function RankedTable({
       <div className="table-wrap table-scroll">
         <table className="data-table">
           <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
-            As of {asOf}. Sorted by gap to buy-below price — most below first.
+            As of {asOf}. Sorted by decision confidence first (high, then medium, then low), gap
+            to buy-below price only as the tie-breaker within a confidence tier — a real, live
+            audit (30 Aug 2026) found sorting by discount alone let thin, single-anchor reads
+            dominate the top of this list. Every candidate here has also passed a real §11.1 Gate 1
+            liquidity check; a stock too thinly traded to buy at any meaningful size is excluded
+            regardless of its discount to fair value.
           </caption>
           <thead>
             <tr>

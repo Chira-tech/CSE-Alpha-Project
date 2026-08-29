@@ -65,11 +65,28 @@ def _seed_shares(db, ticker, shares=100):
 
 
 def _seed_price(db, ticker, price, as_of=AS_OF):
+    """Seeds `as_of`'s own real close (what every existing caller cares
+    about) PLUS 49 earlier real-shaped sessions at real volume — since
+    TASK "are these opportunities really worth buying" (30 Aug 2026),
+    `opportunity_ranking_for` also runs a real §11.1 Gate 1 liquidity
+    check before ranking a candidate, and a fixture with only one priced
+    day has zero real trading history to pass it. Volume is chosen so
+    turnover comfortably clears the real 2,000,000 LKR/day bar this
+    project's own `settings.gate1_min_median_daily_turnover_lkr`
+    already sets, not a fixture-specific number invented separately."""
+    now = dt.datetime.now(dt.timezone.utc)
     db.add(
         PriceDaily(
-            ticker=ticker, date=as_of, close=price, adj_factor=Decimal(1),
-            fetched_at=dt.datetime.now(dt.timezone.utc),
+            ticker=ticker, date=as_of, close=price, volume=1_000_000,
+            adj_factor=Decimal(1), fetched_at=now,
         )
+    )
+    db.add_all(
+        PriceDaily(
+            ticker=ticker, date=as_of - dt.timedelta(days=i), close=price, volume=1_000_000,
+            adj_factor=Decimal(1), fetched_at=now,
+        )
+        for i in range(1, 50)
     )
     db.commit()
 

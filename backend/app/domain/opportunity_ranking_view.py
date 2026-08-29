@@ -47,6 +47,7 @@ than silently dropping it or forcing a fake positive number.
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import threading
 import time
@@ -56,8 +57,9 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.coverage_gates import gate1_liquidity_reason
 from app.domain.liquidity import percentile_rank
-from app.domain.liquidity_view import universe_amihud_ratios
+from app.domain.liquidity_view import liquidity_snapshot_for, universe_amihud_ratios
 from app.domain.macro_engine_view import regime_for
 from app.domain.provenance import can_enter_valuation
 from app.domain.valuation_view import valuation_summary_for
@@ -95,13 +97,25 @@ class OpportunityCandidate:
 class OpportunityRankingView:
     as_of: dt.date
     ranked: tuple[OpportunityCandidate, ...]
-    """Every candidate with a real, computable price-ladder zone —
-    sorted by `gap_to_buy_below_pct` ascending (most below your
-    buy-below price first)."""
+    """Every candidate with a real, computable price-ladder zone AND a
+    real, position-independent §11.1 Gate 1 liquidity pass (see
+    `gate1_liquidity_reason`) — sorted by `decision_confidence` first
+    (high, then medium, then low) and `gap_to_buy_below_pct` only as the
+    tie-breaker within a confidence tier. NOT sorted by discount alone:
+    a real, live audit (30 Aug 2026) found that ordering let a handful
+    of single-anchor, low-confidence, asset/NAV-only reads dominate the
+    top of the list, crowding out better-corroborated names further
+    down — see this module's own `_opportunity_ranking_for_uncached`
+    comment for the full finding."""
 
     excluded: tuple[OpportunityCandidate, ...]
     """Confirmed-data tickers this view could NOT rank, each with its
-    own real `warnings` explaining why — never silently dropped."""
+    own real `warnings` explaining why — never silently dropped. This
+    now includes a real candidate with an otherwise-computable price-
+    ladder zone that fails the real §11.1 Gate 1 liquidity check (traded
+    too rarely, or too little rupee value per day, to be practically
+    buyable) — a real fair-value gap does not make a real opportunity if
+    the stock cannot actually be traded."""
 
 
 def _latest_price(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
@@ -287,9 +301,49 @@ def _opportunity_ranking_for_uncached(db: Session, stamp: dt.date) -> Opportunit
         )
 
         if candidate.price_ladder_zone is not None and candidate.gap_to_buy_below_pct is not None:
-            ranked.append(candidate)
+            # TASK "are these opportunities really worth buying" (30 Aug
+            # 2026): a real, live audit found the top-ranked "Accumulate"
+            # candidates included stocks trading LKR 5,000-200,000/day —
+            # far below §11.1 Gate 1's own LKR 2,000,000 bar, and
+            # essentially unbuyable at any meaningful size regardless of
+            # how real the valuation discount is. Every ranked candidate
+            # now gets this real, position-independent liquidity check
+            # before it can rank — a real gap in the value it computed
+            # correctly does not make it a real opportunity if nobody can
+            # actually trade it.
+            snapshot = liquidity_snapshot_for(db, ticker, stamp)
+            liquidity_reason = gate1_liquidity_reason(
+                snapshot.median_daily_turnover_60d_lkr, snapshot.days_traded_60d,
+                days_of_real_history_available=snapshot.days_of_real_history_available,
+            )
+            if liquidity_reason is not None:
+                excluded.append(
+                    dataclasses.replace(
+                        candidate,
+                        warnings=candidate.warnings + (
+                            f"Fails §11.1 Gate 1 (liquidity), so not ranked despite a real "
+                            f"computable price-ladder zone: {liquidity_reason}.",
+                        ),
+                    )
+                )
+            else:
+                ranked.append(candidate)
         else:
             excluded.append(candidate)
 
-    ranked.sort(key=lambda c: c.gap_to_buy_below_pct)  # most below buy-below first
+    # Sorted by decision confidence first (high, then medium, then low —
+    # unrecognised grades sort last rather than crashing), gap_to_buy_
+    # below_pct only as the tie-breaker WITHIN a confidence tier. Found
+    # live in the same audit as the liquidity gate above: sorting by raw
+    # discount alone let a handful of single-anchor, "low"-confidence,
+    # asset/NAV-only reads dominate the top of the list — real numbers,
+    # but the LEAST corroborated ones in the whole ranking, crowding out
+    # better-supported multi-anchor "medium"/"high" confidence reads
+    # further down. Confidence is not hidden or discarded either way —
+    # every candidate still shows its own real `decision_confidence` —
+    # this only changes which one a reader sees FIRST.
+    _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
+    ranked.sort(
+        key=lambda c: (_CONFIDENCE_RANK.get(c.decision_confidence, 3), c.gap_to_buy_below_pct)
+    )
     return OpportunityRankingView(as_of=stamp, ranked=tuple(ranked), excluded=tuple(excluded))

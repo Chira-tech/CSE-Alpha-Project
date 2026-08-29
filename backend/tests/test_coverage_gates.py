@@ -11,6 +11,7 @@ from app.domain.coverage_gates import (
     evaluate_gate1_liquidity,
     evaluate_gate2_structural,
     evaluate_gate3_integrity,
+    gate1_liquidity_reason,
 )
 from app.models.enums import CoverageTier
 
@@ -76,6 +77,68 @@ def test_gate1_fails_when_position_too_large_vs_adv():
     result = evaluate_gate1_liquidity(inputs)
     assert not result.passed
     assert any("ADV" in reason for reason in result.reasons_failed)
+
+
+class TestGate1LiquidityReason:
+    """The position-independent half of Gate 1, used by `app.domain.
+    opportunity_ranking_view` to keep a real, unbuyable-at-any-size stock
+    from ranking as a "buy" purely on discount-to-book — found live (30
+    Aug 2026) auditing real ranked candidates: LVEN.N0000 was trading
+    LKR 5,199/day, far below this gate's real LKR 2,000,000 bar, and
+    still surfaced as a top "Accumulate" purely on discount-to-book."""
+
+    def test_passes_when_both_real_thresholds_are_met(self):
+        assert gate1_liquidity_reason(Decimal("5000000"), 58, days_of_real_history_available=60) is None
+
+    def test_fails_on_low_turnover_with_the_real_numbers_named(self):
+        reason = gate1_liquidity_reason(Decimal("5199"), 58, days_of_real_history_available=60)
+        assert reason is not None
+        assert "5,199" in reason
+        assert "2,000,000" in reason
+
+    def test_fails_on_too_few_days_traded_with_the_real_numbers_named(self):
+        reason = gate1_liquidity_reason(Decimal("5000000"), 6, days_of_real_history_available=60)
+        assert reason is not None
+        assert "6 of the last 60" in reason
+        assert "45" in reason
+
+    def test_names_both_reasons_when_both_fail(self):
+        reason = gate1_liquidity_reason(Decimal("0"), 0, days_of_real_history_available=60)
+        assert reason is not None
+        assert "turnover" in reason
+        assert "traded" in reason
+
+    def test_does_not_evaluate_the_amihud_or_position_impact_checks(self):
+        """A stock with real turnover and real trading days must pass
+        this specific check regardless of how idiosyncratically illiquid
+        it might be by other measures — those two checks need inputs
+        (a universe-wide Amihud scan, a hypothetical position size) this
+        function deliberately doesn't take, per its own docstring."""
+        assert gate1_liquidity_reason(Decimal("2000001"), 45, days_of_real_history_available=60) is None
+
+    def test_skips_the_days_traded_check_when_not_enough_real_history_exists_yet(self):
+        """Found live (30 Aug 2026) applying this very fix: EVERY real
+        ticker in the dev universe, including SAMP.N0000 and JKH.N0000
+        (the exchange's own most liquid names, turnover in the tens of
+        millions of rupees a day), topped out at 40-41 real trading days
+        in the trailing 60 calendar days — this system's own forward-
+        captured price history doesn't span 45 real trading days for
+        ANYONE yet. A stock that traded every single one of the (few)
+        real days on file must not be failed for not having MORE real
+        days than the system itself has been running."""
+        reason = gate1_liquidity_reason(Decimal("50000000"), 40, days_of_real_history_available=41)
+        assert reason is None
+
+    def test_still_fails_on_turnover_even_when_the_days_traded_check_is_skipped(self):
+        reason = gate1_liquidity_reason(Decimal("5199"), 40, days_of_real_history_available=41)
+        assert reason is not None
+        assert "turnover" in reason
+        assert "traded" not in reason
+
+    def test_evaluates_days_traded_once_real_history_reaches_the_real_60_day_window(self):
+        reason = gate1_liquidity_reason(Decimal("5000000"), 6, days_of_real_history_available=60)
+        assert reason is not None
+        assert "traded" in reason
 
 
 def test_gate2_fails_when_free_float_is_unknown_rather_than_passing():

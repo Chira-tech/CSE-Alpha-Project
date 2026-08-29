@@ -70,6 +70,66 @@ def evaluate_gate1_liquidity(inputs: Gate1Inputs) -> Gate1Result:
     )
 
 
+def gate1_liquidity_reason(
+    median_daily_turnover_60d_lkr: Decimal, days_traded_60d: int, *, days_of_real_history_available: int
+) -> str | None:
+    """The two POSITION-INDEPENDENT halves of `evaluate_gate1_liquidity`
+    above (median turnover, days traded), for a caller that has no
+    specific position to size — TASK "are these opportunities really
+    worth buying" found live (30 Aug 2026) that `app.domain.
+    opportunity_ranking_view` was ranking real candidates by discount-
+    to-book alone, with NO liquidity check at all: the real top-ranked
+    "Accumulate" candidates included tickers trading LKR 5,000-200,000/
+    day, far below this gate's own LKR 2,000,000 bar — stocks that are
+    not practically buyable at any meaningful size regardless of how
+    real the valuation discount is.
+
+    `days_of_real_history_available` is REQUIRED, not optional, for a
+    real reason found live applying this very fix, in two layers: first,
+    treating "60" as 60 CALENDAR days made the days-traded check
+    mathematically impossible for any real ticker to pass at all (a
+    60-calendar-day span holds at most ~43 weekdays, never 45) — fixed
+    in `app.domain.liquidity_view.liquidity_snapshot_for` by windowing
+    on real SESSION ROWS instead (see that module's own `GATE1_WINDOW_
+    SESSIONS` docstring). Second, even measured correctly by sessions,
+    this system's own forward-captured price history (§52's EOD
+    snapshot job has been running for a real, but still limited, number
+    of weeks) doesn't yet hold 60 real session rows for anyone — so the
+    days-traded check is only evaluated once `days_of_real_history_
+    available` itself reaches the full 60-session window; before that,
+    this real, temporary, disclosed data-depth limit is honestly named
+    as "not yet evaluable" (skipped, like every other rule this project
+    skips rather than silently passes or fails on absent data) rather
+    than used to fail every real candidate.
+
+    Deliberately does NOT evaluate the OTHER two `Gate1Inputs` checks
+    (Amihud illiquidity percentile, position-vs-ADV cap) — the first
+    needs a real universe-wide computation a ranking pass doesn't
+    otherwise require, the second needs a hypothetical position size no
+    company-level ranking has. Reuses `evaluate_gate1_liquidity`'s own
+    configured thresholds (`settings.gate1_min_median_daily_turnover_
+    lkr`/`gate1_min_days_traded_of_60`) directly rather than a second,
+    independently-chosen pair of numbers that could silently diverge
+    from the real Gate 1 definition.
+
+    `None` when every real, evaluable check passes; otherwise a human-
+    readable reason naming which failed and by how much, per this
+    project's own "never a black box" rule."""
+    reasons: list[str] = []
+    if median_daily_turnover_60d_lkr < settings.gate1_min_median_daily_turnover_lkr:
+        reasons.append(
+            f"median turnover over the last 60 real sessions LKR "
+            f"{median_daily_turnover_60d_lkr:,.0f} < required LKR "
+            f"{settings.gate1_min_median_daily_turnover_lkr:,.0f}"
+        )
+    if days_of_real_history_available >= 60 and days_traded_60d < settings.gate1_min_days_traded_of_60:
+        reasons.append(
+            f"traded {days_traded_60d} of the last 60 real sessions < required "
+            f"{settings.gate1_min_days_traded_of_60}"
+        )
+    return "; ".join(reasons) if reasons else None
+
+
 @dataclasses.dataclass(frozen=True)
 class Gate2Inputs:
     instrument_type: InstrumentType = dataclasses.field(
