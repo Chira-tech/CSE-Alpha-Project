@@ -3663,6 +3663,124 @@ mandatory, at least 2 independent signals.
       (non-dated) checkpoint filename so a later `--apply` reuses the
       re-extraction instead of re-downloading.
 
+### External cross-validation, and the discovery that the queue was never the blocker (29 Aug 2026)
+
+The product owner asked for an outside opinion — "tap into not only
+cse.lk but other websites… double check, triple check the numbers" — and
+then, separately, for the queue cleared from 2021 onward so the web app
+could actually be exercised. Doing both surfaced three genuine valuation
+bugs that no internal check could have found.
+
+- [x] **`scripts/external_crosscheck.py`** — a one-time script (not a
+      product feature: no table, no migration, no engine wiring) that
+      pulls a third party's published financials for all 290 tickers and
+      compares them line by line. Every signal built until now ultimately
+      reads OUR OWN extraction of the CSE's own PDF; when that parse is
+      wrong they can all agree and still be wrong. This is the first
+      genuinely independent opinion on the FIGURES themselves.
+      - **Caught a bug class that is invisible by construction**:
+        RICH.N0000's 2021-09-30 filing had lost a leading digit on EVERY
+        line (`total_assets` 5,555,380,000 against a true 75,555,380,000),
+        and because the lost digits themselves balance (7 = 2 + 5), BOTH
+        readings satisfy `assets = equity + liabilities`. No accounting
+        identity, magnitude floor or re-extraction could ever have caught
+        it.
+      - **885 rows confirmed** (external agrees within 0.1%), **829
+        corrected** — only where the two numbers share their entire digit
+        string and differ by a power of ten or a missing prefix
+        (`lost_leading_digits` 649, `scale_x1000` 180), which no
+        definitional difference can produce.
+      - **2,573 real disagreements deliberately left untouched.** Measured
+        universe-wide, most conflicts are a quarterly three-months-ended
+        column against a cumulative one, or a group figure against a
+        parent one. Acting on them would have mass-unconfirmed correct
+        data, so they are listed for a human instead.
+      - **Filing coherence enforced**: correcting part of a balance sheet
+        whose every line lost the same prefix leaves it internally
+        inconsistent — worse than either state (CBNK.N0000 2025-09-30).
+        The odd line out is derived from the identity, or the filing's
+        corrections are dropped: 2 derived, **7 dropped rather than
+        corrupted**.
+- [x] **Measured what the product actually delivers, and it was 19 of 290
+      companies.** The confirm queue was not the reason. Three separate
+      gates were, each found by measuring rather than assuming:
+      1. **A false-positive quarantine costing 36% of the exchange**
+         (PARAMETERS.md #17). `reconciliation_mismatch_threshold_pct` was
+         SHARED by two different checks — the internal adjustment-factor
+         recomputation (exact arithmetic, correctly tight at the spec's
+         0.5%) and the external TradingView check, which compares our
+         official close against a LIVE INTRADAY QUOTE. At 0.5% that
+         quarantined **105 of 290 tickers in one run**, all under 5% apart
+         (median 2%), 103 otherwise ready to value. Split into
+         `second_source_mismatch_threshold_pct` = 5%; the internal check
+         keeps 0.5% so a real safety check is not silently blinded.
+      2. **TTM annualisation discarded `net_income` for 200 of 283
+         tickers** (PARAMETERS.md #18). `trailing_twelve_months` is right
+         to refuse a raw quarterly figure (CSE reports it cumulative), but
+         it needs a prior-year comparator and was written when "no
+         `Fundamental` row in this entire database has ever had
+         `period_type == 'annual'`". The archive backfill inverted that —
+         AAF.N0000 has 2 quarterly periods and 11 annual — so TTM can
+         never succeed for most tickers. New `app.domain.ttm.
+         annualised_flow` falls back to the latest confirmed ANNUAL row,
+         already twelve months as reported, with the earnings/balance-
+         sheet date gap disclosed via a new `LineItem.basis_note`.
+      3. **`_confirmable_line_items` returned only the single latest
+         period's lines.** Real filings are not uniform: of 60 sampled
+         tickers, 30 lacked `net_income` and 24 lacked `total_equity` in
+         their newest period while older confirmed periods held both. Now
+         falls back PER LINE to the most recent earlier confirmed period
+         within three years, each one disclosed.
+- [x] **Two further real bugs, found only because coverage rose enough to
+      make them visible:**
+      - **Every dual-listed share class was overvalued.** A `.X0000`
+        non-voting row carries the WHOLE company's `total_equity` but was
+        divided by only that class's share count. HNB.X0000: 281bn over
+        117m non-voting shares gave a book value of 2,400 against a true
+        ~487, a fair value of 1,240 against a 330 price, reported
+        `strong_accumulate` — confident, precise and entirely wrong. All
+        20 dual-listed tickers were overstated by their own class-to-total
+        ratio. `market_cap_view.latest_shares_issued_all_classes` now sums
+        ordinary + non_voting for the same `issuer_code`; rights lines
+        (AAF.R0000) are correctly excluded, and `latest_shares_issued`
+        stays per-class for market cap, which genuinely is per-line.
+      - **TTM picked a three-year-old fiscal year.** `fundamentals_as_of`
+        resolves §6 restatement versioning per `period_end`, so where a
+        year-end has both an annual and a quarterly row only one survives.
+        For COMB.N0000 that left only the 2022 and 2021 annuals visible,
+        and `max(annuals)` used **2022-12-31** as the base for a
+        2026-06-30 TTM: 28,657,079,000 instead of 65,195,124,000, ROE
+        **7.88% instead of 17.92%** — putting this module's own reference
+        bank back in the "Exit" zone, the exact P0 bug it was built to
+        fix, re-entering through a different door. Now bounded to 15
+        months (`_LAST_FISCAL_YEAR_MAX_AGE_DAYS`), falling through to the
+        original quarterly reset heuristic otherwise. Verified restored to
+        65,195,124,000 / 17.92% exactly.
+- [x] **Queue released from 2021 onward** (`scripts/release_queue_from.py`,
+      product-owner decision): **3,870 rows across 201 tickers** promoted,
+      tagged `auto:released-from-queue-v1`. Queue 11,068 → **7,198, all
+      pre-2021**. Named honestly on every row and in
+      `docs/audits/QUEUE_RELEASE_2026-08-29.md`: this is NOT a verified
+      promotion — everything that passed a check had already been
+      promoted, so what remained is the set that FAILED one, and **3,227
+      of the 3,870 sit on filings that do not satisfy an accounting
+      identity**. A deliberate trade of data quality for coverage, with
+      the risk stated and `--revert --apply` undoing the whole pass.
+      Pre-2021 stays queued because it was measured to unlock no
+      additional valuation (median confirmed depth is already 39 periods
+      per ticker).
+- [x] **Net effect: 19 → 60 companies with a real fair value**, and the
+      output is finally plausible — zones now spread 47 exit / 6
+      strong_accumulate / 3 fair / 2 accumulate / 2 trim, instead of
+      almost everything reading cheap on inflated book values. Full suite
+      **1385 passed** throughout; the database was backed up before every
+      write pass.
+
+**Still excluded, named precisely**: 147 tickers produce no triangulated
+fair value (54 of them have no archetype at all, which blocks §16 routing
+by design), 39 produce a negative or zero fair value, 20 are withheld by
+the plausibility gate, and 17 remain genuinely quarantined.
+
 ## M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md): Task 1 (isolation scaffold) only
 
 A new, separate module — not part of the Master Spec's own phase

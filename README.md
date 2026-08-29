@@ -199,12 +199,18 @@ margin of safety, and the price ladder. Easiest to see through the UI
 itself now — any Companies row leads to a company file that renders all
 of this — but the raw endpoint is still there: open
 `http://localhost:8000/docs` and try it against a ticker with a
-confirmed fundamentals period. Most of the universe still doesn't have
-one (§8: an AI-assisted extraction must be human-confirmed before it can
-enter a valuation) — nine real tickers do today (whichever the Confirm
-queue's own fundamentals tab has been worked through for), and the
-endpoint names the gap explicitly for everything else rather than
-guessing. See `app/domain/valuation_view.py` for exactly which of
+confirmed fundamentals period.
+
+**Coverage, measured 29 Aug 2026 rather than estimated: 60 of 290
+companies currently produce a real triangulated fair value.** The rest
+are excluded with a stated reason, never guessed — 147 have no
+computable triangulation (54 of those have no §16 archetype at all,
+which blocks routing by design), 39 compute a negative or zero fair
+value, 20 are withheld by the plausibility gate, 17 are quarantined.
+Confirmed fundamentals themselves are no longer the binding constraint:
+the confirm queue holds only pre-2021 rows now, and median confirmed
+depth is 39 periods per ticker. See `app/domain/valuation_view.py` for
+exactly which of
 §18-26's nine models this is and isn't wired to live data, and DDM/SOTP/
 asset-based's own real, disclosed reasons for staying informational-only
 or unbuilt.
