@@ -118,17 +118,29 @@ class TestImpliedMultipleBand:
 
 
 class TestPriceDiscontinuity:
-    def test_large_move_with_no_action_fails(self):
-        f = ui.check_price_discontinuity("ABL.N0000", Decimal("9.18"), dt.date(2024, 7, 15), False)
+    def test_large_move_with_no_nearby_action_fails(self):
+        f = ui.check_price_discontinuity(
+            "ABL.N0000", Decimal("9.18"), dt.date(2024, 7, 15), has_nearby_corporate_action=False
+        )
         assert f is not None and f.check == ui.ALERT_PRICE_DISCONTINUITY
 
-    def test_large_move_on_a_corporate_action_date_is_clean(self):
+    def test_large_move_near_a_corporate_action_is_clean(self):
+        # "near", not "on" — a split's ex_date and the real re-basing
+        # session are routinely a few days apart on the CSE.
         assert (
-            ui.check_price_discontinuity("X.N0000", Decimal("-0.5"), dt.date(2024, 1, 1), True) is None
+            ui.check_price_discontinuity(
+                "X.N0000", Decimal("-0.5"), dt.date(2024, 1, 1), has_nearby_corporate_action=True
+            )
+            is None
         )
 
     def test_ordinary_move_is_clean(self):
-        assert ui.check_price_discontinuity("X.N0000", Decimal("0.04"), dt.date(2024, 1, 1), False) is None
+        assert (
+            ui.check_price_discontinuity(
+                "X.N0000", Decimal("0.04"), dt.date(2024, 1, 1), has_nearby_corporate_action=False
+            )
+            is None
+        )
 
 
 class TestReportOnlyChecks:

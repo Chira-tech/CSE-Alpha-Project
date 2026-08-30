@@ -318,17 +318,24 @@ def check_price_discontinuity(
     symbol: str,
     return_1d: Decimal | None,
     on_date: dt.date | None,
-    has_corporate_action_on_date: bool,
+    has_nearby_corporate_action: bool,
     *,
     threshold: Decimal = PRICE_DISCONTINUITY_RETURN,
 ) -> IntegrityFinding | None:
-    """A single-day return past ±30% with no corporate action on that date
-    (spec §Check 6, line 1). The companion "corporate action on the date
-    but adjustment factor still 1.0" is already caught for the whole
-    universe by `app.jobs.reconciliation`."""
+    """A single-day return past ±30% with no corporate action NEAR that
+    date (spec §Check 6, line 1). "Near", not "on": a split's stored
+    `ex_date` and the session the price actually re-based are routinely a
+    few days apart on the CSE (settlement lag, or the scraper capturing
+    the announcement date) — measured against the real dev data, exact-
+    date matching left ~330 explained split/rights moves looking
+    unexplained. The caller passes a windowed check (see
+    `app.jobs.universe_integrity_checks._worst_recent_discontinuity`). The
+    companion "corporate action on the date but adjustment factor still
+    1.0" is already caught for the whole universe by `app.jobs.
+    reconciliation`."""
     if return_1d is None:
         return None
-    if abs(return_1d) <= threshold or has_corporate_action_on_date:
+    if abs(return_1d) <= threshold or has_nearby_corporate_action:
         return None
     return IntegrityFinding(
         check=ALERT_PRICE_DISCONTINUITY,
@@ -337,7 +344,7 @@ def check_price_discontinuity(
         detail=(
             f"{symbol} moved {return_1d:+.0%} in one session"
             + (f" on {on_date}" if on_date is not None else "")
-            + " with no corporate action recorded for that date — a split not applied, a decimal "
+            + " with no corporate action anywhere near that date — a split not applied, a decimal "
             "shift, or a wrong-line swap rather than a real move."
         ),
         evidence={"return_1d": f"{return_1d:+.2%}", "on_date": str(on_date)},

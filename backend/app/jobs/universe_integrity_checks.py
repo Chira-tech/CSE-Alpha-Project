@@ -45,6 +45,13 @@ logger = logging.getLogger("cse_alpha.jobs.universe_integrity_checks")
 
 RIGHTS_OPEN_WINDOW_DAYS = 90
 
+#: How far a corporate action's stored `ex_date` may sit from the session
+#: the price actually re-based and still count as "this move is explained".
+#: A split's ex_date and the real adjustment session are routinely T+3 or
+#: so apart on the CSE — measured against real dev data, exact-date
+#: matching left ~330 explained split/rights moves looking unexplained.
+CA_ALIGNMENT_WINDOW_DAYS = 5
+
 _ENFORCED_TYPES = (
     ui.ALERT_RIGHTS_PRICE_INCOHERENT,
     ui.ALERT_WRONG_LINE_FINGERPRINT,
@@ -103,12 +110,16 @@ def _worst_recent_discontinuity(
     )
     if len(rows) < 2:
         return None
-    ca_dates = {
+    ca_dates = sorted(
         d for (d,) in db.execute(select(CorporateAction.ex_date).where(CorporateAction.ticker == ticker)).all()
-    }
+    )
+
+    def near_a_corporate_action(day: dt.date) -> bool:
+        return any(abs((day - ex).days) <= CA_ALIGNMENT_WINDOW_DAYS for ex in ca_dates)
+
     worst: tuple[dt.date, Decimal] | None = None
     for (d0, c0), (d1, c1) in zip(rows, rows[1:]):
-        if d1 in ca_dates:
+        if near_a_corporate_action(d1):
             continue
         ret = (c1 - c0) / c0
         if worst is None or abs(ret) > abs(worst[1]):
@@ -187,7 +198,7 @@ def check_ticker(db: Session, ticker: str, as_of: dt.date) -> list[DataAlert]:
     # --- Unexplained 1-day price discontinuity
     worst = _worst_recent_discontinuity(db, ticker, as_of)
     disc = (
-        ui.check_price_discontinuity(ticker, worst[1], worst[0], has_corporate_action_on_date=False)
+        ui.check_price_discontinuity(ticker, worst[1], worst[0], has_nearby_corporate_action=False)
         if worst is not None
         else None
     )

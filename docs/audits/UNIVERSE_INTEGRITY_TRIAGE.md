@@ -1,6 +1,6 @@
 # Universe Integrity — Phase 1 Triage
 
-Generated: 2026-08-30T10:20:38+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
+Generated: 2026-08-30T11:11:52+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
 
 Report-only. Every number below is reproducible by re-running `python -m scripts.audit_universe_integrity` from `backend/`. Nothing was written; no ticker was quarantined. This is the measurement the rollout's Phase 2 acts on.
 
@@ -10,17 +10,19 @@ Report-only. Every number below is reproducible by re-running `python -m scripts
 
 ## Triage buckets
 
-| Bucket | Lines | Example |
+| Bucket | Count | Example |
 |---|---|---|
 | Unresolved / unknown line type | 0 | — |
 | Wrong line bound (nil-paid rights fingerprint) | 0 | — |
 | Rights-price incoherent (wrong line suspected) | 0 | — |
 | Market-cap identity fail | 5 | ABL.N0000 |
 | Implausible implied multiple | 0 | — |
-| Unexplained price discontinuity | 47 | AAIC.N0000 |
 | Rights line not reaped | 0 | — |
 | Stale price | 0 | — |
 | Sector model routing gap | 58 | AFS.N0000 |
+| Price discontinuity — near a corporate action (ex_date misaligned) | 36 events / 34 lines | ACL.N0000 |
+| Price discontinuity — decimal / units artefact (~10x, no action) | 3 events / 2 lines | ABL.N0000 |
+| Price discontinuity — genuinely unexplained (quarantines) | 327 events / 42 lines | AAIC.N0000 |
 | Cost of equity unavailable (proxy: financial line, no beta) | 0 | — |
 
 ## Detail, per bucket
@@ -48,50 +50,6 @@ _None._
 ### Implausible implied multiple — 0
 
 _None._
-
-### Unexplained price discontinuity — 47
-
-- AAIC.N0000 moved +116% in one session on 2024-09-28 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- ABL.N0000 moved +918% in one session on 2024-07-15 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- ACME.N0000 moved +49% in one session on 2026-02-06 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- AFS.N0000 moved -81% in one session on 2024-01-26 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- ASPH.N0000 moved +33% in one session on 2023-07-11 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- BIL.N0000 moved +33% in one session on 2024-12-02 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- BOGA.N0000 moved +30% in one session on 2025-08-12 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- BRWN.N0000 moved -38% in one session on 2026-04-14 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- CALF.N0000 moved +49% in one session on 2026-02-09 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- CALI.U0000 moved +31% in one session on 2024-02-16 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- CFVF.N0000 moved -32% in one session on 2026-07-19 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- COCO.N0000 moved +31% in one session on 2025-11-10 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- COCO.X0000 moved -55% in one session on 2026-03-23 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- COMD.N0000 moved +34% in one session on 2025-07-24 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- CONN.N0000 moved +36% in one session on 2025-03-03 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- CPRT.N0000 moved +42% in one session on 2024-08-15 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- DOCK.N0000 moved +57% in one session on 2025-07-02 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- FCT.N0000 moved +30% in one session on 2025-09-18 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- HARI.N0000 moved +34% in one session on 2024-09-04 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- HDFC.N0000 moved +31% in one session on 2025-01-02 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- JETS.N0000 moved +39% in one session on 2025-07-17 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LGL.N0000 moved +65% in one session on 2025-09-08 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LGL.X0000 moved +56% in one session on 2025-09-08 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LIOC.N0000 moved +75% in one session on 2026-01-07 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LMF.N0000 moved +821% in one session on 2024-09-08 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LOFC.N0000 moved +31% in one session on 2024-09-16 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LPL.N0000 moved +58% in one session on 2025-09-08 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LPL.X0000 moved +63% in one session on 2025-09-08 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LPRT.N0000 moved +33% in one session on 2026-03-25 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- LUMX.N0000 moved +46% in one session on 2026-02-05 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- MERC.N0000 moved +125% in one session on 2025-10-13 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- MSL.N0000 moved +41% in one session on 2024-06-06 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- NEH.N0000 moved +60% in one session on 2024-01-12 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- RCL.N0000 moved -33% in one session on 2025-07-27 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- RICH.N0000 moved -35% in one session on 2026-03-15 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- SCAP.N0000 moved +41% in one session on 2023-09-30 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- SEMB.N0000 moved +43% in one session on 2025-10-09 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- SEMB.X0000 moved +33% in one session on 2023-07-06 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- SHL.N0000 moved +47% in one session on 2026-03-10 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- SING.N0000 moved +54% in one session on 2023-08-23 with no corporate action recorded for that date — a split not applied, a decimal shift, or a wrong-line swap rather than a real move.
-- … and 7 more
 
 ### Rights line not reaped — 0
 
@@ -144,6 +102,101 @@ _None._
 - LPRT.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - LUMX.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - … and 18 more
+
+### Price discontinuity — near a corporate action — 36 events across 34 lines
+
+A >30% one-day move within 5 days of a stored corporate-action ex_date. The move is real and explained; the finding is that the ex_date and the session the price actually re-based are misaligned, so the §7 adjustment factor is applied on the wrong day. Remediation: correct the ex_date (or re-scrape it) and rebuild the adjustment factors.
+
+- MERC.N0000 2025-12-17 -100%
+- YORK.N0000 2026-01-09 -99%
+- CPRT.N0000 2026-04-20 -99%
+- NAMU.N0000 2026-03-09 -92%
+- LMF.N0000 2024-01-17 -91%
+- CDB.X0000 2026-04-30 -90%
+- CDB.N0000 2026-04-30 -90%
+- KCAB.N0000 2025-12-29 -90%
+- JKH.N0000 2024-11-06 -90%
+- APLA.N0000 2025-12-29 -90%
+- SIGV.N0000 2026-01-14 -90%
+- UML.N0000 2026-01-22 -89%
+- COLO.N0000 2025-10-23 -88%
+- CWM.N0000 2026-02-06 -81%
+- WATA.N0000 2025-03-03 -80%
+- BFL.N0000 2025-12-26 -80%
+- CIC.N0000 2025-10-22 -80%
+- HHL.N0000 2025-05-07 -80%
+- CIC.X0000 2025-10-22 -80%
+- CHL.X0000 2026-03-05 -79%
+- HPWR.N0000 2026-01-08 -78%
+- WAPO.N0000 2026-03-23 -77%
+- CHL.N0000 2026-03-05 -76%
+- GREG.N0000 2026-05-19 -75%
+- SUN.N0000 2025-02-19 -75%
+- DOCK.N0000 2025-12-05 -70%
+- ACL.N0000 2025-12-29 -67%
+- JINS.N0000 2026-04-09 -64%
+- ACME.N0000 2026-02-05 -59%
+- COCO.X0000 2026-03-23 -55%
+- COCO.N0000 2026-03-23 -53%
+- LCEY.N0000 2025-12-16 -53%
+- YORK.N0000 2026-01-13 +50%
+- ACME.N0000 2026-02-06 +49%
+- HARI.N0000 2024-09-04 +34%
+- KZOO.N0000 2026-03-04 -33%
+
+### Price discontinuity — decimal / units artefact — 3 events across 2 lines
+
+A ~10x or ~0.1x one-day jump with no corporate action anywhere near — a decimal shift or a units error in the price feed, not a market move. Remediation: correct the raw price row(s) at source and re-ingest.
+
+- ABL.N0000 2024-07-15 +918%
+- LMF.N0000 2024-09-08 +821%
+- LMF.N0000 2024-09-09 -89%
+
+### Price discontinuity — genuinely unexplained — 327 events across 42 lines
+
+A >30% one-day move with no corporate action nearby and no round-number signature. On the CSE many of these are real moves in very thin small-caps; each still needs a human eye before it is trusted. THIS is the bucket the enforcing job quarantines on.
+
+- TAP.N0000 2026-01-16 +464%
+- SCAP.N0000 2024-07-13 +137%
+- MERC.N0000 2025-10-13 +125%
+- AAIC.N0000 2024-09-28 +116%
+- TAP.N0000 2026-01-15 -82%
+- AFS.N0000 2024-01-26 -81%
+- LIOC.N0000 2026-01-07 +75%
+- SCAP.N0000 2025-03-23 +75%
+- LGL.N0000 2025-09-08 +65%
+- LPL.X0000 2025-09-08 +63%
+- BRWN.N0000 2026-04-15 +63%
+- RCL.N0000 2025-07-28 +63%
+- ASPH.N0000 2026-07-08 +60%
+- NEH.N0000 2024-01-12 +60%
+- LPL.N0000 2025-09-08 +58%
+- SCAP.N0000 2024-07-15 -58%
+- DOCK.N0000 2025-07-02 +57%
+- LGL.X0000 2025-09-08 +56%
+- SING.N0000 2023-08-23 +54%
+- AAIC.N0000 2024-09-30 -53%
+- ASPH.N0000 2023-10-12 +50%
+- ASPH.N0000 2023-10-16 +50%
+- ASPH.N0000 2023-10-19 +50%
+- ASPH.N0000 2023-10-31 +50%
+- ASPH.N0000 2023-11-13 +50%
+- ASPH.N0000 2023-11-24 +50%
+- ASPH.N0000 2023-12-13 +50%
+- ASPH.N0000 2024-09-04 +50%
+- SEMB.X0000 2023-10-12 +50%
+- SEMB.X0000 2023-11-17 +50%
+- SEMB.X0000 2023-11-24 +50%
+- SEMB.X0000 2023-12-07 +50%
+- SEMB.X0000 2023-12-22 +50%
+- SEMB.X0000 2023-12-28 +50%
+- SEMB.X0000 2024-01-26 +50%
+- SEMB.X0000 2024-01-30 +50%
+- SEMB.X0000 2024-02-02 +50%
+- SEMB.X0000 2024-02-14 +50%
+- SEMB.X0000 2024-02-20 +50%
+- SEMB.X0000 2024-02-27 +50%
+- … and 287 more
 
 ## Currently-open DataAlerts (the enforcing side, already live)
 

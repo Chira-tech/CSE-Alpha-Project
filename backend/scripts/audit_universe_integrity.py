@@ -45,6 +45,10 @@ from app.models.securities import Security  # noqa: E402
 TODAY = dt.date.today()
 RIGHTS_OPEN_WINDOW_DAYS = 90
 FINANCIAL_ARCHETYPES = {"bank", "non_bank_finance", "insurance"}
+#: Must match `app.jobs.universe_integrity_checks.CA_ALIGNMENT_WINDOW_DAYS`
+#: — the report and the enforcing job have to agree on what "explained by
+#: a corporate action" means.
+CA_ALIGNMENT_WINDOW_DAYS = 5
 
 
 def _md_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -144,6 +148,11 @@ def _run(db: Session, out_path: Path) -> None:
     # bucket -> list of (ticker, detail)
     buckets: dict[str, list[tuple[str, str]]] = defaultdict(list)
 
+    # Price discontinuities, split three ways (see the report section).
+    disc_near_ca: list[tuple[str, dt.date, float]] = []
+    disc_decimal: list[tuple[str, dt.date, float]] = []
+    disc_unexplained: list[tuple[str, dt.date, float]] = []
+
     def record(finding: ui.IntegrityFinding | None) -> None:
         if finding is not None:
             buckets[finding.bucket].append((finding.detail.split(":")[0].split()[0], finding.detail))
@@ -175,12 +184,17 @@ def _run(db: Session, out_path: Path) -> None:
                 )
             )
 
-        ca_dates = _corporate_action_dates(db, s.ticker)
+        ca_dates = sorted(_corporate_action_dates(db, s.ticker))
         for d, ret in _one_day_returns(db, s.ticker):
-            f = ui.check_price_discontinuity(s.ticker, ret, d, d in ca_dates)
-            if f is not None:
-                record(f)
-                break  # one example per ticker is enough for a triage count
+            if abs(ret) <= ui.PRICE_DISCONTINUITY_RETURN:
+                continue
+            factor = float(1 + ret)  # after / before
+            if any(abs((d - ex).days) <= CA_ALIGNMENT_WINDOW_DAYS for ex in ca_dates):
+                disc_near_ca.append((s.ticker, d, float(ret)))
+            elif abs(factor - 10) < 1.5 or abs(factor - 0.1) < 0.03:
+                disc_decimal.append((s.ticker, d, float(ret)))
+            else:
+                disc_unexplained.append((s.ticker, d, float(ret)))
 
     # --- Financial-sector lines with no independent beta on file: a cheap,
     # honestly-partial proxy for "CoE may be unavailable". A real per-name
@@ -234,18 +248,39 @@ def _run(db: Session, out_path: Path) -> None:
         "Rights-price incoherent (wrong line suspected)",
         "Market-cap identity fail",
         "Implausible implied multiple",
-        "Unexplained price discontinuity",
         "Rights line not reaped",
         "Stale price",
         "Sector model routing gap",
     ]
+    disc_tickers = lambda evs: len({e[0] for e in evs})  # noqa: E731
     table_rows: list[list[str]] = []
     for b in bucket_order:
         hits = buckets.get(b, [])
         example = hits[0][0] if hits else "—"
         table_rows.append([b, str(len(hits)), example])
+    table_rows.append(
+        [
+            "Price discontinuity — near a corporate action (ex_date misaligned)",
+            f"{len(disc_near_ca)} events / {disc_tickers(disc_near_ca)} lines",
+            disc_near_ca[0][0] if disc_near_ca else "—",
+        ]
+    )
+    table_rows.append(
+        [
+            "Price discontinuity — decimal / units artefact (~10x, no action)",
+            f"{len(disc_decimal)} events / {disc_tickers(disc_decimal)} lines",
+            disc_decimal[0][0] if disc_decimal else "—",
+        ]
+    )
+    table_rows.append(
+        [
+            "Price discontinuity — genuinely unexplained (quarantines)",
+            f"{len(disc_unexplained)} events / {disc_tickers(disc_unexplained)} lines",
+            disc_unexplained[0][0] if disc_unexplained else "—",
+        ]
+    )
     table_rows.append(["Cost of equity unavailable (proxy: financial line, no beta)", str(fin_no_beta), "—"])
-    lines.append(_md_table(["Bucket", "Lines", "Example"], table_rows))
+    lines.append(_md_table(["Bucket", "Count", "Example"], table_rows))
     lines.append("")
 
     lines.append("## Detail, per bucket")
@@ -262,6 +297,41 @@ def _run(db: Session, out_path: Path) -> None:
             if len(hits) > 40:
                 lines.append(f"- … and {len(hits) - 40} more")
         lines.append("")
+
+    def _disc_section(title: str, evs: list[tuple[str, dt.date, float]], note: str) -> None:
+        lines.append(f"### {title} — {len(evs)} events across {disc_tickers(evs)} lines")
+        lines.append("")
+        lines.append(note)
+        lines.append("")
+        for tk, d, ret in sorted(evs, key=lambda e: abs(e[2]), reverse=True)[:40]:
+            lines.append(f"- {tk} {d} {ret:+.0%}")
+        if len(evs) > 40:
+            lines.append(f"- … and {len(evs) - 40} more")
+        lines.append("")
+
+    _disc_section(
+        "Price discontinuity — near a corporate action",
+        disc_near_ca,
+        "A >30% one-day move within "
+        f"{CA_ALIGNMENT_WINDOW_DAYS} days of a stored corporate-action ex_date. The move is real "
+        "and explained; the finding is that the ex_date and the session the price actually "
+        "re-based are misaligned, so the §7 adjustment factor is applied on the wrong day. "
+        "Remediation: correct the ex_date (or re-scrape it) and rebuild the adjustment factors.",
+    )
+    _disc_section(
+        "Price discontinuity — decimal / units artefact",
+        disc_decimal,
+        "A ~10x or ~0.1x one-day jump with no corporate action anywhere near — a decimal shift "
+        "or a units error in the price feed, not a market move. Remediation: correct the raw "
+        "price row(s) at source and re-ingest.",
+    )
+    _disc_section(
+        "Price discontinuity — genuinely unexplained",
+        disc_unexplained,
+        "A >30% one-day move with no corporate action nearby and no round-number signature. On "
+        "the CSE many of these are real moves in very thin small-caps; each still needs a human "
+        "eye before it is trusted. THIS is the bucket the enforcing job quarantines on.",
+    )
 
     lines.append("## Currently-open DataAlerts (the enforcing side, already live)")
     lines.append("")
