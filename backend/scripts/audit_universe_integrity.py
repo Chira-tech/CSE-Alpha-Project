@@ -260,7 +260,7 @@ def _run(db: Session, out_path: Path) -> None:
         table_rows.append([b, str(len(hits)), example])
     table_rows.append(
         [
-            "Price discontinuity — near a corporate action (ex_date misaligned)",
+            "Price discontinuity — at a raw/adjusted feed join, near a split",
             f"{len(disc_near_ca)} events / {disc_tickers(disc_near_ca)} lines",
             disc_near_ca[0][0] if disc_near_ca else "—",
         ]
@@ -313,10 +313,17 @@ def _run(db: Session, out_path: Path) -> None:
         "Price discontinuity — near a corporate action",
         disc_near_ca,
         "A >30% one-day move within "
-        f"{CA_ALIGNMENT_WINDOW_DAYS} days of a stored corporate-action ex_date. The move is real "
-        "and explained; the finding is that the ex_date and the session the price actually "
-        "re-based are misaligned, so the §7 adjustment factor is applied on the wrong day. "
-        "Remediation: correct the ex_date (or re-scrape it) and rebuild the adjustment factors.",
+        f"{CA_ALIGNMENT_WINDOW_DAYS} days of a confirmed corporate action (mostly stock splits). "
+        "Spot-checking several against the raw rows: the jump sits on the boundary where this "
+        "system's forward-captured EOD feed (`market_time_sales_export`) meets the backfilled "
+        "chart history (`companyChartDataByStock`), and a stock split fell in that same window. "
+        "On the checked names the chart-history side already reads at the POST-split level on "
+        "the ex_date (ACL, APLA, COCO) with no pre-split close visible — i.e. that endpoint "
+        "appears to return split-adjusted history, which is then stitched raw against the "
+        "unadjusted EOD feed. The move is real; the artefact is two price sources with "
+        "different adjustment conventions joined without reconciliation. Remediation: verify "
+        "the `companyChartDataByStock` adjustment convention, reconcile it at the join, then "
+        "rebuild the derived series — NOT an ex_date correction (the ex_dates check out).",
     )
     _disc_section(
         "Price discontinuity — decimal / units artefact",

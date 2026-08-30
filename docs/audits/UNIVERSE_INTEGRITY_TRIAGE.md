@@ -1,6 +1,6 @@
 # Universe Integrity — Phase 1 Triage
 
-Generated: 2026-08-30T11:11:52+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
+Generated: 2026-08-30T11:22:36+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
 
 Report-only. Every number below is reproducible by re-running `python -m scripts.audit_universe_integrity` from `backend/`. Nothing was written; no ticker was quarantined. This is the measurement the rollout's Phase 2 acts on.
 
@@ -20,8 +20,8 @@ Report-only. Every number below is reproducible by re-running `python -m scripts
 | Rights line not reaped | 0 | — |
 | Stale price | 0 | — |
 | Sector model routing gap | 58 | AFS.N0000 |
-| Price discontinuity — near a corporate action (ex_date misaligned) | 36 events / 34 lines | ACL.N0000 |
-| Price discontinuity — decimal / units artefact (~10x, no action) | 3 events / 2 lines | ABL.N0000 |
+| Price discontinuity — at a raw/adjusted feed join, near a split | 36 events / 34 lines | ACL.N0000 |
+| Price discontinuity — decimal / units artefact (~10x, no action) | 1 events / 1 lines | ABL.N0000 |
 | Price discontinuity — genuinely unexplained (quarantines) | 327 events / 42 lines | AAIC.N0000 |
 | Cost of equity unavailable (proxy: financial line, no beta) | 0 | — |
 
@@ -105,7 +105,7 @@ _None._
 
 ### Price discontinuity — near a corporate action — 36 events across 34 lines
 
-A >30% one-day move within 5 days of a stored corporate-action ex_date. The move is real and explained; the finding is that the ex_date and the session the price actually re-based are misaligned, so the §7 adjustment factor is applied on the wrong day. Remediation: correct the ex_date (or re-scrape it) and rebuild the adjustment factors.
+A >30% one-day move within 5 days of a confirmed corporate action (mostly stock splits). Spot-checking several against the raw rows: the jump sits on the boundary where this system's forward-captured EOD feed (`market_time_sales_export`) meets the backfilled chart history (`companyChartDataByStock`), and a stock split fell in that same window. On the checked names the chart-history side already reads at the POST-split level on the ex_date (ACL, APLA, COCO) with no pre-split close visible — i.e. that endpoint appears to return split-adjusted history, which is then stitched raw against the unadjusted EOD feed. The move is real; the artefact is two price sources with different adjustment conventions joined without reconciliation. Remediation: verify the `companyChartDataByStock` adjustment convention, reconcile it at the join, then rebuild the derived series — NOT an ex_date correction (the ex_dates check out).
 
 - MERC.N0000 2025-12-17 -100%
 - YORK.N0000 2026-01-09 -99%
@@ -144,13 +144,11 @@ A >30% one-day move within 5 days of a stored corporate-action ex_date. The move
 - HARI.N0000 2024-09-04 +34%
 - KZOO.N0000 2026-03-04 -33%
 
-### Price discontinuity — decimal / units artefact — 3 events across 2 lines
+### Price discontinuity — decimal / units artefact — 1 events across 1 lines
 
 A ~10x or ~0.1x one-day jump with no corporate action anywhere near — a decimal shift or a units error in the price feed, not a market move. Remediation: correct the raw price row(s) at source and re-ingest.
 
 - ABL.N0000 2024-07-15 +918%
-- LMF.N0000 2024-09-08 +821%
-- LMF.N0000 2024-09-09 -89%
 
 ### Price discontinuity — genuinely unexplained — 327 events across 42 lines
 
