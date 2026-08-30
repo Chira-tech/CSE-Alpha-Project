@@ -22,6 +22,9 @@ from freezegun import freeze_time
 from sqlalchemy.orm import sessionmaker
 
 from app.jobs import runner
+from app.models.composite_ranking_snapshot import CompositeRankingSnapshot
+from app.models.enums import ProvenanceTier
+from app.models.fundamentals import Fundamental
 from app.models.job_run import JobRun
 
 
@@ -314,6 +317,82 @@ def test_poll_and_run_one_picks_the_oldest_queued_run(db_session, monkeypatch):
     db_session.refresh(newer)
     assert older.status == "success"
     assert newer.status == "queued"  # not picked up yet — one job per poll call
+
+
+# --- recompute_composite_ranking ---------------------------------------
+
+
+def test_recompute_composite_ranking_writes_exactly_one_snapshot_row(db_session):
+    """The empty-universe pass is fast; this test is about the freeze, not
+    the scoring (`test_composite_ranking_snapshot_view.py` covers that)."""
+    run = _seed_run(db_session, job="recompute_composite_ranking")
+
+    rows_written = runner._run_recompute_composite_ranking(db_session, run)
+
+    snapshots = db_session.query(CompositeRankingSnapshot).all()
+    assert len(snapshots) == 1
+    assert snapshots[0].ranked_count == rows_written == 0
+    assert snapshots[0].duration_seconds is not None
+
+
+# --- auto_confirm_corroborated_fundamentals ---------------------------
+
+
+def _fundamental(db, **overrides):
+    defaults = dict(
+        ticker="AAA.N0000",
+        period_end=dt.date(2021, 12, 31),
+        period_type="annual",
+        first_available_date=dt.date(2022, 3, 7),
+        version=1,
+        statement_line="net_income",
+        value=Decimal(200),
+        currency="LKR",
+        provenance_tier=ProvenanceTier.AI_ASSISTED,
+    )
+    defaults.update(overrides)
+    row = Fundamental(**defaults)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def test_auto_confirm_corroborated_promotes_only_the_corroborated_row(db_session):
+    # A pending AI-assisted figure...
+    pending = _fundamental(db_session, source_url="https://cse/ai-extract.pdf")
+    # ...independently corroborated by a REPORTED row, same value, different
+    # source (a later re-filing — version 2, so the §19 unique constraint
+    # on (ticker, period_end, period_type, statement_line, version) is
+    # satisfied, exactly as real corroborating rows are).
+    _fundamental(
+        db_session,
+        version=2,
+        provenance_tier=ProvenanceTier.REPORTED,
+        source_url="https://cse/audited-annual.pdf",
+        confirmed_by="a human",
+    )
+    # ...and an uncorroborated pending figure that must be left alone.
+    uncorroborated = _fundamental(
+        db_session, statement_line="revenue", value=Decimal(999), source_url="https://cse/ai-extract.pdf"
+    )
+
+    run = _seed_run(db_session, job="auto_confirm_corroborated_fundamentals")
+    confirmed = runner._run_auto_confirm_corroborated(db_session, run)
+
+    assert confirmed == 1
+    db_session.refresh(pending)
+    db_session.refresh(uncorroborated)
+    assert pending.provenance_tier == ProvenanceTier.REPORTED
+    assert pending.confirmed_by == "auto (corroborated)"
+    assert pending.confirmed_at is not None
+    assert uncorroborated.provenance_tier == ProvenanceTier.AI_ASSISTED
+    assert uncorroborated.confirmed_by is None
+
+
+def test_auto_confirm_corroborated_no_op_on_an_empty_queue(db_session):
+    run = _seed_run(db_session, job="auto_confirm_corroborated_fundamentals")
+    assert runner._run_auto_confirm_corroborated(db_session, run) == 0
 
 
 def test_poll_and_run_one_skips_a_job_whose_key_is_already_running(db_session, monkeypatch):

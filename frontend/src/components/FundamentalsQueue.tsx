@@ -4,10 +4,16 @@ import {
   confirmFundamental,
   confirmFundamentalsBatch,
   confirmFundamentalsBatchCorroborated,
+  getFundamentalsQueueSummary,
   listFundamentals,
 } from "../api";
 import { downloadCsv, toCsv } from "../csv";
-import type { ConfirmBatchFailure, Fundamental, FundamentalsPage } from "../types";
+import type {
+  ConfirmBatchFailure,
+  Fundamental,
+  FundamentalsPage,
+  FundamentalsQueueSummary,
+} from "../types";
 import { ProvenanceChip } from "./ProvenanceChip";
 import { EmptyState, ErrorState, SkeletonTable } from "./states";
 
@@ -187,6 +193,13 @@ export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
   const [batchError, setBatchError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [summary, setSummary] = useState<FundamentalsQueueSummary | null>(null);
+
+  useEffect(() => {
+    getFundamentalsQueueSummary()
+      .then(setSummary)
+      .catch(() => setSummary(null));
+  }, []);
 
   useEffect(() => {
     setPage(null);
@@ -327,6 +340,8 @@ export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
 
   return (
     <div className="stack-tight">
+      {summary && <QueueComposition summary={summary} />}
+
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <div className="row" style={{ alignItems: "center", gap: "var(--s3)" }}>
           <button className="btn-primary" onClick={confirmSelected} disabled={selected.size === 0 || batchBusy}>
@@ -423,5 +438,67 @@ export function FundamentalsQueue({ reviewerName }: { reviewerName: string }) {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Queue composition + age + burn-down, above the row-by-row table — the
+ * redesign doc's §3: "classify by type, not FIFO", surface where the
+ * backlog actually is, flag old items, and show a burn-down number so
+ * clearing it is visibly working. Read from `GET /fundamentals/summary`
+ * (whole queue), separate from the paged list below.
+ */
+function QueueComposition({ summary }: { summary: FundamentalsQueueSummary }) {
+  const oldestDays =
+    summary.oldest_pending_first_available !== null
+      ? Math.round(
+          (Date.now() - new Date(summary.oldest_pending_first_available).getTime()) / 86_400_000,
+        )
+      : null;
+
+  const Bucket = ({ label, items }: { label: string; items: { key: string; count: number }[] }) => (
+    <div style={{ display: "grid", gap: "var(--s1)" }}>
+      <span className="t-label">{label}</span>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--s1)" }}>
+        {items.slice(0, 10).map((b) => (
+          <span key={b.key} className="chip" style={{ borderColor: "var(--border-strong)", color: "var(--ink-3)" }}>
+            {b.key} <span className="num">{b.count.toLocaleString("en-LK")}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <section className="card" style={{ display: "grid", gap: "var(--s4)" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--s5)", alignItems: "baseline" }}>
+        <span className="hero-value" style={{ fontSize: 20 }}>
+          {summary.pending_total.toLocaleString("en-LK")} <span className="t-caption muted">pending</span>
+        </span>
+        <span className="t-caption">
+          {summary.corroborated_pending.toLocaleString("en-LK")} corroborated — auto-confirmed nightly,
+          never shown here
+        </span>
+        {oldestDays !== null && (
+          <span className="t-caption">
+            oldest filing {oldestDays.toLocaleString("en-LK")} days old
+          </span>
+        )}
+        {summary.pending_filed_over_a_year_ago > 0 && (
+          <span className="t-caption" style={{ color: "var(--caution)" }}>
+            {summary.pending_filed_over_a_year_ago.toLocaleString("en-LK")} filed over a year ago
+          </span>
+        )}
+      </div>
+      <div style={{ display: "grid", gap: "var(--s3)", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+        <Bucket label="By line item" items={summary.by_statement_line} />
+        <Bucket label="By period type" items={summary.by_period_type} />
+        <Bucket label="By ticker" items={summary.by_ticker} />
+      </div>
+      <p className="t-caption muted" style={{ margin: 0 }}>
+        Age is the filing date (`first_available_date`), not time sat in the queue — nothing records
+        when a row entered the queue, so this is the honest proxy.
+      </p>
+    </section>
   );
 }

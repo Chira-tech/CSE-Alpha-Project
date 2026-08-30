@@ -58,7 +58,7 @@ export const NAV_ITEMS: NavItem[] = [
     blurb: "The ranked board, the screener, the watchlist",
     awaitingPhase: null,
     willContain:
-      "Built: every confirmed-fundamentals ticker ranked by the real gap between its current price and its real buy-below price from the price ladder (§25-26). Still awaiting §38-40's full metric: the composite score (business quality, growth, financial strength, macro & sector fit, timing & momentum, an automated integrity veto) and §39's sequential fusion — none of that machinery exists yet, so this is a genuine but narrower ordering, not risk-adjusted expected return net of transaction cost.",
+      "Built: every confirmed-fundamentals ticker ranked by the §38 composite score (valuation, business quality, growth, financial strength, macro & sector fit, timing & momentum, risk), computed across the whole universe on one cached ~30s pass so the valuation pillar is genuinely ranked — plus a secondary ordering by the gap to each name's buy-below price (§25-26). Still awaiting §39's sequential fusion, the transaction-cost leg of §40's metric, and an automated §14 earnings-integrity veto (carried on every row as unevaluable, never applied) — so this is a genuine but narrower ordering, not risk-adjusted expected return net of transaction cost.",
     group: "primary",
   },
   {

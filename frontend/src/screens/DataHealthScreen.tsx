@@ -179,7 +179,18 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             value={formatInteger(data.fundamentals_pending_confirmation)}
           />
           <Stat label="Fundamentals confirmed" value={formatInteger(data.fundamentals_confirmed)} />
+          <Stat
+            label="Confirmed this week"
+            value={`${formatInteger(data.fundamentals_confirmed_last_7d)} fig · ${formatInteger(
+              data.corporate_actions_confirmed_last_7d,
+            )} CA`}
+          />
         </div>
+        <p className="t-caption muted" style={{ margin: 0 }}>
+          "Confirmed this week" is the burn-down rate — how fast the queue is being cleared, next to
+          how much is left. Corroborated fundamentals (an independently-sourced filing already
+          reporting the exact same figure) are auto-confirmed nightly and never reach the queue.
+        </p>
         <div className="row">
           <button className="btn-primary" onClick={onOpenReview}>
             Open the confirm queue

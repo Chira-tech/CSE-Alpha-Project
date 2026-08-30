@@ -38,6 +38,22 @@ JOBS: dict[str, JobDefinition] = {
     "capture_corporate_actions": JobDefinition("capture_corporate_actions", "Corporate actions scan", 600),
     "enrich_securities": JobDefinition("enrich_securities", "Security enrichment (shares, market cap)", 600),
     "recompute": JobDefinition("recompute", "Rebuild valuations", 60),
+    # The §38 universe pass (~70s, measured) frozen into a
+    # `composite_ranking_snapshots` row so `GET /composite-ranking` reads
+    # a finished result instead of triggering the pass on a page load.
+    # Pure CPU over already-stored confirmed data — no network, so the
+    # estimate is real compute time, not API pacing.
+    "recompute_composite_ranking": JobDefinition(
+        "recompute_composite_ranking", "Rebuild §38 composite scoreboard", 90
+    ),
+    # Promotes AI-assisted fundamentals the SERVER can independently
+    # verify as corroborated (an independently-sourced REPORTED row
+    # already carries the exact same value) — the one case the confirm
+    # queue already treats as safe without a human looking at each value,
+    # now applied on a schedule instead of waiting for a click.
+    "auto_confirm_corroborated_fundamentals": JobDefinition(
+        "auto_confirm_corroborated_fundamentals", "Auto-confirm corroborated fundamentals", 60
+    ),
     # Pure recomputation from already-stored confirmed corporate actions —
     # no network at all, so the estimate is real CPU time, not API pacing.
     "rebuild_adjustment_factors": JobDefinition(

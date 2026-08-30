@@ -24,11 +24,13 @@ needs an expensive universe-wide pass this project already knows costs
 request would be a real latency regression, not something to eat
 silently, stays OUT of the numeric blend entirely and is reported as
 real evidence instead. Two pillars (Valuation, Growth) are excluded from
-the number for exactly this reason today — see `app.domain.
-composite_score_view`'s own module docstring for the real universe-pass
-cost that still blocks them and the shared-cache pattern (`app.domain.
-opportunity_ranking_view`'s own) that will unblock them next, once
-built. Macro & sector fit (`app.domain.macro_sector_fit`) and Timing &
+the number in the SINGLE-TICKER view for exactly this reason — see
+`app.domain.composite_score_view`'s own module docstring. The universe-
+wide pass that does blend them, `app.domain.composite_ranking_view`, is
+now built (it runs the ~30s pass once and caches it with the same
+disclosed TTL `app.domain.opportunity_ranking_view` uses); the single-
+ticker view stays evidence-only on purpose, so an interactive request
+never pays that cost. Macro & sector fit (`app.domain.macro_sector_fit`) and Timing &
 momentum (`app.domain.timing_battery`) are, as of this session, real and
 wired — see those modules' own docstrings for their real methodology
 (a direction-count formula for the former, since §33's own sensitivity
@@ -127,6 +129,36 @@ def mean_of_available(values: list[Decimal | None]) -> Decimal | None:
     if not present:
         return None
     return sum(present, Decimal(0)) / len(present)
+
+
+def ratio_pillar_score(
+    percentiles: dict, ratio_keys: tuple[str, ...], invert: frozenset[str]
+) -> tuple[Decimal | None, list[str]]:
+    """Mean of whichever `ratio_keys` have a real sector percentile in
+    `percentiles` (a `{ratio_key: obj-with-a-.percentile}` mapping, e.g.
+    `app.domain.sector_percentiles.SectorPercentileResult`), inverting
+    the ones named in `invert` first (§38's Financial strength pillar:
+    lower leverage is the stronger position — see `FINANCIAL_STRENGTH_
+    INVERT`'s own docstring). Returns `(score, contributing_ratio_keys)`
+    so the caller can name exactly which ratios fed the number, the same
+    "never one opaque figure" discipline every other blended value in
+    this codebase already follows.
+
+    Pure and duck-typed so both `app.domain.composite_score_view` (one
+    ticker) and `app.domain.composite_ranking_view` (the universe pass)
+    score Business quality / Financial strength through the exact same
+    code and cannot drift.
+    """
+    values: list[Decimal | None] = []
+    contributing: list[str] = []
+    for key in ratio_keys:
+        result = percentiles.get(key)
+        if result is None or result.percentile is None:
+            continue
+        pct = Decimal(100) - result.percentile if key in invert else result.percentile
+        values.append(pct)
+        contributing.append(key)
+    return mean_of_available(values), contributing
 
 
 def renormalize(pillar_scores: dict[str, Decimal | None]) -> tuple[Decimal | None, dict[str, Decimal]]:

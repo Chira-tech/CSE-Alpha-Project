@@ -41,12 +41,19 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.domain.composite_ranking_snapshot_view import write_snapshot
+from app.domain.composite_ranking_view import (
+    clear_cache as clear_composite_ranking_cache,
+    composite_ranking_for,
+)
+from app.domain.corroboration_view import all_corroborated_pending_ids
 from app.domain.factor_series_view import rebuild_factor_series
 from app.domain.valuation_quarantine_view import record_sanity_result
 from app.domain.valuation_view import valuation_summary_for
@@ -67,6 +74,7 @@ from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, ups
 from app.ingestion.security_enrichment import enrich_securities
 from app.jobs.adjustment_factors import rebuild_all_adjustment_factors
 from app.jobs.registry import JOBS, job_definition
+from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 from app.models.job_run import JobRun
 from app.models.prices import PriceDaily
@@ -401,6 +409,74 @@ def _run_refresh_stale_fundamentals(db: Session, run: JobRun) -> int:
     return repaired
 
 
+def _run_recompute_composite_ranking(db: Session, run: JobRun) -> int:
+    """Runs §38's real ~70s universe pass (`app.domain.composite_ranking_
+    view`) ONCE and freezes the result in a `composite_ranking_snapshots`
+    row, so `GET /composite-ranking` reads a finished result instead of
+    triggering the pass on a page load — the redesign doc's §2 fix. The
+    module cache is cleared first so a run always reflects the very latest
+    confirmed data, not whatever a `/opportunities` hit warmed 30s ago.
+
+    Coarse progress (0 → 100): the pass has no per-ticker callback hook to
+    report against, same as `_run_capture_prices`. Returns the number of
+    ranked rows written, for the `rows_written` column.
+    """
+    _set_progress(db, run, 5, "Clearing the composite-ranking cache…")
+    clear_composite_ranking_cache()
+    _set_progress(db, run, 10, "Running the §38 universe pass (~70s)…")
+    started = time.monotonic()
+    view = composite_ranking_for(db)
+    duration = Decimal(str(round(time.monotonic() - started, 2)))
+    _set_progress(db, run, 90, f"Freezing snapshot ({len(view.ranked)} ranked)…")
+    write_snapshot(db, view, computed_at=dt.datetime.now(dt.timezone.utc), duration_seconds=duration)
+    logger.info(
+        "recompute_composite_ranking: %d ranked, %d excluded, pass took %ss",
+        len(view.ranked), len(view.excluded), duration,
+    )
+    return len(view.ranked)
+
+
+def _run_auto_confirm_corroborated(db: Session, run: JobRun) -> int:
+    """Promotes every pending AI-assisted fundamental the SERVER can
+    independently verify as corroborated (`app.domain.corroboration_view`)
+    — an independently-sourced REPORTED row already carrying the exact
+    same value from a different `source_url`. This is the one case R1 T2.5
+    already declared safe to confirm without a human looking at each
+    value; this job applies it on a schedule instead of waiting for
+    someone to click "Confirm N corroborated".
+
+    `confirmed_by` is stamped `"auto (corroborated)"` — a distinct,
+    searchable marker, mirroring the existing `"{actor} (corroborated
+    bulk confirm)"` convention — so an audit never mistakes an unattended
+    promotion for a genuine per-row human review.
+    """
+    _set_progress(db, run, 10, "Scanning the pending queue for corroborated figures…")
+    ids = all_corroborated_pending_ids(db)
+    if not ids:
+        _set_progress(db, run, 100, "Nothing corroborated in the pending queue.")
+        return 0
+
+    now = dt.datetime.now(dt.timezone.utc)
+    confirmed = 0
+    for i, fundamental_id in enumerate(ids, start=1):
+        row = db.get(Fundamental, fundamental_id)
+        # Re-check under the row we're about to write — a human may have
+        # confirmed it between the scan above and here.
+        if row is None or row.confirmed_by is not None or row.provenance_tier != ProvenanceTier.AI_ASSISTED:
+            continue
+        row.provenance_tier = ProvenanceTier.REPORTED
+        row.confirmed_by = "auto (corroborated)"
+        row.confirmed_at = now
+        confirmed += 1
+        if i % 100 == 0:
+            db.commit()
+            if not _set_progress(db, run, 100 * i / len(ids), f"Auto-confirmed {confirmed} / {len(ids)}…"):
+                break
+    db.commit()
+    logger.info("auto_confirm_corroborated_fundamentals: promoted %d corroborated figure(s)", confirmed)
+    return confirmed
+
+
 _RUNNERS = {
     "capture_prices": _run_capture_prices,
     "capture_market": _run_capture_market,
@@ -412,6 +488,8 @@ _RUNNERS = {
     "rebuild_adjustment_factors": _run_rebuild_adjustment_factors,
     "rebuild_factor_series": _run_rebuild_factor_series,
     "refresh_stale_fundamentals": _run_refresh_stale_fundamentals,
+    "recompute_composite_ranking": _run_recompute_composite_ranking,
+    "auto_confirm_corroborated_fundamentals": _run_auto_confirm_corroborated,
 }
 
 

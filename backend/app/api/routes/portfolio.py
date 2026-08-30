@@ -176,6 +176,34 @@ class ValuedPositionOut(BaseModel):
     decision_verdict: str | None
     decision_confidence: str | None
     thesis_status: str | None
+    sparkline: list[Decimal]
+    """~12 weekly real closes, oldest→newest — the positions table's
+    axis-less trend line. Empty when the ticker has no stored history."""
+
+
+class ValuePointOut(BaseModel):
+    date: dt.date
+    value: Decimal
+
+
+class SectorAllocationOut(BaseModel):
+    sector: str
+    market_value: Decimal
+    pct: Decimal
+
+
+class PortfolioRollupsOut(BaseModel):
+    """§15 portfolio-level rollups — see `app.domain.portfolio_valuation_
+    view.PortfolioRollups`. Realized P&L is deliberately not here: it
+    needs a transaction log this system does not have (§41), and the UI
+    discloses it as blocked rather than showing a fabricated number."""
+
+    sector_allocation: list[SectorAllocationOut]
+    portfolio_beta: Decimal | None
+    beta_coverage_pct: Decimal
+    trailing_dividend_income: Decimal | None
+    dividend_positions_counted: int
+    unpriced_position_count: int
 
 
 class ValuedPortfolioOut(BaseModel):
@@ -198,6 +226,14 @@ class ValuedPortfolioOut(BaseModel):
     docstring for the real, disclosed assumption (today's exact holdings
     priced at each past date, not a real historical portfolio replay —
     this system has no transaction log yet)."""
+
+    value_series: list[ValuePointOut]
+    """Dense (~every 3 calendar days, ~90 days) `(date, value)` series
+    for the portfolio-value area chart — same disclosed assumption as
+    `value_trend_pct`. May be shorter than the full window, or empty,
+    when a held ticker's price history doesn't reach that far back."""
+
+    rollups: PortfolioRollupsOut
 
 
 @router.get("/holdings/valued", response_model=ValuedPortfolioOut | None)
@@ -232,10 +268,23 @@ def current_holdings_valued(db: Session = Depends(get_db)) -> ValuedPortfolioOut
                 nearest_trigger_distance_pct=p.nearest_trigger_distance_pct,
                 decision_verdict=p.decision_verdict, decision_confidence=p.decision_confidence,
                 thesis_status=p.thesis_status,
+                sparkline=list(p.sparkline),
             )
             for p in result.positions
         ],
         total_cost=result.total_cost, total_live_market_value=result.total_live_market_value,
         positions_missing_a_live_price=list(result.positions_missing_a_live_price),
         value_trend_pct={f"{days}d": trend[days] for days in (15, 30, 45, 60)},
+        value_series=[ValuePointOut(date=d, value=v) for d, v in result.value_series],
+        rollups=PortfolioRollupsOut(
+            sector_allocation=[
+                SectorAllocationOut(sector=s.sector, market_value=s.market_value, pct=s.pct)
+                for s in result.rollups.sector_allocation
+            ],
+            portfolio_beta=result.rollups.portfolio_beta,
+            beta_coverage_pct=result.rollups.beta_coverage_pct,
+            trailing_dividend_income=result.rollups.trailing_dividend_income,
+            dividend_positions_counted=result.rollups.dividend_positions_counted,
+            unpriced_position_count=result.rollups.unpriced_position_count,
+        ),
     )

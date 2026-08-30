@@ -70,3 +70,16 @@ def test_a_real_uploaded_position_gets_valued(client, db_session):
     assert Decimal(pos["live_current_price"]) == Decimal("25")
     assert Decimal(pos["live_market_value"]) == Decimal("25000")
     assert Decimal(body["total_live_market_value"]) == Decimal("25000")
+
+    # Redesign additions — present and well-typed, and every pre-existing
+    # field the TodayScreen contract depends on is still there.
+    assert "value_trend_pct" in body  # unchanged, still consumed by Today
+    assert isinstance(body["value_series"], list)
+    assert isinstance(pos["sparkline"], list)
+    rollups = body["rollups"]
+    assert isinstance(rollups["sector_allocation"], list)
+    assert "portfolio_beta" in rollups
+    assert "beta_coverage_pct" in rollups
+    assert "trailing_dividend_income" in rollups
+    assert rollups["dividend_positions_counted"] == 0
+    assert rollups["unpriced_position_count"] == 0

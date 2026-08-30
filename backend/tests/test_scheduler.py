@@ -27,7 +27,9 @@ EXPECTED_JOBS = {
     "capture_market_internals": (15, 2),
     "corporate_actions_scan": (16, 0),
     "financial_statement_scan": (16, 30),
+    "auto_confirm_corroborated_fundamentals": (16, 40),
     "cbsl_indicators": (16, 45),
+    "recompute_composite_ranking": (16, 50),
 }
 
 # Deliberately NOT weekday-scheduled: it repairs gaps in a series that

@@ -31,16 +31,68 @@ const ZONE_TOKEN: Record<PriceLadderZone, string> = {
   exit: "var(--zone-exit)",
 };
 
-export function ZoneChip({ zone, why }: { zone: PriceLadderZone | null; why?: string }) {
+/** Zones where the position needs a decision now (§26) get a filled
+ * chip; the informational ones stay outlined. Redesign spec §5 — "fill
+ * weight conveys severity" — so the badge reads at a glance without a
+ * second column. */
+const FILLED: Record<PriceLadderZone, boolean> = {
+  strong_accumulate: true,
+  accumulate: false,
+  fair: false,
+  trim: true,
+  exit: true,
+};
+
+export function ZoneChip({
+  zone,
+  why,
+  compact = false,
+}: {
+  zone: PriceLadderZone | null;
+  why?: string;
+  /** Fixed width + single line + ellipsis, full label always in the
+   * tooltip — for a table cell, where a wrapping two-word badge
+   * ("Strong accumulate") was breaking row height. Non-compact callers
+   * are unchanged. */
+  compact?: boolean;
+}) {
   if (!zone) {
     return (
-      <span className="muted" title={why || "No triangulated fair value is available for this ticker yet."}>
+      <span
+        className="muted"
+        title={why || "No triangulated fair value is available for this ticker yet."}
+        style={
+          compact
+            ? { display: "inline-block", width: "8.5rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }
+            : undefined
+        }
+      >
         {NOT_YET_VALUED}
       </span>
     );
   }
+  const token = ZONE_TOKEN[zone];
+  const filled = FILLED[zone];
   return (
-    <span className="chip" style={{ borderColor: ZONE_TOKEN[zone], color: ZONE_TOKEN[zone] }}>
+    <span
+      className="chip"
+      title={compact ? `${ZONE_LABEL[zone]}${why ? ` — ${why}` : ""}` : why || undefined}
+      style={{
+        borderColor: token,
+        color: filled ? "var(--surface)" : token,
+        background: filled ? token : "transparent",
+        ...(compact
+          ? {
+              display: "inline-block",
+              width: "8.5rem",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              textAlign: "center",
+            }
+          : {}),
+      }}
+    >
       {ZONE_LABEL[zone]}
     </span>
   );

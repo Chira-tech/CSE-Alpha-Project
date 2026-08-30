@@ -190,7 +190,14 @@ export function CorporateActionsQueue({ reviewerName }: { reviewerName: string }
   }
 
   return (
-    <div className="table-wrap table-scroll">
+    <div className="stack-tight">
+      <p className="t-caption muted" style={{ margin: 0 }}>
+        Corporate actions are never auto-confirmed — unlike a corroborated fundamental (an
+        independently-sourced filing with the identical figure), a split or rights ratio moves every
+        historical price the moment it is confirmed, so each one still needs a human. The burn-down
+        rate is on Data health.
+      </p>
+      <div className="table-wrap table-scroll">
       <table className="data-table">
         <thead>
           <tr>
@@ -214,6 +221,7 @@ export function CorporateActionsQueue({ reviewerName }: { reviewerName: string }
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
