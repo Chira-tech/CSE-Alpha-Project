@@ -338,3 +338,20 @@ def test_poll_and_run_one_skips_a_job_whose_key_is_already_running(db_session, m
     db_session.refresh(queued_same_job)
     assert other_job.status == "success"
     assert queued_same_job.status == "queued"  # left alone — its own job is still running
+
+
+# --- universe_integrity_checks ---------------------------------------------
+
+
+def test_universe_integrity_checks_job_is_wired_and_runs(db_session):
+    """docs/CSE_Universe_Integrity_Rollout.md Phase 2 — the manual trigger
+    for the nightly universe-integrity sweep. Pins the _RUNNERS wiring and
+    that a clean universe produces no alerts."""
+    from app.models.securities import Security
+
+    db_session.add(Security(ticker="COMB.N0000", name="COMB", instrument_type="ordinary"))
+    db_session.commit()
+
+    assert "universe_integrity_checks" in runner._RUNNERS
+    run = _seed_run(db_session, job="universe_integrity_checks")
+    assert runner._run_universe_integrity_checks(db_session, run) == 0

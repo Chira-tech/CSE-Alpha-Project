@@ -473,6 +473,11 @@ class LiveValuationInputs:
     `app.domain.sanity`'s own docstring for `units_consistent` simply
     being skipped, not failed, in that case)."""
 
+    net_income: Decimal | None
+    """Confirmed `net_income` for `period_end` — carried for
+    `app.domain.sanity`'s implied-multiple band (only its sign is used
+    there)."""
+
     excluded_unconfirmed_lines: tuple[str, ...]
     warnings: tuple[str, ...]
 
@@ -580,6 +585,7 @@ def _gather_inputs(
         shares_issued=shares,
         total_equity=total_equity_item.value if total_equity_item is not None else None,
         total_assets=total_assets_item.value if total_assets_item is not None else None,
+        net_income=items["net_income"].value if items.get("net_income") is not None else None,
         excluded_unconfirmed_lines=excluded,
         warnings=tuple(warnings),
     )
@@ -2070,14 +2076,24 @@ def valuation_summary_for(
             # independent lookup (`published_market_cap_for`) the gate
             # specifically requires.
             published_mcap = published_market_cap_for(db, ticker, stamp)
+            _bvps = jpb.inputs.book_value_per_share
+            _pb = current_price / _bvps if _bvps not in (None, 0) else None
+            _pe = (
+                _pb / jpb.inputs.roe
+                if _pb is not None and jpb.inputs.roe not in (None, 0)
+                else None
+            )
             sanity_ctx = SanityContext(
                 price=current_price,
-                bvps=jpb.inputs.book_value_per_share,
+                bvps=_bvps,
                 roe=jpb.inputs.roe,
                 mcap=published_mcap,
                 shares=jpb.inputs.shares_issued,
                 equity=jpb.inputs.total_equity,
                 total_assets=jpb.inputs.total_assets,
+                pb=_pb,
+                pe=_pe,
+                net_profit=jpb.inputs.net_income,
             )
             sanity_result = run_sanity_checks(triangulation.blended_fair_value_per_share, sanity_ctx)
             if sanity_result.blocked:

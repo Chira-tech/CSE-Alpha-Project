@@ -95,6 +95,7 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
   // days here because the store is daily EOD, and allowing for weekends.
   const stale = data.price_feed_age_days !== null && data.price_feed_age_days > 2;
   const pending = data.corporate_actions_pending + data.fundamentals_pending_confirmation;
+  const ui = data.universe_integrity;
 
   return (
     <div className="route stack">
@@ -188,6 +189,64 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             <span className="t-caption">Nothing is currently waiting for review.</span>
           )}
         </div>
+      </section>
+
+      <section aria-labelledby="integrity-heading" className="stack-tight">
+        <h2 id="integrity-heading">Universe integrity</h2>
+        <p className="prose">
+          The weekly-tracked numbers from the data-integrity rollout — where a rising quarantine
+          count early on is detection working, not a regression.
+        </p>
+        <div className="stat-grid">
+          <Stat
+            label="Issuers with a primary line"
+            value={`${formatInteger(ui.issuers_with_a_primary_line)} / ${formatInteger(ui.issuers_total)}`}
+            caution={ui.issuers_with_a_primary_line < ui.issuers_total}
+          />
+          <Stat
+            label="High-confidence bindings"
+            value={`${formatInteger(ui.issuers_high_confidence_binding)} / ${formatInteger(ui.issuers_total)}`}
+          />
+          <Stat
+            label="Unknown instrument type"
+            value={formatInteger(ui.lines_unknown_instrument_type)}
+            caution={ui.lines_unknown_instrument_type > 0}
+          />
+          <Stat
+            label="Quarantined lines"
+            value={formatInteger(ui.quarantined_line_count)}
+            caution={ui.quarantined_line_count > 0}
+          />
+          <Stat
+            label="Market-cap identity pass"
+            value={ui.market_cap_identity_pass_pct !== null ? `${ui.market_cap_identity_pass_pct}%` : UNAVAILABLE}
+          />
+          <Stat
+            label="Price-ratio actions confirmed"
+            value={
+              ui.price_ratio_actions_confirmed_pct !== null
+                ? `${ui.price_ratio_actions_confirmed_pct}%`
+                : UNAVAILABLE
+            }
+          />
+          <Stat
+            label="Median price staleness"
+            value={
+              ui.median_price_staleness_days !== null
+                ? `${ui.median_price_staleness_days} day${ui.median_price_staleness_days === 1 ? "" : "s"}`
+                : UNAVAILABLE
+            }
+            caution={ui.median_price_staleness_days !== null && ui.median_price_staleness_days > 3}
+          />
+        </div>
+        {Object.keys(ui.open_alerts_by_type).length > 0 && (
+          <p className="t-caption muted" style={{ margin: 0 }}>
+            Open alerts:{" "}
+            {Object.entries(ui.open_alerts_by_type)
+              .map(([t, c]) => `${t} ${c}`)
+              .join(" · ")}
+          </p>
+        )}
       </section>
 
       <section aria-labelledby="export-heading" className="stack-tight">

@@ -113,6 +113,24 @@ class SanityContext:
     error; `app.domain.valuation_view._gather_inputs` sources both from
     the same single-period line-item dict for exactly this reason."""
 
+    pb: Decimal | None
+    """Current price ÷ book value per share (`price / bvps`). Feeds the
+    implied-multiple plausibility band from `docs/CSE_Universe_Integrity_
+    Rollout.md` §Check 4 — a valuation that has never existed for a
+    solvent company in that sector is a data error, not an opportunity."""
+
+    pe: Decimal | None
+    """Current price ÷ trailing earnings per share, computed as `pb / roe`
+    (algebraically identical, and avoids a second earnings query — the
+    two anchors already share one `_gather_inputs` call). `None` when ROE
+    is zero or unknown."""
+
+    net_profit: Decimal | None
+    """Confirmed `net_income` for the same period the other fields use —
+    only its SIGN matters here (a sub-2x P/E is only implausible for a
+    genuinely profitable company; a loss-maker trading on a tiny P/E is
+    a different, expected thing)."""
+
 
 @dataclass(frozen=True)
 class SanityRule:
@@ -180,6 +198,37 @@ SANITY_RULES: tuple[SanityRule, ...] = (
         lambda v, ctx: Decimal("0.5") <= v / ctx.price <= Decimal("2.0"),
         "warn",
         "Fair value is more than double, or less than half, the current price.",
+    ),
+    # docs/CSE_Universe_Integrity_Rollout.md §Check 4 — implied-multiple
+    # plausibility band. Universal bands for now; sector-specific
+    # calibration is a later step once the universe has clean data. These
+    # catch a wrong-line / units / share-count error that produces a
+    # "confident cheap" verdict — the AAF failure mode — rather than a
+    # genuinely mispriced stock.
+    SanityRule(
+        "pb_roe_coherent",
+        ("pb", "roe"),
+        lambda v, ctx: not (ctx.pb < Decimal("0.40") and ctx.roe > Decimal("0.15")),
+        "block",
+        "Price-to-book below 0.4 while ROE is above 15% — a deep discount to book AND high "
+        "returns together is a data error (wrong share class, stale share count, units "
+        "mismatch), not an opportunity a solvent company in this market has ever offered.",
+    ),
+    SanityRule(
+        "pe_floor",
+        ("pe", "net_profit"),
+        lambda v, ctx: not (ctx.pe < Decimal("2.0") and ctx.net_profit > _ZERO),
+        "block",
+        "Price-to-earnings below 2x on a genuinely profitable company — almost always a "
+        "wrong price series or a mis-scaled earnings figure, not a real valuation.",
+    ),
+    SanityRule(
+        "multiple_ceiling",
+        ("pb", "pe"),
+        lambda v, ctx: ctx.pb <= Decimal("15") and ctx.pe <= Decimal("200"),
+        "block",
+        "Price-to-book above 15x or price-to-earnings above 200x — outside any range a "
+        "going-concern valuation should produce; check the share count and the earnings base.",
     ),
 )
 

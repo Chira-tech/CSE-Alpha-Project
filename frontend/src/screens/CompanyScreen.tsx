@@ -251,7 +251,8 @@ export function CompanyScreen({
         ← {backLabel}
       </button>
 
-      {data.quarantined && <QuarantineNotice ticker={data.ticker} />}
+      <SecurityStatusBanner data={data} />
+      {data.quarantined && data.status !== "quarantined" && <QuarantineNotice ticker={data.ticker} />}
 
       <header className="card spread">
         <div>
@@ -406,6 +407,14 @@ export function CompanyScreen({
           />
         ) : !composite ? (
           <SkeletonCard lines={2} />
+        ) : data.status === "quarantined" || data.status === "unresolved" ? (
+          <div className="card">
+            <p className="prose t-body" style={{ margin: 0 }}>
+              No verdict — {data.blockers.length} blocker{data.blockers.length === 1 ? "" : "s"}:{" "}
+              {data.blockers.map((b) => b.split(":")[0]).join(", ")}. A confident score on data the
+              system doesn't trust is worse than no score; see the banner at the top of the page.
+            </p>
+          </div>
         ) : (
           <div className="card stack-tight">
             <div style={{ display: "flex", alignItems: "baseline", gap: "var(--s3)", flexWrap: "wrap" }}>
@@ -415,11 +424,17 @@ export function CompanyScreen({
                   {composite.total_score !== null ? `${Number(composite.total_score).toFixed(1)} / 100` : UNAVAILABLE}
                 </div>
               </div>
-              {composite.total_score !== null && (
+              {composite.total_score !== null && data.status !== "provisional" && (
                 <VerdictPill
                   verdict={verdictFromPercentile(Number(composite.total_score))}
                   title="Banded from the same 70/40 thresholds every VerdictPill in this app uses."
                 />
+              )}
+              {data.status === "provisional" && (
+                <span className="chip" style={{ borderColor: "var(--caution)", color: "var(--caution)" }}
+                  title="Provisional data — see the caution banner above; the quality band is withheld.">
+                  Verdict withheld — provisional
+                </span>
               )}
             </div>
 
@@ -1068,6 +1083,50 @@ function keExplainer(ke: SecurityDetail["cost_of_equity"]) {
       </>
     ),
   };
+}
+
+/**
+ * docs/CSE_Universe_Integrity_Rollout.md Part 4 — the 4-state status
+ * banner. UNRESOLVED / QUARANTINED replace the verdict with the reasons;
+ * PROVISIONAL shows a caution with the caveats but leaves the valuation
+ * on the page (the verdict is capped further down). CLEAN renders nothing.
+ */
+function SecurityStatusBanner({ data }: { data: SecurityDetail }) {
+  if (data.status === "clean") return null;
+
+  if (data.status === "provisional") {
+    return (
+      <div className="notice notice-neutral" role="status">
+        <h3>Provisional — no maximum-conviction verdict for this name</h3>
+        <ul style={{ margin: "var(--s2) 0 0", paddingLeft: "var(--s4)" }}>
+          {data.soft_flags.map((f) => (
+            <li key={f} className="t-body prose">{f}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  const isUnresolved = data.status === "unresolved";
+  return (
+    <div className="notice notice-caution" role="alert">
+      <h3>
+        {isUnresolved
+          ? `${data.ticker} — identity only, this listed line can't be resolved`
+          : `${data.ticker} is quarantined`}
+      </h3>
+      <p className="prose t-body" style={{ margin: 0 }}>
+        {isUnresolved
+          ? "No valuation, fair value or verdict is published — the system can't confirm what this line is or which line is the issuer's equity."
+          : "Facts and raw data only — no fair value, no verdict, no scoreboard rank — until a human resolves the data-health alert(s) below."}
+      </p>
+      <ul style={{ margin: "var(--s2) 0 0", paddingLeft: "var(--s4)" }}>
+        {data.blockers.map((b) => (
+          <li key={b} className="t-body prose">{b}</li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function Fact({ label, value, note }: { label: string; value: string | null; note?: string }) {

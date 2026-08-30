@@ -20,6 +20,9 @@ def _ctx(**overrides) -> SanityContext:
         shares=None,
         equity=None,
         total_assets=None,
+        pb=None,
+        pe=None,
+        net_profit=None,
     )
     defaults.update(overrides)
     return SanityContext(**defaults)
@@ -131,3 +134,49 @@ class TestRunSanityChecks:
         result = run_sanity_checks(Decimal("200.00"), _ctx(price=Decimal("0")))
         assert "fv_within_5x_price" in result.skipped
         assert "fv_within_2x_price" in result.skipped
+
+
+class TestImpliedMultipleBand:
+    """docs/CSE_Universe_Integrity_Rollout.md §Check 4 — the AAF failure
+    shape: a wrong-line / units / share-count error that produces a
+    'confident cheap' verdict rather than a genuinely mispriced stock."""
+
+    def test_aaf_at_the_wrong_line_price_is_blocked(self):
+        # AAF's real numbers at the wrong (rights-line) price 11.30:
+        # P/B 0.32 with ROE 24.3% — a Fitch A+(lka) lender has never
+        # traded at a third of book.
+        result = run_sanity_checks(
+            Decimal("30.00"),
+            _ctx(pb=Decimal("0.32"), roe=Decimal("0.243"), pe=Decimal("1.3"), net_profit=Decimal("500")),
+        )
+        assert result.blocked is True
+        assert "pb_roe_coherent" in result.blocked_by
+        assert "pe_floor" in result.blocked_by
+
+    def test_a_real_cheap_but_low_return_bank_is_not_blocked(self):
+        # A genuine deep-value read: cheap to book AND low ROE — allowed.
+        result = run_sanity_checks(
+            Decimal("50.00"),
+            _ctx(pb=Decimal("0.35"), roe=Decimal("0.04"), pe=Decimal("8"), net_profit=Decimal("100")),
+        )
+        assert "pb_roe_coherent" not in result.blocked_by
+
+    def test_extreme_multiple_ceiling_blocks(self):
+        result = run_sanity_checks(
+            Decimal("50.00"), _ctx(pb=Decimal("22"), pe=Decimal("11"))
+        )
+        assert result.blocked is True
+        assert "multiple_ceiling" in result.blocked_by
+
+    def test_bands_are_skipped_when_pb_pe_absent(self):
+        result = run_sanity_checks(Decimal("253.87"), _ctx())
+        for rule in ("pb_roe_coherent", "pe_floor", "multiple_ceiling"):
+            assert rule in result.skipped
+
+    def test_comb_real_multiples_pass_cleanly(self):
+        # COMB post-fix: P/B ~0.88, P/E ~5, ROE 17.9%, profitable.
+        result = run_sanity_checks(
+            Decimal("253.87"),
+            _ctx(pb=Decimal("0.88"), pe=Decimal("4.9"), net_profit=Decimal("25000")),
+        )
+        assert result.blocked is False

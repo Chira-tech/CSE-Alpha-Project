@@ -33,6 +33,7 @@ from app.db.session import get_db
 from app.domain.fundamentals_view import ratio_series_by_key, ratio_trends_for, ratios_for
 from app.domain.ratios import NOT_YET_COMPUTABLE
 from app.domain.cost_of_equity_view import cost_of_equity_for
+from app.domain.security_status_view import security_status_for
 from app.domain.valuation_router import route_valuation
 from app.jobs.reconciliation import is_quarantined
 from app.models.corporate_action_scan_log import CorporateActionScanLog
@@ -250,6 +251,20 @@ class SecurityDetail(BaseModel):
     shares_issued_as_of: dt.date | None
     public_float_pct: Decimal | None
     quarantined: bool
+    status: str
+    """`docs/CSE_Universe_Integrity_Rollout.md` Part 4 — clean /
+    provisional / quarantined / unresolved. Drives what the company page
+    may publish: a quarantined name shows facts only, a provisional one
+    shows a valuation but no maximum-conviction verdict, an unresolved one
+    shows identity only."""
+    blockers: list[str]
+    """Why the name is quarantined or unresolved — the sentences that
+    replace the verdict. Empty when `status` is clean/provisional."""
+    soft_flags: list[str]
+    """Why the name is provisional — shown as caution, valuation still
+    published. Empty when `status` is clean."""
+    primary_line_ticker: str | None
+    primary_line_confidence: str
     price_history: list[PricePoint]
     corporate_actions: list[CorporateActionSummary]
     corporate_actions_last_scanned_at: dt.datetime | None
@@ -564,6 +579,7 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
     ratio_series = ratio_series_by_key(db, ticker)
     routing = route_valuation(security.archetype)
     ke_result = cost_of_equity_for(db, ticker)
+    _status = security_status_for(db, ticker)
 
     siblings = (
         db.scalars(
@@ -591,6 +607,11 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
         shares_issued_as_of=latest_float.as_of if latest_float else None,
         public_float_pct=latest_float.public_float_pct if latest_float else None,
         quarantined=is_quarantined(db, ticker),
+        status=_status.status.value,
+        blockers=list(_status.blockers),
+        soft_flags=list(_status.soft_flags),
+        primary_line_ticker=_status.primary_line_ticker,
+        primary_line_confidence=_status.primary_line_confidence.value,
         price_history=[
             PricePoint(
                 date=p.date,

@@ -274,6 +274,18 @@ export interface SecurityDetail {
   shares_issued_as_of: string | null;
   public_float_pct: string | null;
   quarantined: boolean;
+  /** docs/CSE_Universe_Integrity_Rollout.md Part 4 — "clean" |
+   * "provisional" | "quarantined" | "unresolved". Governs what the
+   * company page may publish. */
+  status: string;
+  /** Sentences that replace the verdict when status is quarantined or
+   * unresolved. */
+  blockers: string[];
+  /** Named caveats when status is provisional — valuation still shown,
+   * verdict capped. */
+  soft_flags: string[];
+  primary_line_ticker: string | null;
+  primary_line_confidence: string;
   price_history: PricePoint[];
   corporate_actions: CorporateActionSummary[];
   /** R1 T2.6: when the scheduled daily scan (`app.jobs.scheduler.
@@ -534,6 +546,18 @@ export interface QuarantinedTicker {
   raised_at: string;
 }
 
+export interface UniverseIntegrityMetrics {
+  issuers_total: number;
+  issuers_with_a_primary_line: number;
+  issuers_high_confidence_binding: number;
+  lines_unknown_instrument_type: number;
+  open_alerts_by_type: Record<string, number>;
+  quarantined_line_count: number;
+  market_cap_identity_pass_pct: string | null;
+  price_ratio_actions_confirmed_pct: string | null;
+  median_price_staleness_days: number | null;
+}
+
 export interface DataHealth {
   securities_count: number;
   issuer_count: number;
@@ -552,6 +576,7 @@ export interface DataHealth {
   fundamentals_pending_confirmation: number;
   fundamentals_confirmed: number;
   quarantined: QuarantinedTicker[];
+  universe_integrity: UniverseIntegrityMetrics;
   /** R1 T4.1.5: top tickers by pending-figure count — real, cheap
    * proxy for where confirming pays off most. See the backend's own
    * `DataHealth.fundamentals_pending_by_ticker` docstring for why this
@@ -833,6 +858,7 @@ export type JobKey =
   | "enrich_securities"
   | "recompute"
   | "refresh_stale_fundamentals"
+  | "universe_integrity_checks"
   | "capture_all";
 
 export type JobRunStatus = "queued" | "running" | "success" | "failed" | "cancelled";

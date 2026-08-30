@@ -306,6 +306,26 @@ def _run_enrich_securities(db: Session, run: JobRun) -> int:
     return summary.get("enriched", 0) if isinstance(summary, dict) else int(summary or 0)
 
 
+def _run_universe_integrity_checks(db: Session, run: JobRun) -> int:
+    """docs/CSE_Universe_Integrity_Rollout.md Phase 2 — run the
+    universe-wide detectors that had no nightly job (rights-price
+    coherence, nil-paid fingerprint, price discontinuity, rights-line
+    reaping) across every line, raising/auto-resolving `DataAlert`s. Same
+    real work as `app.jobs.scheduler._job_universe_integrity_checks`, just
+    triggerable on demand. Returns the number of tickers with at least one
+    open alert after the sweep."""
+    from app.jobs.universe_integrity_checks import run_nightly_universe_integrity
+
+    tickers = _all_tickers(db)
+    stamp = dt.date.today()
+
+    def on_progress(i: int, total: int, ticker: str) -> bool:
+        return _set_progress(db, run, 100 * i / max(total, 1), f"Universe integrity · {i} / {total} ({ticker})")
+
+    results = run_nightly_universe_integrity(db, tickers, stamp, on_progress=on_progress)
+    return sum(1 for alerts in results.values() if alerts)
+
+
 def _run_recompute(db: Session, run: JobRun) -> int:
     """"Rebuild valuations" — this system computes fair value LIVE on
     every read rather than from a persisted cache (see `app.domain.
@@ -412,6 +432,7 @@ _RUNNERS = {
     "rebuild_adjustment_factors": _run_rebuild_adjustment_factors,
     "rebuild_factor_series": _run_rebuild_factor_series,
     "refresh_stale_fundamentals": _run_refresh_stale_fundamentals,
+    "universe_integrity_checks": _run_universe_integrity_checks,
 }
 
 

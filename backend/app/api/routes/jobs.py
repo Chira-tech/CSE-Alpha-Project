@@ -50,6 +50,7 @@ _JOB_TO_SCHEDULER_ID = {
     "capture_filings": "financial_statement_scan",
     "capture_corporate_actions": "corporate_actions_scan",
     "refresh_stale_fundamentals": "refresh_stale_fundamentals",
+    "universe_integrity_checks": "universe_integrity_checks",
 }
 
 

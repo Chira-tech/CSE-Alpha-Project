@@ -58,6 +58,14 @@ JOBS: dict[str, JobDefinition] = {
     "refresh_stale_fundamentals": JobDefinition(
         "refresh_stale_fundamentals", "Repair stale fundamentals (re-check math)", 1800
     ),
+    # docs/CSE_Universe_Integrity_Rollout.md Phase 2 — the universe-wide
+    # detectors with no nightly job yet (rights-price coherence, nil-paid
+    # fingerprint, price discontinuity, rights-line reaping). Pure DB +
+    # CPU over already-stored prices and confirmed corporate actions, no
+    # network — the estimate is real per-ticker scan time.
+    "universe_integrity_checks": JobDefinition(
+        "universe_integrity_checks", "Universe integrity checks", 90
+    ),
     "capture_all": JobDefinition(
         "capture_all", "Full capture", 900,
         sub_jobs=(

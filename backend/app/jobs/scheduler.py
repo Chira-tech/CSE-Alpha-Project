@@ -334,6 +334,27 @@ def _job_market_cap_reconciliation() -> None:
         db.close()
 
 
+def _job_universe_integrity_checks() -> None:
+    """docs/CSE_Universe_Integrity_Rollout.md Phase 2 — the universe-wide
+    detectors with no nightly job yet (rights-price coherence, nil-paid
+    fingerprint, price discontinuity, rights-line reaping). Runs after the
+    EOD snapshot, the internal reconciliation and the market-cap sweep, so
+    it sees today's settled close. Same idempotent `DataAlert` mechanism
+    the two reconciliation jobs above already use."""
+    from app.jobs.universe_integrity_checks import run_nightly_universe_integrity
+
+    db = SessionLocal()
+    try:
+        tickers = _all_tickers(db)
+        today = dt.datetime.now(MARKET_TZ).date()
+        results = run_nightly_universe_integrity(db, tickers, today)
+        flagged = [t for t, alerts in results.items() if alerts]
+        if flagged:
+            logger.warning("universe integrity raised alerts for: %s", flagged)
+    finally:
+        db.close()
+
+
 def _job_corporate_actions_scan() -> None:
     """Not in the §52 table under this name, but implements "Corporate
     actions (splits, rights, bonus, dividends) — Event-driven — Scrape +
@@ -514,6 +535,12 @@ def build_scheduler() -> BackgroundScheduler:
         _job_market_cap_reconciliation,
         _colombo_cron(15, 9),
         id="market_cap_reconciliation",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_universe_integrity_checks,
+        _colombo_cron(15, 11),
+        id="universe_integrity_checks",
         replace_existing=True,
     )
     # §5: announcements are "event-driven" in principle; polled daily here
