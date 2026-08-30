@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import threading
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -179,6 +181,28 @@ class RegimeView:
     warnings: tuple[str, ...]
 
 
+# --- Disclosed-TTL cache -------------------------------------------------
+# `regime_for` runs a real Markov-switching MLE fit on the ASPI return
+# series (`fit_markov_regime_read`) — measured at ~3.8s cold. It is a
+# MARKET-WIDE read: one value for the whole market on a given date,
+# identical for every ticker, and called by `GET /market`, `/valuation/
+# {ticker}`, `/composite-score/{ticker}`, `/opportunities` and `/market/
+# sector-sensitivity`. The regime does not change intraday, so this is
+# the same module-level `{key: (ts, RegimeView)}` + lock + short TTL
+# pattern `app.domain.opportunity_ranking_view` established, with a longer
+# 15-minute window since a Markov regime genuinely moves on a scale of
+# weeks. `RegimeView` is a frozen dataclass, safe to share. `clear_cache`
+# is the test escape hatch.
+_REGIME_TTL_SECONDS = 15 * 60
+_regime_lock = threading.Lock()
+_regime_cache: dict[tuple[dt.date, int], tuple[float, "RegimeView"]] = {}
+
+
+def clear_cache() -> None:
+    with _regime_lock:
+        _regime_cache.clear()
+
+
 def regime_for(db: Session, as_of: dt.date | None = None, *, k_regimes: int = 2) -> RegimeView:
     """§29-33's regime read, live — `app.domain.regime_classification.
     classify_regime` fed by whatever real composite signals and real
@@ -186,8 +210,33 @@ def regime_for(db: Session, as_of: dt.date | None = None, *, k_regimes: int = 2)
     read: `result` is `None` when neither a composite signal nor a long
     enough return series exists, the same "None, named" discipline every
     other live-wired view in this system uses.
+
+    Cached at module level with a disclosed 15-minute TTL — see the
+    comment above the cache for why (a ~3.8s Markov fit, market-wide,
+    called by five endpoints).
     """
     stamp = as_of or dt.date.today()
+
+    key = (stamp, k_regimes)
+    with _regime_lock:
+        hit = _regime_cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < _REGIME_TTL_SECONDS:
+            return hit[1]
+
+    view = _regime_for_uncached(db, stamp, k_regimes)
+
+    with _regime_lock:
+        _regime_cache[key] = (time.monotonic(), view)
+        stale = [
+            k for k, v in _regime_cache.items()
+            if k != key and (time.monotonic() - v[0]) >= _REGIME_TTL_SECONDS
+        ]
+        for k in stale:
+            del _regime_cache[k]
+    return view
+
+
+def _regime_for_uncached(db: Session, stamp: dt.date, k_regimes: int) -> RegimeView:
     signals, missing = regime_signals_for(db, stamp)
     composite = classify_composite_regime(signals)
 

@@ -8,6 +8,8 @@ ORM types and directly testable against hand-built dicts.
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -27,6 +29,25 @@ from app.models.securities import Security
 #: `app.api.routes.securities.list_securities` already applies for ROE
 #: alone, extended here to the full ratio set).
 _ALL_REQUIRED_LINE_ITEMS = tuple(sorted({field for d in DEFINITIONS for field in d.required}))
+
+# --- Disclosed-TTL cache -------------------------------------------------
+# `all_sector_percentiles` re-reads every ticker's confirmed line items,
+# TTM-adjusts each, computes every §12 ratio and then sector-ranks all of
+# them — ~1.4s, measured. It is universe-wide (a percentile needs every
+# peer's value) and changes only when a fundamental is CONFIRMED, which is
+# a deliberate batch action, never intraday. `GET /securities` (list),
+# `GET /securities/{ticker}` (via `sector_percentiles_for`) and the §38
+# composite score all hit it. Same module-level `{as_of: (ts, result)}`
+# + lock + TTL pattern as `app.domain.opportunity_ranking_view`; 5-minute
+# window. `clear_cache` is the test escape hatch (`conftest.py`).
+_TTL_SECONDS = 5 * 60
+_lock = threading.Lock()
+_cache: dict[dt.date, tuple[float, dict[str, dict[str, "SectorPercentileResult"]]]] = {}
+
+
+def clear_cache() -> None:
+    with _lock:
+        _cache.clear()
 
 
 def all_sector_percentiles(
@@ -55,9 +76,30 @@ def all_sector_percentiles(
     `net_income`/`gross_profit` against `revenue`'s still-raw, single-
     quarter value (see `app.domain.fundamentals_view.ratios_for`'s own
     docstring for the live regression this caused and how it was found).
+
+    Cached at module level with a disclosed 5-minute TTL — see the comment
+    above the cache.
     """
     stamp = as_of or dt.date.today()
 
+    with _lock:
+        hit = _cache.get(stamp)
+        if hit is not None and (time.monotonic() - hit[0]) < _TTL_SECONDS:
+            return hit[1]
+
+    result = _all_sector_percentiles_uncached(db, stamp)
+
+    with _lock:
+        _cache[stamp] = (time.monotonic(), result)
+        stale = [d for d, v in _cache.items() if d != stamp and (time.monotonic() - v[0]) >= _TTL_SECONDS]
+        for d in stale:
+            del _cache[d]
+    return result
+
+
+def _all_sector_percentiles_uncached(
+    db: Session, stamp: dt.date
+) -> dict[str, dict[str, SectorPercentileResult]]:
     sector_rows = db.execute(
         select(Security.ticker, Security.cse_sector, Security.gics_sector)
     ).all()

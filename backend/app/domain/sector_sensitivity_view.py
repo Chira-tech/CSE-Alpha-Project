@@ -35,6 +35,8 @@ observation counts as a real, if often tiny, shock).
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -147,6 +149,25 @@ class SectorSensitivityView:
     warnings: tuple[str, ...]
 
 
+# --- Disclosed-TTL cache -------------------------------------------------
+# §33's matrix regresses every sector's ~1-year return series on the macro
+# shock series — ~2.8s, measured. It is MARKET-WIDE (identical for every
+# ticker in a sector) and moves on the scale of weeks, yet it is called
+# per-ticker by `macro_sector_fit_for` (the §38 Macro pillar) and by both
+# `GET /market/sector-sensitivity` and the §40 opportunity pass. Same
+# module-level `{key: (ts, view)}` + lock + TTL pattern as
+# `app.domain.opportunity_ranking_view`; 15-minute window. `SectorSensitivity
+# View` is a frozen dataclass. `clear_cache` is the test escape hatch.
+_TTL_SECONDS = 15 * 60
+_lock = threading.Lock()
+_cache: dict[tuple[dt.date, int], tuple[float, "SectorSensitivityView"]] = {}
+
+
+def clear_cache() -> None:
+    with _lock:
+        _cache.clear()
+
+
 def sector_sensitivity_matrix_for(
     db: Session, as_of: dt.date | None = None, *, lookback_days: int = DEFAULT_LOOKBACK_DAYS
 ) -> SectorSensitivityView:
@@ -154,8 +175,29 @@ def sector_sensitivity_matrix_for(
     macro shock series, per `app.domain.sector_sensitivity`'s own rules.
     Never hard-codes a relationship (§33's own explicit warning) and
     never fabricates a shock this system doesn't actually track (see
-    that module's own docstring for the four it does)."""
+    that module's own docstring for the four it does).
+
+    Cached at module level with a disclosed 15-minute TTL — see the
+    comment above the cache.
+    """
     stamp = as_of or dt.date.today()
+
+    key = (stamp, lookback_days)
+    with _lock:
+        hit = _cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < _TTL_SECONDS:
+            return hit[1]
+    view = _sector_sensitivity_matrix_uncached(db, stamp, lookback_days)
+    with _lock:
+        _cache[key] = (time.monotonic(), view)
+        for k in [k for k, v in _cache.items() if k != key and (time.monotonic() - v[0]) >= _TTL_SECONDS]:
+            del _cache[k]
+    return view
+
+
+def _sector_sensitivity_matrix_uncached(
+    db: Session, stamp: dt.date, lookback_days: int
+) -> SectorSensitivityView:
     groups = _sector_groups(db)
 
     sector_returns: list[SectorReturns] = []

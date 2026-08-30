@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import datetime as dt
 import statistics
+import threading
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -32,6 +34,55 @@ from app.domain.liquidity import amihud_illiquidity_ratio, percentile_rank
 from app.domain.price_returns import ticker_adjusted_returns
 from app.models.prices import PriceDaily
 from app.models.securities import Security
+
+# --- Disclosed-TTL cache for the universe-wide Amihud pass ------------------
+# `universe_amihud_ratios` scans every ticker's full real price history and
+# `percentile_rank` is an O(n^2) re-ranking on top — measured (18/20 Aug
+# 2026) at ~24 of a 25s `/opportunities` request. The ranking views close
+# this by threading the result through explicitly; the single-ticker
+# routes (`GET /securities/{ticker}`, `/valuation/{ticker}`,
+# `/composite-score/{ticker}`) call `liquidity_percentile_for` /
+# `cost_of_equity_for` bare and each paid the full ~3s scan. This is the
+# same module-level `{key: (monotonic_ts, value)}` + lock + short TTL
+# pattern `app.domain.opportunity_ranking_view` already uses: one real
+# dev-server process, one real database, and the Amihud ratio is a 60-day
+# rolling figure that does not change intraday, so a 60s window is far
+# inside this system's own 12-36 month horizon. `clear_cache` is the
+# test-suite escape hatch (`conftest.py`'s autouse fixture calls it).
+_UNIVERSE_TTL_SECONDS = 60
+_universe_lock = threading.Lock()
+_universe_cache: dict[tuple[dt.date, int], tuple[float, dict[str, Decimal], dict[str, Decimal]]] = {}
+
+
+def clear_cache() -> None:
+    with _universe_lock:
+        _universe_cache.clear()
+
+
+def _cached_universe(
+    db: Session, stamp: dt.date, lookback_days: int
+) -> tuple[dict[str, Decimal], dict[str, Decimal]]:
+    """`(amihud_ratios, liquidity_percentiles)` for the whole universe as
+    of `stamp`, computed at most once per TTL window per process."""
+    key = (stamp, lookback_days)
+    with _universe_lock:
+        hit = _universe_cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < _UNIVERSE_TTL_SECONDS:
+            return hit[1], hit[2]
+
+    ratios = universe_amihud_ratios(db, stamp, lookback_days)
+    percentiles = percentile_rank(ratios)
+
+    with _universe_lock:
+        _universe_cache[key] = (time.monotonic(), ratios, percentiles)
+        stale = [
+            k
+            for k, v in _universe_cache.items()
+            if k != key and (time.monotonic() - v[0]) >= _UNIVERSE_TTL_SECONDS
+        ]
+        for k in stale:
+            del _universe_cache[k]
+    return ratios, percentiles
 
 DEFAULT_LOOKBACK_DAYS = 400
 GATE1_WINDOW_SESSIONS = 60
@@ -234,5 +285,9 @@ def liquidity_percentile_for(
     stamp = as_of or dt.date.today()
     if universe_percentiles is not None:
         return universe_percentiles.get(ticker)
-    ratios = universe_ratios if universe_ratios is not None else universe_amihud_ratios(db, stamp, lookback_days)
-    return percentile_rank(ratios).get(ticker)
+    if universe_ratios is not None:
+        return percentile_rank(universe_ratios).get(ticker)
+    # No caller-supplied universe pass — use the process-level TTL cache
+    # rather than rescanning + re-ranking the whole universe per request.
+    _ratios, cached_percentiles = _cached_universe(db, stamp, lookback_days)
+    return cached_percentiles.get(ticker)

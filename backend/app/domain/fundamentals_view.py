@@ -13,6 +13,8 @@ that does not exist.
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -172,6 +174,16 @@ def latest_period_line_items(
     return latest_period, ttm_items
 
 
+_BULK_TTL_SECONDS = 5 * 60
+_bulk_lock = threading.Lock()
+_bulk_cache: dict[tuple[dt.date, tuple[str, ...]], tuple[float, dict]] = {}
+
+
+def clear_cache() -> None:
+    with _bulk_lock:
+        _bulk_cache.clear()
+
+
 def bulk_latest_line_items(
     db: Session, as_of: dt.date, statement_lines: tuple[str, ...]
 ) -> dict[str, tuple[dt.date, dict[str, LineItem]]]:
@@ -212,6 +224,15 @@ def bulk_latest_line_items(
     handled by the shared `ttm_adjusted_copy` below — see that
     function's own docstring for the full guard.
 
+    Cached at module level with a disclosed 5-minute TTL (`_BULK_TTL_
+    SECONDS`) keyed by `(as_of, statement_lines)`: this is universe-wide
+    point-in-time data that changes only when a fundamental is CONFIRMED
+    (a deliberate batch action, never intraday), and the per-ticker TTM
+    N+1 named below makes it a real ~1.5s cost on the Companies-list
+    endpoint that calls it every page load. Same pattern as
+    `app.domain.opportunity_ranking_view`'s own cache; `clear_cache`
+    resets it for the test suite (`conftest.py`).
+
     This function itself only ever hands back the ANNUALISED view — safe
     for a caller (like the screener's own ROE-only fetch) that computes
     exactly one flow-over-stock ratio from it, but NOT safe to feed to
@@ -236,14 +257,26 @@ def bulk_latest_line_items(
     round trip) would remove this cost — a real, separate piece of work,
     not attempted here.
     """
+    key = (as_of, statement_lines)
+    with _bulk_lock:
+        hit = _bulk_cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < _BULK_TTL_SECONDS:
+            return hit[1]
+
     raw = bulk_raw_latest_line_items(db, as_of, statement_lines)
-    return {
+    result = {
         ticker: (
             latest_period,
             ttm_adjusted_copy(db, ticker, as_of, latest_period, raw_items, period_type_by_line),
         )
         for ticker, (latest_period, raw_items, period_type_by_line) in raw.items()
     }
+
+    with _bulk_lock:
+        _bulk_cache[key] = (time.monotonic(), result)
+        for k in [k for k, v in _bulk_cache.items() if k != key and (time.monotonic() - v[0]) >= _BULK_TTL_SECONDS]:
+            del _bulk_cache[k]
+    return result
 
 
 def bulk_raw_latest_line_items(

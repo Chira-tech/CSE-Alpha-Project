@@ -18,19 +18,31 @@ from app.db.base import Base
 
 
 @pytest.fixture(autouse=True)
-def _clear_opportunity_ranking_cache():
-    """R1: `app.domain.opportunity_ranking_view.opportunity_ranking_for`
-    caches its own real, expensive result in a module-level dict shared
-    across the whole process — exactly right for one real dev server,
-    exactly wrong left unguarded across a test suite, where two tests
-    seeding the same `as_of` date into two different in-memory databases
-    would otherwise share a stale cache entry. Caught live: this fixture
-    exists because tests genuinely failed without it, not on suspicion."""
-    from app.domain.opportunity_ranking_view import clear_cache
+def _clear_process_level_caches():
+    """Several domain views cache a real, expensive, market-wide result in
+    a module-level dict shared across the whole process — exactly right for
+    one real dev server, exactly wrong left unguarded across a test suite,
+    where two tests seeding the same `as_of` date into two different
+    in-memory databases would otherwise share a stale cache entry. Caught
+    live for `opportunity_ranking_view`; the same hazard applies to every
+    cache added since, so they are all reset here, before and after each
+    test."""
+    from app.domain.fundamentals_view import clear_cache as clear_bulk_line_items
+    from app.domain.liquidity_view import clear_cache as clear_liquidity
+    from app.domain.macro_engine_view import clear_cache as clear_regime
+    from app.domain.opportunity_ranking_view import clear_cache as clear_opportunities
+    from app.domain.sector_percentiles_view import clear_cache as clear_sector_pct
+    from app.domain.sector_sensitivity_view import clear_cache as clear_sector_sens
 
-    clear_cache()
+    clears = (
+        clear_opportunities, clear_liquidity, clear_regime,
+        clear_sector_pct, clear_sector_sens, clear_bulk_line_items,
+    )
+    for clear in clears:
+        clear()
     yield
-    clear_cache()
+    for clear in clears:
+        clear()
 
 
 @pytest.fixture()
