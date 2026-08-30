@@ -165,6 +165,37 @@ _CACHE_TTL_SECONDS = 45
 _cache_lock = threading.Lock()
 _cache: dict[dt.date, tuple[float, OpportunityRankingView]] = {}
 
+# Single-flight guard, added 30 Aug 2026. The TTL cache above only helps
+# callers that arrive AFTER a compute has finished. On a cold cache the
+# frontend fires /opportunities several times within a second (Today's
+# board section, the Opportunities screen, and the dev-server data-refresh
+# poll all call it), and every one of those callers missed the cache and
+# started its OWN full ~20s valuation pass — N passes running at once, all
+# contending on the same 129 MB SQLite file, so each ran far slower than
+# 20s, the browser timed out at ~30s and retried, and the cache never got
+# a chance to populate. Live symptom: the Opportunities tab stuck on its
+# loading skeleton forever. Holding one lock per `as_of` stamp collapses
+# those N cold callers into 1 real compute + (N-1) cache hits.
+_compute_locks_guard = threading.Lock()
+_compute_locks: dict[dt.date, threading.Lock] = {}
+
+
+def _compute_lock_for(stamp: dt.date) -> threading.Lock:
+    with _compute_locks_guard:
+        lock = _compute_locks.get(stamp)
+        if lock is None:
+            lock = threading.Lock()
+            _compute_locks[stamp] = lock
+        return lock
+
+
+def _cached_view(stamp: dt.date) -> OpportunityRankingView | None:
+    with _cache_lock:
+        cached = _cache.get(stamp)
+        if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
+            return cached[1]
+    return None
+
 
 def clear_cache() -> None:
     """Test-only escape hatch (and a real, honest one for anything else
@@ -180,26 +211,38 @@ def clear_cache() -> None:
     autouse fixture that calls this before every test)."""
     with _cache_lock:
         _cache.clear()
+    with _compute_locks_guard:
+        _compute_locks.clear()
 
 
 def opportunity_ranking_for(db: Session, as_of: dt.date | None = None) -> OpportunityRankingView:
     stamp = as_of or dt.date.today()
 
-    with _cache_lock:
-        cached = _cache.get(stamp)
-        if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
-            return cached[1]
+    cached = _cached_view(stamp)
+    if cached is not None:
+        return cached
 
-    view = _opportunity_ranking_for_uncached(db, stamp)
+    # Single-flight: the first caller to reach here computes; any others
+    # that arrive while it runs block on this lock and then fall straight
+    # through to the cache hit below rather than starting their own pass.
+    with _compute_lock_for(stamp):
+        cached = _cached_view(stamp)
+        if cached is not None:
+            return cached
 
-    with _cache_lock:
-        _cache[stamp] = (time.monotonic(), view)
-        # Never let this grow across days of dev-server uptime — a
-        # correctness non-issue (each entry is real for its own `as_of`
-        # forever) but a real, if slow, memory leak otherwise.
-        stale_days = [d for d in _cache if d != stamp and (time.monotonic() - _cache[d][0]) >= _CACHE_TTL_SECONDS]
-        for d in stale_days:
-            del _cache[d]
+        view = _opportunity_ranking_for_uncached(db, stamp)
+
+        with _cache_lock:
+            _cache[stamp] = (time.monotonic(), view)
+            # Never let this grow across days of dev-server uptime — a
+            # correctness non-issue (each entry is real for its own `as_of`
+            # forever) but a real, if slow, memory leak otherwise.
+            stale_days = [
+                d for d in _cache
+                if d != stamp and (time.monotonic() - _cache[d][0]) >= _CACHE_TTL_SECONDS
+            ]
+            for d in stale_days:
+                del _cache[d]
 
     return view
 

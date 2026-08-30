@@ -45,6 +45,48 @@ def _seed_ai_assisted(db, **overrides) -> Fundamental:
     return row
 
 
+# --- GET /fundamentals/summary (queue composition, redesign doc §3) ------
+
+
+def test_queue_summary_buckets_by_type_and_flags_old_filings(client, db_session):
+    _seed_security(db_session)
+    _seed_ai_assisted(db_session, statement_line="total_assets", period_type="annual")
+    _seed_ai_assisted(db_session, statement_line="net_income", period_type="annual")
+    _seed_ai_assisted(
+        db_session, statement_line="revenue", period_type="quarterly",
+        first_available_date=dt.date(2019, 5, 1),  # filed years ago, still pending
+    )
+    # A confirmed row must not show up in any pending bucket.
+    _seed_ai_assisted(
+        db_session, statement_line="equity", provenance_tier=ProvenanceTier.REPORTED,
+        confirmed_by="someone", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    body = client.get("/fundamentals/summary").json()
+
+    assert body["pending_total"] == 3
+    assert {b["key"]: b["count"] for b in body["by_period_type"]} == {"annual": 2, "quarterly": 1}
+    assert {b["key"] for b in body["by_statement_line"]} == {"total_assets", "net_income", "revenue"}
+    assert body["by_ticker"][0] == {"key": TICKER, "count": 3}
+    assert body["oldest_pending_first_available"] == "2019-05-01"
+    assert body["pending_filed_over_a_year_ago"] == 1
+    assert body["corroborated_pending"] == 0
+
+
+def test_queue_summary_counts_corroborated_pending(client, db_session):
+    _seed_security(db_session)
+    pending = _seed_ai_assisted(db_session, statement_line="net_income", value=Decimal("500"),
+                                source_url="https://cse/ai.pdf")
+    _seed_ai_assisted(
+        db_session, statement_line="net_income", value=Decimal("500"), version=2,
+        provenance_tier=ProvenanceTier.REPORTED, source_url="https://cse/audited.pdf",
+        confirmed_by="a human", confirmed_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    body = client.get("/fundamentals/summary").json()
+    assert body["corroborated_pending"] == 1
+
+
 # --- (ticker, period_end, period_type, statement_line, version) uniqueness ---
 # Migration 0019: the database-level backstop behind every ingestion path's
 # own application-level idempotency check (`_already_ingested`,

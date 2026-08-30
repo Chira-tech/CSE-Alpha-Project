@@ -33,11 +33,16 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.cost_of_equity_view import beta_for
 from app.domain.fundamentals_view import ratio_trends_for
 from app.domain.liquidity import percentile_rank
 from app.domain.liquidity_view import universe_amihud_ratios
 from app.domain.macro_engine_view import RegimeView, regime_for
-from app.domain.valuation_view import valuation_summary_for
+from app.domain.valuation_view import (
+    _confirmed_dividends_as_of,
+    _trailing_dividend_per_share,
+    valuation_summary_for,
+)
 from app.jobs.reconciliation import is_quarantined
 from app.models.portfolio import PortfolioPosition, PortfolioSnapshot
 from app.models.prices import PriceDaily
@@ -138,12 +143,67 @@ class ValuedPosition:
     "intact", when this system cannot form a real read at all (no
     security record, so no trend data to check)."""
 
+    sparkline: tuple[Decimal, ...]
+    """~12 weekly real stored closes, oldest→newest, for the positions
+    table's axis-less trend line (redesign spec §4). Point-in-time reads
+    (`_latest_price` at each weekly date), so a week with no session of
+    its own carries the last real close before it rather than a gap —
+    the same rule every other point-in-time price read here uses. Empty
+    when the ticker has no stored price history at all; never padded with
+    a fabricated flat value."""
+
 
 @dataclass(frozen=True)
 class AttentionFlag:
     key: str
     label: str
     detail: str
+
+
+@dataclass(frozen=True)
+class SectorAllocation:
+    sector: str
+    market_value: Decimal
+    pct: Decimal
+    """Share of the LIVE-priced portfolio value (0-100) — unpriced
+    positions are not in the denominator, and their count is reported
+    separately on `PortfolioRollups.unpriced_position_count` so the
+    slice total is honest rather than silently diluted."""
+
+
+@dataclass(frozen=True)
+class PortfolioRollups:
+    """§15 portfolio-level reads the positions table can't show row by
+    row. Every figure here is a real rollup of already-computed data —
+    nothing new is modelled. Realized P&L is deliberately absent: it
+    needs a buy/sell transaction log this system does not have (§41), and
+    a placeholder number would be exactly the fabricated figure §15 warns
+    against — the API/UI disclose it as blocked instead."""
+
+    sector_allocation: tuple[SectorAllocation, ...]
+    """Largest slice first. A held ticker with no `cse_sector`/`gics_
+    sector` on file falls into a single `"Unclassified"` bucket, never
+    dropped."""
+
+    portfolio_beta: Decimal | None
+    """Live-value-weighted mean of each holding's own `blume_adjusted_
+    beta` (`app.domain.cost_of_equity_view.beta_for`, the same beta the
+    cost-of-equity engine uses), over the holdings that have both a real
+    beta and a real live value. `None` when that set is empty."""
+    beta_coverage_pct: Decimal
+    """Share of live portfolio value (0-100) that had a computable beta.
+    A number below 100 means `portfolio_beta` describes only that slice —
+    disclosed, never silently treated as the whole book."""
+
+    trailing_dividend_income: Decimal | None
+    """Σ over holdings of `held_quantity × trailing-12-month confirmed
+    cash dividend per share` (`app.domain.valuation_view._trailing_
+    dividend_per_share`, the same TTM window the DDM uses). `None` when
+    no held ticker has a confirmed cash dividend in the trailing year —
+    never 0, which would misrepresent "none on file" as "pays nothing"."""
+    dividend_positions_counted: int
+
+    unpriced_position_count: int
 
 
 @dataclass(frozen=True)
@@ -160,6 +220,18 @@ class ValuedPortfolio:
 
     positions_missing_a_live_price: tuple[str, ...]
 
+    value_series: tuple[tuple[dt.date, Decimal], ...]
+    """Dense (~every 3 calendar days, ~90 days back) `(date, value)`
+    series for the redesign's portfolio-value area chart — today's exact
+    holdings priced at each past real close, oldest→newest. Same
+    disclosed assumption as `portfolio_value_trend` (no transaction
+    replay; this system has no transaction log). A date where any held
+    position has no real price on/before it is omitted, never
+    interpolated. Empty when the portfolio has no computable point at
+    all."""
+
+    rollups: PortfolioRollups
+
 
 def _latest_price(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
     return db.scalar(
@@ -168,6 +240,23 @@ def _latest_price(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
         .order_by(PriceDaily.date.desc())
         .limit(1)
     )
+
+
+def _weekly_sparkline(
+    db: Session, ticker: str, as_of: dt.date, *, points: int = 12, step_days: int = 7
+) -> tuple[Decimal, ...]:
+    """`points` real stored closes, one per `step_days`-day step ending
+    on `as_of`, oldest→newest — point-in-time (`_latest_price`), so a
+    week with no session carries the prior real close rather than a gap.
+    Empty when the ticker has no stored history before the window even
+    starts; leading weeks with no data yet are dropped rather than
+    fabricated."""
+    values: list[Decimal] = []
+    for i in range(points - 1, -1, -1):
+        price = _latest_price(db, ticker, as_of - dt.timedelta(days=i * step_days))
+        if price is not None:
+            values.append(price)
+    return tuple(values)
 
 
 def _attention_flags(
@@ -244,6 +333,8 @@ def value_position(
     if security is not None and live_price is None:
         warnings.append(f"No real live price found for {position.ticker!r} on or before {as_of}.")
 
+    sparkline = _weekly_sparkline(db, position.ticker, as_of) if security is not None else ()
+
     # OI-3 (docs/audits/R1_OPEN_ISSUES.md): same real gap as
     # `opportunity_ranking_view`'s own fix, same reason — a quarantined
     # ticker's adjustment factors failed §7's reconciliation, so its fair
@@ -316,6 +407,7 @@ def value_position(
         decision_verdict=None if quarantined else summary.decision.verdict,
         decision_confidence=None if quarantined else summary.decision.confidence,
         thesis_status=thesis_status,
+        sparkline=sparkline,
         margin_of_safety_pct=None if quarantined else summary.margin_of_safety.total_pct,
         dispersion_pct=None if quarantined else summary.triangulation.dispersion_pct,
         warnings=(
@@ -404,6 +496,118 @@ def value_portfolio(
         snapshot_id=snapshot.id, as_of=stamp, positions=tuple(valued),
         total_cost=total_cost, total_live_market_value=total_live_market_value,
         positions_missing_a_live_price=missing,
+        value_series=portfolio_value_series(db, snapshot, stamp),
+        rollups=portfolio_rollups(db, snapshot, valued, stamp),
+    )
+
+
+def portfolio_value_series(
+    db: Session,
+    snapshot: PortfolioSnapshot,
+    as_of: dt.date,
+    *,
+    calendar_days: int = 90,
+    step_days: int = 3,
+) -> tuple[tuple[dt.date, Decimal], ...]:
+    """Dense `(date, value)` series for the redesign's portfolio-value
+    area chart — today's exact holdings (`snapshot` quantities) priced at
+    each past real close, one point every `step_days` calendar days back
+    to `calendar_days` ago, oldest→newest.
+
+    Same disclosed assumption, and same deliberate cheapness, as
+    `portfolio_value_trend` above (real stored closes only, never the
+    full valuation engine). A date where ANY held position has no real
+    price on/before it is omitted entirely rather than carried with a
+    guessed contribution — so the chart may start partway along the
+    window if the newest holding's history doesn't reach the start.
+    """
+    points: list[tuple[dt.date, Decimal]] = []
+    for days_ago in range(calendar_days, -1, -step_days):
+        at = as_of - dt.timedelta(days=days_ago)
+        value = Decimal(0)
+        complete = True
+        for p in snapshot.positions:
+            price = _latest_price(db, p.ticker, at)
+            if price is None:
+                complete = False
+                break
+            value += p.quantity * price
+        if complete and value != 0:
+            points.append((at, value))
+    return tuple(points)
+
+
+def portfolio_rollups(
+    db: Session,
+    snapshot: PortfolioSnapshot,
+    valued: list[ValuedPosition],
+    as_of: dt.date,
+) -> PortfolioRollups:
+    """§15 portfolio-level rollups — see `PortfolioRollups`'s own
+    docstring for the "every figure is a rollup of already-computed data,
+    realized P&L is deliberately absent" reasoning."""
+    # --- Sector allocation, weighted by live market value.
+    sector_value: dict[str, Decimal] = {}
+    unpriced = 0
+    for v in valued:
+        if v.live_market_value is None:
+            unpriced += 1
+            continue
+        security = db.get(Security, v.ticker)
+        sector = None
+        if security is not None:
+            sector = security.cse_sector or security.gics_sector
+        sector = sector or "Unclassified"
+        sector_value[sector] = sector_value.get(sector, Decimal(0)) + v.live_market_value
+
+    priced_total = sum(sector_value.values(), Decimal(0))
+    sector_allocation = tuple(
+        SectorAllocation(
+            sector=sector,
+            market_value=value,
+            pct=(value / priced_total * Decimal(100)) if priced_total else Decimal(0),
+        )
+        for sector, value in sorted(sector_value.items(), key=lambda kv: kv[1], reverse=True)
+    )
+
+    # --- Live-value-weighted portfolio beta, over holdings that have BOTH
+    # a real beta and a real live value. `beta_coverage_pct` discloses how
+    # much of the book that actually covers.
+    weighted_beta = Decimal(0)
+    beta_weight = Decimal(0)
+    for v in valued:
+        if v.live_market_value is None:
+            continue
+        beta_result = beta_for(db, v.ticker, as_of)
+        if beta_result.insufficient_data or beta_result.blume_adjusted_beta is None:
+            continue
+        weighted_beta += beta_result.blume_adjusted_beta * v.live_market_value
+        beta_weight += v.live_market_value
+
+    portfolio_beta = (weighted_beta / beta_weight) if beta_weight else None
+    beta_coverage_pct = (
+        (beta_weight / priced_total * Decimal(100)) if priced_total else Decimal(0)
+    )
+
+    # --- Trailing-12-month confirmed cash dividend income: Σ held_qty ×
+    # TTM dividend per share, reusing the DDM's own window helper.
+    dividend_income = Decimal(0)
+    dividend_positions = 0
+    for p in snapshot.positions:
+        dividends = _confirmed_dividends_as_of(db, p.ticker, as_of)
+        per_share, _count = _trailing_dividend_per_share(dividends, as_of)
+        if per_share is None:
+            continue
+        dividend_income += per_share * p.quantity
+        dividend_positions += 1
+
+    return PortfolioRollups(
+        sector_allocation=sector_allocation,
+        portfolio_beta=portfolio_beta,
+        beta_coverage_pct=beta_coverage_pct,
+        trailing_dividend_income=dividend_income if dividend_positions else None,
+        dividend_positions_counted=dividend_positions,
+        unpriced_position_count=unpriced,
     )
 
 

@@ -51,6 +51,8 @@ _JOB_TO_SCHEDULER_ID = {
     "capture_corporate_actions": "corporate_actions_scan",
     "refresh_stale_fundamentals": "refresh_stale_fundamentals",
     "universe_integrity_checks": "universe_integrity_checks",
+    "recompute_composite_ranking": "recompute_composite_ranking",
+    "auto_confirm_corroborated_fundamentals": "auto_confirm_corroborated_fundamentals",
 }
 
 

@@ -33,7 +33,7 @@ from app.ingestion.financial_pdf_extractor import (
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.jobs.market_cap_reconciliation import run_nightly_market_cap_check
-from app.jobs.runner import poll_and_run_one
+from app.jobs.runner import JobConflict, enqueue, poll_and_run_one
 from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
@@ -412,6 +412,44 @@ def _job_financial_statement_scan() -> None:
         db.close()
 
 
+def _job_recompute_composite_ranking() -> None:
+    """§38's real ~70s universe pass, run after the trading day's filings
+    and corporate actions have landed, and frozen into a
+    `composite_ranking_snapshots` row so `GET /composite-ranking` serves a
+    finished result instead of triggering the pass on a page load
+    (`docs/CSE_Alpha_Engine_Scoreboard_Queue_Redesign.md` §2).
+
+    Enqueued as a `JobRun` (trigger="scheduled") rather than run inline,
+    so it shares the one-job-at-a-time worker slot, the run history the
+    Data Health screen reads, and the cooperative-cancel path every other
+    heavy job already uses — see `app.jobs.runner`.
+    """
+    db = SessionLocal()
+    try:
+        enqueue(db, "recompute_composite_ranking", trigger="scheduled")
+    except JobConflict:
+        logger.info("recompute_composite_ranking already queued/running — skipping this tick")
+    finally:
+        db.close()
+
+
+def _job_auto_confirm_corroborated() -> None:
+    """Promotes AI-assisted fundamentals the server can independently
+    verify as corroborated, so they never sit in the human confirm queue
+    (redesign doc §3). Enqueued as a `JobRun` for the same reasons as
+    `_job_recompute_composite_ranking` above.
+    """
+    db = SessionLocal()
+    try:
+        enqueue(db, "auto_confirm_corroborated_fundamentals", trigger="scheduled")
+    except JobConflict:
+        logger.info(
+            "auto_confirm_corroborated_fundamentals already queued/running — skipping this tick"
+        )
+    finally:
+        db.close()
+
+
 def _job_poll_manual_job_queue() -> None:
     """P1.1: notices a `queued` `JobRun` row — written by `POST
     /jobs/{job}/run`, which only ever INSERTS and returns immediately,
@@ -555,6 +593,22 @@ def build_scheduler() -> BackgroundScheduler:
         _job_financial_statement_scan,
         _colombo_cron(16, 30),
         id="financial_statement_scan",
+        replace_existing=True,
+    )
+    # After the day's filings + corporate actions have landed, so a
+    # newly-arrived corroborated figure clears the same night.
+    scheduler.add_job(
+        _job_auto_confirm_corroborated,
+        _colombo_cron(16, 40),
+        id="auto_confirm_corroborated_fundamentals",
+        replace_existing=True,
+    )
+    # Last: the §38 scoreboard snapshot, so it reflects everything the
+    # jobs above just confirmed. Pure CPU, no API contention.
+    scheduler.add_job(
+        _job_recompute_composite_ranking,
+        _colombo_cron(16, 50),
+        id="recompute_composite_ranking",
         replace_existing=True,
     )
     # P1.1: the manual "Run Capture" queue poller. Not exchange-hours-

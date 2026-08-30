@@ -1,6 +1,7 @@
 import type {
   Spread,
   CompanyValuation,
+  CompositeRanking,
   CompositeScore,
   ConfirmBatchResult,
   CorporateAction,
@@ -9,6 +10,7 @@ import type {
   DecisionAction,
   Fundamental,
   FundamentalsPage,
+  FundamentalsQueueSummary,
   IndexHistory,
   JobKey,
   JobRun,
@@ -208,6 +210,14 @@ export function confirmFundamentalsBatchCorroborated(ids: number[], actor: strin
   });
 }
 
+/** Queue-wide composition of the pending confirm backlog (by line item /
+ * period / ticker), its age, and how many rows the nightly auto-confirm
+ * job would clear — a separate endpoint from the paged list, same split
+ * `getDataHealth` already uses. */
+export function getFundamentalsQueueSummary() {
+  return request<FundamentalsQueueSummary>("/fundamentals/summary");
+}
+
 export function getIndexHistory() {
   return request<IndexHistory>("/market/index-history");
 }
@@ -239,6 +249,16 @@ export function getSectorDrilldown(sector: string) {
 
 export function getOpportunityRanking() {
   return request<OpportunityRanking>("/opportunities");
+}
+
+/** §38's composite score computed across the WHOLE confirmed universe
+ * and ranked — one cached ~30s pass (same disclosed-TTL cache as
+ * `/opportunities`), so unlike the single-ticker score the Valuation
+ * pillar is actually blended here. Still not §40's full metric: no §39
+ * fusion, no transaction-cost leg, and §14's earnings-integrity veto is
+ * carried but not applied. */
+export function getCompositeRanking() {
+  return request<CompositeRanking>("/composite-ranking");
 }
 
 // --- Decisions (§45 journal) ---------------------------------------------

@@ -4123,15 +4123,31 @@ live, plus the two pillars that consume it:
   7-pillar blend (Valuation 25/Business quality 25/Growth 15/Financial
   strength 10/Macro & sector fit 10/Timing & momentum 10/Risk 5) plus
   the §11.1 Gate 3 integrity veto reported as evaluated/vetoed/
-  unevaluable (never assumed to pass). Valuation and Growth are
-  permanently shown as evidence rather than blended into the number —
-  a real, measured ~30s-per-universe-pass latency cost at current data
-  volume, not a data gap; any other pillar missing for a specific
-  ticker carries its own real, named reason. Live on the company file
-  and folded into `app.domain.opportunity_ranking_view`'s own module
-  docstring, which used to (wrongly) claim this machinery didn't exist
-  — corrected in place rather than left stale once this section made
-  the claim provably false.
+  unevaluable (never assumed to pass). On the SINGLE-TICKER company file
+  (`GET /composite-score/{ticker}`) Valuation and Growth are shown as
+  evidence rather than blended, to keep that interactive page fast; any
+  other pillar missing for a specific ticker carries its own real, named
+  reason.
+- **§38 composite score across the WHOLE universe, ranked**
+  (`app.domain.composite_ranking_view`, `GET /composite-ranking`) — the
+  universe-wide pass `composite_score_view`'s own docstring used to call
+  "not yet built". One cached ~70s pass (same disclosed-TTL cache as
+  `/opportunities`) over every CONFIRMED-fundamentals ticker, so the
+  Valuation pillar IS ranked and blended here (via §12's own generic
+  sector-percentile machinery, unmodified). Growth is blended the moment
+  ≥ 3 tickers have a confirmed §34 national-projects revenue impact;
+  until then it is excluded for every ticker with that count as the
+  reason, never a fabricated 0. Every row carries a "basis" count
+  (pillars that fed the score) and the raw §38 weight they cover, so a
+  thin 2-pillar score isn't read as equal to a 7-pillar one. Integrity
+  is carried on every row as `evaluable: false` and never applied as a
+  filter — §14's automated veto (Piotroski/Altman/Beneish/Sloan) still
+  does not exist. This is the primary table on the Opportunities screen;
+  the older gap-to-buy-below ordering stays as a secondary table. Still
+  NOT §40's full metric: no §39 sequential fusion, no transaction-cost
+  leg. `app.domain.opportunity_ranking_view`'s own module docstring,
+  which used to (wrongly) claim this machinery didn't exist, is
+  corrected in place.
 
 Rolling alpha (`app.domain.rolling_alpha`) — a real trailing-window
 alpha series built on the same Carhart machinery, for a future

@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
+    composite_ranking,
     composite_score,
     corporate_actions,
     data_health,
@@ -79,6 +80,7 @@ app.include_router(opportunities.router)
 app.include_router(decisions.router)
 app.include_router(jobs.router)
 app.include_router(composite_score.router)
+app.include_router(composite_ranking.router)
 app.include_router(export.router)
 
 # M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md

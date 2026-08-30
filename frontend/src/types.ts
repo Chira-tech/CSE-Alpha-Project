@@ -575,6 +575,10 @@ export interface DataHealth {
   fundamentals_total: number;
   fundamentals_pending_confirmation: number;
   fundamentals_confirmed: number;
+  /** Rolling 7-day confirm counts — the burn-down signal (how fast the
+   * queue is being cleared, shown next to how much is left). */
+  fundamentals_confirmed_last_7d: number;
+  corporate_actions_confirmed_last_7d: number;
   quarantined: QuarantinedTicker[];
   universe_integrity: UniverseIntegrityMetrics;
   /** R1 T4.1.5: top tickers by pending-figure count — real, cheap
@@ -584,6 +588,27 @@ export interface DataHealth {
    * claim (that needs a full universe valuation pass, too slow for a
    * screen meant to load in under two minutes). */
   fundamentals_pending_by_ticker: { ticker: string; count: number }[];
+}
+
+export interface QueueBucket {
+  key: string;
+  count: number;
+}
+
+/** Queue-wide shape of the pending confirm backlog — `GET
+ * /fundamentals/summary`. Lets the Confirm queue screen show WHERE the
+ * backlog is and how OLD it is, not just its total size. */
+export interface FundamentalsQueueSummary {
+  pending_total: number;
+  by_statement_line: QueueBucket[];
+  by_period_type: QueueBucket[];
+  by_ticker: QueueBucket[];
+  oldest_pending_first_available: string | null;
+  /** Pending figures whose FILING is over a year old — filing age, not
+   * time-sat-in-queue (nothing records queue-entry time), named as such. */
+  pending_filed_over_a_year_ago: number;
+  /** How many rows the nightly auto-confirm job would clear next run. */
+  corroborated_pending: number;
 }
 
 export interface SpreadPoint {
@@ -691,12 +716,47 @@ export interface ValuedPosition {
    * see the backend's own docstring for why this is a disclosed,
    * honest substitute rather than a fabricated three-state ladder. */
   thesis_status: string | null;
+  /** ~12 weekly real closes, oldest→newest — the axis-less trend line
+   * in the positions table. Empty when the ticker has no stored
+   * history; never padded with a fabricated flat value. */
+  sparkline: string[];
 }
 
 export interface AttentionFlag {
   key: string;
   label: string;
   detail: string;
+}
+
+export interface ValuePoint {
+  date: string;
+  value: string;
+}
+
+export interface SectorAllocation {
+  sector: string;
+  market_value: string;
+  /** Share of the LIVE-priced portfolio value (0-100). */
+  pct: string;
+}
+
+export interface PortfolioRollups {
+  /** Largest slice first. A held ticker with no sector on file falls
+   * into a single "Unclassified" bucket. */
+  sector_allocation: SectorAllocation[];
+  /** Live-value-weighted mean of each holding's own Blume-adjusted beta,
+   * over holdings that have both a real beta and a real live value.
+   * `null` when that set is empty. */
+  portfolio_beta: string | null;
+  /** Share of live portfolio value (0-100) that had a computable beta —
+   * below 100 means `portfolio_beta` describes only that slice. */
+  beta_coverage_pct: string;
+  /** Σ held_qty × trailing-12-month confirmed cash dividend per share.
+   * `null` (never 0) when no held ticker has a confirmed cash dividend
+   * in the trailing year. */
+  trailing_dividend_income: string | null;
+  dividend_positions_counted: number;
+  unpriced_position_count: number;
 }
 
 export interface ValuedPortfolio {
@@ -711,6 +771,12 @@ export interface ValuedPortfolio {
    * portfolio replay (no transaction log yet) — see the backend's own
    * `portfolio_value_trend` docstring. */
   value_trend_pct: Record<string, string | null>;
+  /** Dense (~every 3 calendar days, ~90 days) series for the
+   * portfolio-value area chart — same disclosed assumption as
+   * `value_trend_pct`. May be shorter than the window, or empty, when a
+   * holding's price history doesn't reach back that far. */
+  value_series: ValuePoint[];
+  rollups: PortfolioRollups;
 }
 
 export type DecisionAction = "buy" | "watchlist" | "pass" | "partial" | "sell" | "trim";
@@ -784,6 +850,73 @@ export interface OpportunityRanking {
   as_of: string;
   ranked: OpportunityCandidate[];
   excluded: OpportunityCandidate[];
+}
+
+// --- §38 composite ranking (universe-wide) ------------------------------
+
+/** One ticker's full §38 composite score, from the cached universe-wide
+ * pass (`GET /composite-ranking`). Unlike the single-ticker
+ * `CompositeScore`, the Valuation pillar IS blended here (ranked against
+ * the rest of the universe); Growth is blended too once ≥ 3 tickers have
+ * a confirmed national-projects revenue impact, otherwise still excluded
+ * with that count as its reason. Integrity is carried (`evaluable:
+ * false`) but never applied — §14's automated veto does not exist yet. */
+export interface ScorePoint {
+  as_of: string;
+  total_score: string;
+}
+
+export interface RankedComposite {
+  ticker: string;
+  name: string;
+  archetype: string | null;
+  /** The exchange's own CSE sector — for the sector-average heatmap. */
+  cse_sector: string | null;
+  /** The real decision-engine call (`compute_decision`), NOT a mapping
+   * invented from `total_score`. Strong Buy / Buy / Accumulate / Hold /
+   * Trim / Sell / Insufficient data / Withheld. */
+  verdict: string;
+  decision_confidence: string;
+  /** 0-100 weighted mean of the computable pillars, weights
+   * renormalised among them. `null` → the ticker is in `excluded`. */
+  total_score: string | null;
+  pillars: PillarScore[];
+  /** How many of the 7 pillars actually fed `total_score` — surfaced so
+   * a 2-pillar score and a 7-pillar score at the same number are not
+   * read as equally corroborated. */
+  pillars_included: number;
+  /** Sum of the §38 weights of the pillars that fed the score, before
+   * renormalisation (0-100). 100 = all seven were computable. */
+  weight_covered_pct: string;
+  weight_used_pct: Record<string, string>;
+  integrity: CompositeIntegrity;
+  blended_fair_value_per_share: string | null;
+  current_price: string | null;
+  /** `(fair value − price) / fair value` — the raw quantity the
+   * Valuation pillar's percentile is computed from. */
+  discount_to_fair_value_pct: string | null;
+  valuation_pillar_percentile: string | null;
+  /** This ticker's `total_score` across recent snapshots, oldest first —
+   * empty until snapshot history exists, never zero-filled. */
+  score_series: ScorePoint[];
+  warnings: string[];
+}
+
+export interface CompositeRanking {
+  as_of: string;
+  /** When the underlying §38 pass actually finished (UTC ISO). `null` on
+   * the cold-start live path (no snapshot yet). */
+  computed_at: string | null;
+  /** The snapshot is for a market date earlier than today. */
+  is_stale: boolean;
+  /** `false` → computed live because no snapshot row exists yet. */
+  snapshot_available: boolean;
+  /** Week-over-week factual sentences (verdict transitions, big score
+   * movers on well-corroborated rows, sector-average shifts). Empty when
+   * there is no ~week-old snapshot to diff against. */
+  insights: string[];
+  ranked: RankedComposite[];
+  excluded: RankedComposite[];
 }
 
 export interface SensitivityEstimate {

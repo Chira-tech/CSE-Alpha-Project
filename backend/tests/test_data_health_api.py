@@ -110,6 +110,39 @@ def test_fundamentals_pending_counts_only_unconfirmed_ai_assisted(db_session, cl
     assert health["fundamentals_confirmed"] == 1
 
 
+def test_confirm_burn_down_counts_last_7_days_only(db_session, client):
+    """The redesign doc's §3.6 burn-down signal: how much is being
+    cleared, next to how much is left."""
+    db_session.add(Security(ticker="JKH.N0000", name="John Keells"))
+    recent = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)
+    old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    db_session.add_all(
+        [
+            Fundamental(
+                ticker="JKH.N0000", period_end=dt.date(2025, 12, 31), period_type="annual",
+                first_available_date=dt.date(2026, 3, 1), version=1, statement_line="revenue",
+                value=Decimal("1"), provenance_tier=ProvenanceTier.REPORTED,
+                confirmed_by="a", confirmed_at=recent,
+            ),
+            Fundamental(
+                ticker="JKH.N0000", period_end=dt.date(2024, 12, 31), period_type="annual",
+                first_available_date=dt.date(2025, 3, 1), version=1, statement_line="revenue",
+                value=Decimal("1"), provenance_tier=ProvenanceTier.REPORTED,
+                confirmed_by="a", confirmed_at=old,
+            ),
+            CorporateAction(
+                ticker="JKH.N0000", ex_date=dt.date(2026, 2, 1), type=ActionType.DIVIDEND_CASH,
+                confirmed_by="a", confirmed_at=recent,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    health = client.get("/data-health").json()
+    assert health["fundamentals_confirmed_last_7d"] == 1
+    assert health["corporate_actions_confirmed_last_7d"] == 1
+
+
 def test_quarantined_lists_only_unresolved_alerts(db_session, client):
     db_session.add_all(
         [

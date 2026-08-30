@@ -27,6 +27,7 @@ def _clear_process_level_caches():
     live for `opportunity_ranking_view`; the same hazard applies to every
     cache added since, so they are all reset here, before and after each
     test."""
+    from app.domain.composite_ranking_view import clear_cache as clear_composite_ranking
     from app.domain.fundamentals_view import clear_cache as clear_bulk_line_items
     from app.domain.liquidity_view import clear_cache as clear_liquidity
     from app.domain.macro_engine_view import clear_cache as clear_regime
@@ -35,7 +36,7 @@ def _clear_process_level_caches():
     from app.domain.sector_sensitivity_view import clear_cache as clear_sector_sens
 
     clears = (
-        clear_opportunities, clear_liquidity, clear_regime,
+        clear_opportunities, clear_composite_ranking, clear_liquidity, clear_regime,
         clear_sector_pct, clear_sector_sens, clear_bulk_line_items,
     )
     for clear in clears:

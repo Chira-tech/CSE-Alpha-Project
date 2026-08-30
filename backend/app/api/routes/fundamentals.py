@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.domain.corroboration_view import corroborated_ids
 from app.domain.provenance import can_enter_valuation
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
@@ -134,52 +135,6 @@ class ConfirmBatchResult(BaseModel):
     rather than silently skipped."""
 
 
-def _corroborated_ids(db: Session, rows: list[Fundamental]) -> set[int]:
-    """R1 T2.5. One bulk query for every REPORTED row matching ANY of
-    these rows' (ticker, period_end, statement_line) keys — not N
-    queries per row, same discipline every other bulk lookup in this
-    codebase already applies — then an in-Python exact-value-and-
-    different-source_url check, since SQLAlchemy has no clean portable
-    "tuple IN (values)" across both SQLite (dev) and Postgres (prod).
-
-    DELIBERATELY NOT keyed on `period_type` too, found live (23 Aug
-    2026, ABAN.N0000's real total_assets for 2019-03-31): the same
-    point-in-time balance-sheet figure is genuinely reported once as
-    `period_type="annual"` (that year's own annual report) and again as
-    `period_type="quarterly"` (a later interim report's own comparative
-    prior-year-end column) — the first version of this function required
-    both to match, which meant it never fired for exactly the shape of
-    corroboration that's most common in this data. Safe to drop: a real
-    flow figure (`revenue`, `net_income`, ...) genuinely measures a
-    different span in each period_type and would essentially never
-    coincidentally match to the exact rupee AND land at a different
-    `source_url` AND land on the same `period_end` — the value+source
-    check below already carries the real safety property, not the
-    period_type match."""
-    if not rows:
-        return set()
-    keys = {(r.ticker, r.period_end, r.statement_line) for r in rows}
-    tickers = {k[0] for k in keys}
-    candidates = db.scalars(
-        select(Fundamental).where(
-            Fundamental.ticker.in_(tickers),
-            Fundamental.provenance_tier == ProvenanceTier.REPORTED,
-        )
-    ).all()
-    reported_by_key: dict[tuple, list[Fundamental]] = {}
-    for c in candidates:
-        reported_by_key.setdefault((c.ticker, c.period_end, c.statement_line), []).append(c)
-
-    corroborated: set[int] = set()
-    for r in rows:
-        key = (r.ticker, r.period_end, r.statement_line)
-        for c in reported_by_key.get(key, ()):
-            if c.value == r.value and c.source_url != r.source_url:
-                corroborated.add(r.id)
-                break
-    return corroborated
-
-
 def _get_or_404(db: Session, fundamental_id: int) -> Fundamental:
     row = db.get(Fundamental, fundamental_id)
     if row is None:
@@ -222,13 +177,94 @@ def list_fundamentals(
         .offset(offset)
     ).all()
 
-    corroborated_ids = _corroborated_ids(db, rows) if pending_only else set()
+    corroborated = corroborated_ids(db, rows) if pending_only else set()
 
     return FundamentalsPage(
-        items=[FundamentalOut.from_model(r, corroborated=r.id in corroborated_ids) for r in rows],
+        items=[FundamentalOut.from_model(r, corroborated=r.id in corroborated) for r in rows],
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+class QueueBucket(BaseModel):
+    key: str
+    count: int
+
+
+class FundamentalsQueueSummary(BaseModel):
+    """Queue-wide shape of the pending confirm backlog — what the redesign
+    doc (§3.2) calls "classify by type, not FIFO". Lets the Confirm queue
+    screen show WHERE the backlog is (which line items, which periods,
+    which tickers) and how OLD it is, rather than only its total size.
+
+    Computed over the whole pending set, not the current page — so it is
+    deliberately a separate endpoint from the paged `GET /fundamentals`,
+    the same split `GET /data-health` already uses for its own counts.
+    """
+
+    pending_total: int
+    by_statement_line: list[QueueBucket]
+    by_period_type: list[QueueBucket]
+    by_ticker: list[QueueBucket]
+    """Top tickers by pending-figure count (at most 10)."""
+
+    oldest_pending_first_available: dt.date | None
+    pending_filed_over_a_year_ago: int
+    """Pending figures whose FILING is more than a year old — a real
+    "old, still-unreviewed data" signal (§18: staleness is surfaced, not
+    hidden). This is filing age (`first_available_date`), NOT time-sat-in-
+    queue: nothing records when a row entered the queue, so this is the
+    honest available proxy, named as such rather than dressed up as a
+    queue-wait age."""
+
+    corroborated_pending: int
+    """How many pending figures the nightly `auto_confirm_corroborated_
+    fundamentals` job would clear on its next run — an independently-
+    sourced REPORTED row already carries the exact same value."""
+
+
+@router.get("/summary", response_model=FundamentalsQueueSummary)
+def fundamentals_queue_summary(db: Session = Depends(get_db)) -> FundamentalsQueueSummary:
+    from app.domain.corroboration_view import all_corroborated_pending_ids
+
+    pending = (
+        Fundamental.provenance_tier == ProvenanceTier.AI_ASSISTED,
+        Fundamental.confirmed_by.is_(None),
+    )
+
+    total = db.scalar(select(func.count()).select_from(Fundamental).where(*pending)) or 0
+
+    def _buckets(column, limit: int | None) -> list[QueueBucket]:
+        stmt = (
+            select(column, func.count())
+            .where(*pending)
+            .group_by(column)
+            .order_by(func.count().desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [QueueBucket(key=str(k), count=c) for k, c in db.execute(stmt).all()]
+
+    oldest = db.scalar(select(func.min(Fundamental.first_available_date)).where(*pending))
+    a_year_ago = dt.date.today() - dt.timedelta(days=365)
+    older_than_year = (
+        db.scalar(
+            select(func.count())
+            .select_from(Fundamental)
+            .where(*pending, Fundamental.first_available_date < a_year_ago)
+        )
+        or 0
+    )
+
+    return FundamentalsQueueSummary(
+        pending_total=total,
+        by_statement_line=_buckets(Fundamental.statement_line, 12),
+        by_period_type=_buckets(Fundamental.period_type, None),
+        by_ticker=_buckets(Fundamental.ticker, 10),
+        oldest_pending_first_available=oldest,
+        pending_filed_over_a_year_ago=older_than_year,
+        corroborated_pending=len(all_corroborated_pending_ids(db)),
     )
 
 
@@ -325,7 +361,7 @@ def confirm_fundamentals_batch_corroborated(
     rows = [db.get(Fundamental, i) for i in body.ids]
     real_rows = [r for r in rows if r is not None and r.provenance_tier == ProvenanceTier.AI_ASSISTED
                  and r.confirmed_by is None]
-    corroborated_ids = _corroborated_ids(db, real_rows)
+    corroborated = corroborated_ids(db, real_rows)
 
     confirmed: list[int] = []
     failed: list[ConfirmBatchFailure] = []
@@ -342,7 +378,7 @@ def confirm_fundamentals_batch_corroborated(
                 ConfirmBatchFailure(id=fundamental_id, reason=f"not AI-assisted (tier {row.provenance_tier.value})")
             )
             continue
-        if fundamental_id not in corroborated_ids:
+        if fundamental_id not in corroborated:
             failed.append(
                 ConfirmBatchFailure(
                     id=fundamental_id,

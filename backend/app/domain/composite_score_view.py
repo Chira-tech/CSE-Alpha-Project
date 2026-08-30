@@ -24,6 +24,17 @@ therefore real EVIDENCE here — the figures a caller would actually want
 to see — but excluded from `total_score`, with the cost reason named
 explicitly on their own `PillarScore.reason`, never silently folded into
 a generic "not yet built."
+
+THE UNIVERSE PASS THIS DOCSTRING USED TO CALL "NOT YET BUILT" NOW EXISTS
+— `app.domain.composite_ranking_view`, which runs exactly the ~30s pass
+described above ONCE, caches it with the same disclosed TTL `app.domain.
+opportunity_ranking_view` uses, and blends Valuation (and Growth, once
+register coverage reaches 3 tickers) into a real ranked `total_score`.
+This single-ticker view is DELIBERATELY left unchanged: its callers are
+interactive `GET /composite-score/{ticker}` requests that must not pay
+the universe-pass latency, so here Valuation and Growth stay evidence-
+only. A future opportunistic "use the ranking cache if it happens to be
+warm" read is possible but intentionally not wired yet.
 """
 from __future__ import annotations
 
@@ -39,7 +50,7 @@ from app.domain.composite_score import (
     FINANCIAL_STRENGTH_INVERT,
     FINANCIAL_STRENGTH_RATIO_KEYS,
     PILLAR_SPECS_BY_KEY,
-    mean_of_available,
+    ratio_pillar_score,
     renormalize,
 )
 from app.domain.fundamentals_view import RatioTrend, ratio_trends_for
@@ -88,6 +99,27 @@ class IntegrityView:
     evaluable: bool
     vetoed: bool
     reason: str
+
+
+#: §11.1's integrity veto, reported honestly unevaluable. NEVER computed
+#: via `app.domain.coverage_gates.evaluate_gate3_integrity` — that
+#: function's own `Gate3Inputs` requires real booleans (qualified audit
+#: opinion, going-concern emphasis, auditor-change-plus-CFO-departure)
+#: this system extracts nowhere; supplying `False` as a default would be
+#: reporting "no red flag found" when the true state is "never looked,"
+#: exactly the fabricated-confidence law §1 (law 4) forbids. Shared
+#: verbatim by the single-ticker view below and `app.domain.composite_
+#: ranking_view`'s universe pass so both report the identical state.
+UNEVALUABLE_INTEGRITY = IntegrityView(
+    evaluable=False,
+    vetoed=False,
+    reason=(
+        "No audit-opinion, going-concern, auditor-change, Beneish M-Score or "
+        "related-party data is extracted anywhere in this system yet (see `app.domain."
+        "ratios.NOT_YET_COMPUTABLE`) — Gate 3 cannot be evaluated, so it is reported as "
+        "unevaluable rather than assumed to pass."
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -153,29 +185,6 @@ def _latest_price(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
     )
 
 
-def _ratio_pillar_score(
-    percentiles: dict, ratio_keys: tuple[str, ...], invert: frozenset[str]
-) -> tuple[Decimal | None, list[str]]:
-    """Mean of whichever `ratio_keys` have a real sector percentile for
-    this ticker, inverting the ones named in `invert` first (§38's
-    Financial strength pillar: lower leverage is the stronger position —
-    see `FINANCIAL_STRENGTH_INVERT`'s own docstring). Returns
-    `(score, contributing_ratio_keys)` so the caller can name exactly
-    which ratios fed the number, the same "never one opaque figure"
-    discipline every other blended value in this codebase already
-    follows."""
-    values: list[Decimal | None] = []
-    contributing: list[str] = []
-    for key in ratio_keys:
-        result = percentiles.get(key)
-        if result is None or result.percentile is None:
-            continue
-        pct = Decimal(100) - result.percentile if key in invert else result.percentile
-        values.append(pct)
-        contributing.append(key)
-    return mean_of_available(values), contributing
-
-
 def composite_score_for(
     db: Session, ticker: str, as_of: dt.date | None = None
 ) -> CompositeScoreView | None:
@@ -214,7 +223,7 @@ def composite_score_for(
     )
 
     # --- Business quality (25%)
-    bq_score, bq_ratios = _ratio_pillar_score(percentiles, BUSINESS_QUALITY_RATIO_KEYS, frozenset())
+    bq_score, bq_ratios = ratio_pillar_score(percentiles, BUSINESS_QUALITY_RATIO_KEYS, frozenset())
     pillar_scores["business_quality"] = bq_score
     pillars.append(
         PillarScore(
@@ -244,7 +253,7 @@ def composite_score_for(
     )
 
     # --- Financial strength (10%)
-    fs_score, fs_ratios = _ratio_pillar_score(
+    fs_score, fs_ratios = ratio_pillar_score(
         percentiles, FINANCIAL_STRENGTH_RATIO_KEYS, FINANCIAL_STRENGTH_INVERT
     )
     pillar_scores["financial_strength"] = fs_score
@@ -311,24 +320,6 @@ def composite_score_for(
 
     total_score, weight_used = renormalize(pillar_scores)
 
-    # Integrity: NEVER computed via `evaluate_gate3_integrity` here — that
-    # function's own `Gate3Inputs` requires real booleans (qualified audit
-    # opinion, going-concern emphasis, auditor-change-plus-CFO-departure)
-    # this system extracts nowhere; supplying `False` as a default would
-    # be reporting "no red flag found" when the true state is "never
-    # looked," exactly the fabricated-confidence law this whole module
-    # exists to avoid. Reported honestly unevaluable instead.
-    integrity = IntegrityView(
-        evaluable=False,
-        vetoed=False,
-        reason=(
-            "No audit-opinion, going-concern, auditor-change, Beneish M-Score or "
-            "related-party data is extracted anywhere in this system yet (see `app.domain."
-            "ratios.NOT_YET_COMPUTABLE`) — Gate 3 cannot be evaluated, so it is reported as "
-            "unevaluable rather than assumed to pass."
-        ),
-    )
-
     return CompositeScoreView(
         ticker=ticker,
         as_of=stamp,
@@ -336,7 +327,7 @@ def composite_score_for(
         total_score=total_score,
         weight_used_pct=weight_used,
         is_partial=True,  # always true today — see module/class docstrings
-        integrity=integrity,
+        integrity=UNEVALUABLE_INTEGRITY,
         valuation_summary=valuation_summary,
         growth_ratio_trends=ratio_trends_for(db, ticker, stamp),
         growth_project_impacts=tuple(confirmed_base_case_impacts_for(db, ticker, stamp)),

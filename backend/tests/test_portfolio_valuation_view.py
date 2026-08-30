@@ -342,3 +342,175 @@ class TestPortfolioValueTrend:
         result = portfolio_value_trend(db_session, snapshot, AS_OF, (15, 30))
         assert result[15] is None
         assert result[30] is None
+
+
+def _seed_daily_history(db, ticker, start, days, close=Decimal("20.0")):
+    now = dt.datetime.now(dt.timezone.utc)
+    db.add_all(
+        PriceDaily(
+            ticker=ticker, date=start + dt.timedelta(days=i), close=close,
+            adj_factor=Decimal(1), fetched_at=now,
+        )
+        for i in range(days)
+    )
+    db.commit()
+
+
+def _parsed_multi(*specs) -> ParsedPortfolio:
+    """specs: (ticker, quantity, avg_price) tuples."""
+    positions = tuple(
+        ParsedPosition(
+            ticker=t, quantity=Decimal(q), avg_price=Decimal(a), total_cost=Decimal(q) * Decimal(a),
+            traded_price=Decimal(a), market_value=Decimal(q) * Decimal(a), unrealized_gain_loss=Decimal(0),
+        )
+        for t, q, a in specs
+    )
+    total = sum((p.total_cost for p in positions), Decimal(0))
+    return ParsedPortfolio(
+        positions=positions, stated_total_cost=total, stated_total_market_value=total,
+        identity_check_passed=True, identity_check_note="ok",
+    )
+
+
+class TestPortfolioValueSeriesAndSparkline:
+    def test_value_series_is_chronological_and_priced_from_todays_holdings(self, db_session):
+        _seed_daily_history(db_session, "JKH.N0000", AS_OF - dt.timedelta(days=100), 101, close=Decimal("20.0"))
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000", quantity=Decimal(1000)), source_filename="p.xlsx")
+
+        result = value_portfolio(db_session, snapshot, AS_OF)
+        series = result.value_series
+        assert len(series) > 10
+        dates = [d for d, _ in series]
+        assert dates == sorted(dates)
+        # today's 1000 shares priced at the flat real close of 20.0
+        assert all(v == Decimal("20000.0") for _, v in series)
+
+    def test_value_series_omits_dates_before_any_holding_has_a_price(self, db_session):
+        # History only covers the last 20 days; the ~90-day window's early
+        # points have no real price and must be dropped, not interpolated.
+        _seed_daily_history(db_session, "JKH.N0000", AS_OF - dt.timedelta(days=19), 20, close=Decimal("20.0"))
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000"), source_filename="p.xlsx")
+
+        series = value_portfolio(db_session, snapshot, AS_OF).value_series
+        assert series  # non-empty
+        earliest = series[0][0]
+        assert earliest >= AS_OF - dt.timedelta(days=21)
+
+    def test_sparkline_has_between_two_and_twelve_weekly_closes(self, db_session):
+        _seed_daily_history(db_session, "JKH.N0000", AS_OF - dt.timedelta(days=100), 101, close=Decimal("20.0"))
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000"), source_filename="p.xlsx")
+
+        pos = value_portfolio(db_session, snapshot, AS_OF).positions[0]
+        assert 2 <= len(pos.sparkline) <= 12
+
+
+class TestPortfolioRollups:
+    def test_sector_allocation_sums_to_100_of_priced_value_with_unclassified_bucket(self, db_session):
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add(Security(ticker="BANK.N0000", name="A Bank", cse_sector="Banks"))
+        db_session.add(Security(ticker="MISC.N0000", name="Unclassified Co"))  # no sector
+        db_session.add_all([
+            PriceDaily(ticker="BANK.N0000", date=AS_OF, close=Decimal("10.0"), adj_factor=Decimal(1), fetched_at=now),
+            PriceDaily(ticker="MISC.N0000", date=AS_OF, close=Decimal("30.0"), adj_factor=Decimal(1), fetched_at=now),
+        ])
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(
+            db_session, _parsed_multi(("BANK.N0000", 1000, 5), ("MISC.N0000", 1000, 5)), source_filename="p.xlsx",
+        )
+
+        rollups = value_portfolio(db_session, snapshot, AS_OF).rollups
+        sectors = {s.sector: s for s in rollups.sector_allocation}
+        assert set(sectors) == {"Banks", "Unclassified"}
+        assert sum(s.pct for s in rollups.sector_allocation) == Decimal(100)
+        # BANK 1000*10 = 10,000 ; MISC 1000*30 = 30,000 -> 25% / 75%
+        assert sectors["Banks"].pct == Decimal(25)
+        assert sectors["Unclassified"].pct == Decimal(75)
+        assert rollups.unpriced_position_count == 0
+
+    def test_portfolio_beta_is_value_weighted_and_coverage_is_disclosed(self, db_session, monkeypatch):
+        import app.domain.portfolio_valuation_view as pvv
+        from app.domain.beta import BetaResult
+
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add_all([
+            Security(ticker="HIGHBETA.N0000", name="High Beta"),
+            Security(ticker="NOBETA.N0000", name="No Beta"),
+        ])
+        db_session.add_all([
+            PriceDaily(ticker="HIGHBETA.N0000", date=AS_OF, close=Decimal("10.0"), adj_factor=Decimal(1), fetched_at=now),
+            PriceDaily(ticker="NOBETA.N0000", date=AS_OF, close=Decimal("10.0"), adj_factor=Decimal(1), fetched_at=now),
+        ])
+        db_session.commit()
+
+        def _fake_beta(db, ticker, as_of=None):
+            if ticker == "HIGHBETA.N0000":
+                return BetaResult(
+                    dimson_beta=Decimal("1.4"), blume_adjusted_beta=Decimal("1.4"),
+                    lag_coefficient=None, contemporaneous_coefficient=None, lead_coefficient=None,
+                    observations=60, sessions_in_window=60, thin_trading=False,
+                    insufficient_data=False, reason=None,
+                )
+            return BetaResult(
+                dimson_beta=None, blume_adjusted_beta=None, lag_coefficient=None,
+                contemporaneous_coefficient=None, lead_coefficient=None, observations=0,
+                sessions_in_window=0, thin_trading=True, insufficient_data=True, reason="no history",
+            )
+
+        monkeypatch.setattr(pvv, "beta_for", _fake_beta)
+        # Equal value in each (1000 * 10 each) -> only HIGHBETA counts ->
+        # portfolio beta == 1.4, coverage 50% of priced value.
+        snapshot = store_portfolio_snapshot(
+            db_session, _parsed_multi(("HIGHBETA.N0000", 1000, 5), ("NOBETA.N0000", 1000, 5)), source_filename="p.xlsx",
+        )
+        rollups = value_portfolio(db_session, snapshot, AS_OF).rollups
+        assert rollups.portfolio_beta == Decimal("1.4")
+        assert rollups.beta_coverage_pct == Decimal(50)
+
+    def test_trailing_dividend_income_counts_confirmed_in_window_rows_only(self, db_session):
+        from app.models.corporate_actions import CorporateAction
+        from app.models.enums import CorporateActionType
+
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add(Security(ticker="DIV.N0000", name="Dividend Payer"))
+        db_session.add(PriceDaily(ticker="DIV.N0000", date=AS_OF, close=Decimal("50.0"), adj_factor=Decimal(1), fetched_at=now))
+        db_session.add_all([
+            # confirmed, in the trailing 12 months -> counts
+            CorporateAction(
+                ticker="DIV.N0000", ex_date=AS_OF - dt.timedelta(days=100),
+                type=CorporateActionType.DIVIDEND_CASH, cash_amount=Decimal("2.0"), confirmed_by="tester",
+            ),
+            # confirmed, but older than 365 days -> ignored
+            CorporateAction(
+                ticker="DIV.N0000", ex_date=AS_OF - dt.timedelta(days=400),
+                type=CorporateActionType.DIVIDEND_CASH, cash_amount=Decimal("9.0"), confirmed_by="tester",
+            ),
+            # in window, but NOT confirmed -> ignored
+            CorporateAction(
+                ticker="DIV.N0000", ex_date=AS_OF - dt.timedelta(days=50),
+                type=CorporateActionType.DIVIDEND_CASH, cash_amount=Decimal("5.0"), confirmed_by=None,
+            ),
+        ])
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(db_session, _parsed("DIV.N0000", quantity=Decimal(1000), avg_price=Decimal(40)), source_filename="p.xlsx")
+
+        rollups = value_portfolio(db_session, snapshot, AS_OF).rollups
+        # 1000 shares * 2.0 per-share TTM dividend
+        assert rollups.trailing_dividend_income == Decimal("2000.0")
+        assert rollups.dividend_positions_counted == 1
+
+    def test_trailing_dividend_income_is_none_not_zero_when_nothing_qualifies(self, db_session):
+        now = dt.datetime.now(dt.timezone.utc)
+        db_session.add(Security(ticker="JKH.N0000", name="John Keells Holdings"))
+        db_session.add(PriceDaily(ticker="JKH.N0000", date=AS_OF, close=Decimal("25.0"), adj_factor=Decimal(1), fetched_at=now))
+        db_session.commit()
+        snapshot = store_portfolio_snapshot(db_session, _parsed("JKH.N0000"), source_filename="p.xlsx")
+
+        rollups = value_portfolio(db_session, snapshot, AS_OF).rollups
+        assert rollups.trailing_dividend_income is None
+        assert rollups.dividend_positions_counted == 0

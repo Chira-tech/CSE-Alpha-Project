@@ -99,6 +99,13 @@ class DataHealth(BaseModel):
     fundamentals_pending_confirmation: int
     fundamentals_confirmed: int
 
+    fundamentals_confirmed_last_7d: int
+    corporate_actions_confirmed_last_7d: int
+    """Rolling 7-day confirm counts — the burn-down signal the redesign
+    doc (§3.6) asks for on this screen: "Queue: 340 → 12 this week" is
+    only legible if the rate things are being cleared is visible next to
+    the backlog size."""
+
     quarantined: list[QuarantinedTicker]
     universe_integrity: UniverseIntegrityMetrics
 
@@ -277,6 +284,24 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         or 0
     )
 
+    week_ago = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
+    f_confirmed_7d = (
+        db.scalar(
+            select(func.count())
+            .select_from(Fundamental)
+            .where(Fundamental.confirmed_at.is_not(None), Fundamental.confirmed_at >= week_ago)
+        )
+        or 0
+    )
+    ca_confirmed_7d = (
+        db.scalar(
+            select(func.count())
+            .select_from(CorporateAction)
+            .where(CorporateAction.confirmed_at.is_not(None), CorporateAction.confirmed_at >= week_ago)
+        )
+        or 0
+    )
+
     alerts = db.scalars(
         select(DataAlert).where(DataAlert.resolved.is_(False)).order_by(DataAlert.raised_at.desc())
     ).all()
@@ -306,6 +331,8 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         fundamentals_total=f_total,
         fundamentals_pending_confirmation=f_pending,
         fundamentals_confirmed=f_confirmed,
+        fundamentals_confirmed_last_7d=f_confirmed_7d,
+        corporate_actions_confirmed_last_7d=ca_confirmed_7d,
         fundamentals_pending_by_ticker=[
             TickerPendingCount(ticker=t, count=c) for t, c in f_pending_by_ticker
         ],
