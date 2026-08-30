@@ -36,6 +36,7 @@ from app.config import settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.domain import universe_integrity as ui  # noqa: E402
 from app.domain.instrument_type import issuer_code  # noqa: E402
+from app.domain.liquidity_view import liquidity_snapshot_for  # noqa: E402
 from app.models.corporate_actions import CorporateAction, CorporateActionType  # noqa: E402
 from app.models.data_quality import DataAlert  # noqa: E402
 from app.models.float_data import FloatData  # noqa: E402
@@ -151,7 +152,8 @@ def _run(db: Session, out_path: Path) -> None:
     # Price discontinuities, split three ways (see the report section).
     disc_near_ca: list[tuple[str, dt.date, float]] = []
     disc_decimal: list[tuple[str, dt.date, float]] = []
-    disc_unexplained: list[tuple[str, dt.date, float]] = []
+    disc_unexplained: list[tuple[str, dt.date, float]] = []  # liquid or extreme -> quarantines
+    disc_thin: list[tuple[str, dt.date, float]] = []  # thin name, ordinary jump -> report only
 
     def record(finding: ui.IntegrityFinding | None) -> None:
         if finding is not None:
@@ -185,6 +187,12 @@ def _run(db: Session, out_path: Path) -> None:
             )
 
         ca_dates = sorted(_corporate_action_dates(db, s.ticker))
+        liq = liquidity_snapshot_for(db, s.ticker, TODAY)
+        is_liquid = (
+            liq.median_daily_turnover_60d_lkr >= settings.gate1_min_median_daily_turnover_lkr
+            if liq.days_of_real_history_available > 0
+            else None
+        )
         for d, ret in _one_day_returns(db, s.ticker):
             if abs(ret) <= ui.PRICE_DISCONTINUITY_RETURN:
                 continue
@@ -193,8 +201,10 @@ def _run(db: Session, out_path: Path) -> None:
                 disc_near_ca.append((s.ticker, d, float(ret)))
             elif abs(factor - 10) < 1.5 or abs(factor - 0.1) < 0.03:
                 disc_decimal.append((s.ticker, d, float(ret)))
-            else:
+            elif is_liquid or abs(ret) > ui.EXTREME_DISCONTINUITY_RETURN:
                 disc_unexplained.append((s.ticker, d, float(ret)))
+            else:
+                disc_thin.append((s.ticker, d, float(ret)))
 
     # --- Financial-sector lines with no independent beta on file: a cheap,
     # honestly-partial proxy for "CoE may be unavailable". A real per-name
@@ -274,9 +284,16 @@ def _run(db: Session, out_path: Path) -> None:
     )
     table_rows.append(
         [
-            "Price discontinuity — genuinely unexplained (quarantines)",
+            "Price discontinuity — liquid name or extreme move (QUARANTINES)",
             f"{len(disc_unexplained)} events / {disc_tickers(disc_unexplained)} lines",
             disc_unexplained[0][0] if disc_unexplained else "—",
+        ]
+    )
+    table_rows.append(
+        [
+            "Price discontinuity — thin name, ordinary jump (report only)",
+            f"{len(disc_thin)} events / {disc_tickers(disc_thin)} lines",
+            disc_thin[0][0] if disc_thin else "—",
         ]
     )
     table_rows.append(["Cost of equity unavailable (proxy: financial line, no beta)", str(fin_no_beta), "—"])
@@ -333,11 +350,23 @@ def _run(db: Session, out_path: Path) -> None:
         "price row(s) at source and re-ingest.",
     )
     _disc_section(
-        "Price discontinuity — genuinely unexplained",
+        "Price discontinuity — liquid name or extreme move (QUARANTINES)",
         disc_unexplained,
-        "A >30% one-day move with no corporate action nearby and no round-number signature. On "
-        "the CSE many of these are real moves in very thin small-caps; each still needs a human "
-        "eye before it is trusted. THIS is the bucket the enforcing job quarantines on.",
+        "A >30% one-day move with no corporate action nearby and no round-number signature, on a "
+        "name that either trades liquidly (median 60-session turnover >= LKR "
+        f"{settings.gate1_min_median_daily_turnover_lkr:,.0f}) or moved past +130% / -57% "
+        "regardless. A liquid name should not move this much without an explanation, and an "
+        "extreme move on any name is decimal-shift / wrong-line territory. THIS is the only "
+        "bucket the enforcing job quarantines on — each still needs a human eye to confirm.",
+    )
+    _disc_section(
+        "Price discontinuity — thin name, ordinary jump (report only)",
+        disc_thin,
+        "A 30-130% one-day move on a thinly-traded name (median 60-session turnover < LKR "
+        f"{settings.gate1_min_median_daily_turnover_lkr:,.0f}, or too little real history to "
+        "assess). A single small trade genuinely moves an illiquid CSE small-cap this far — "
+        "spec §Check 6's band is meant to be 'wide enough to never fire on a real opportunity' "
+        "— so these are surfaced for a human worklist but do NOT quarantine the name.",
     )
 
     lines.append("## Currently-open DataAlerts (the enforcing side, already live)")

@@ -1,6 +1,6 @@
 # Universe Integrity — Phase 1 Triage
 
-Generated: 2026-08-30T11:22:36+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
+Generated: 2026-08-30T11:29:08+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
 
 Report-only. Every number below is reproducible by re-running `python -m scripts.audit_universe_integrity` from `backend/`. Nothing was written; no ticker was quarantined. This is the measurement the rollout's Phase 2 acts on.
 
@@ -22,7 +22,8 @@ Report-only. Every number below is reproducible by re-running `python -m scripts
 | Sector model routing gap | 58 | AFS.N0000 |
 | Price discontinuity — at a raw/adjusted feed join, near a split | 36 events / 34 lines | ACL.N0000 |
 | Price discontinuity — decimal / units artefact (~10x, no action) | 1 events / 1 lines | ABL.N0000 |
-| Price discontinuity — genuinely unexplained (quarantines) | 327 events / 42 lines | AAIC.N0000 |
+| Price discontinuity — liquid name or extreme move (QUARANTINES) | 24 events / 11 lines | AAIC.N0000 |
+| Price discontinuity — thin name, ordinary jump (report only) | 303 events / 32 lines | ACME.N0000 |
 | Cost of equity unavailable (proxy: financial line, no beta) | 0 | — |
 
 ## Detail, per bucket
@@ -150,30 +151,50 @@ A ~10x or ~0.1x one-day jump with no corporate action anywhere near — a decima
 
 - ABL.N0000 2024-07-15 +918%
 
-### Price discontinuity — genuinely unexplained — 327 events across 42 lines
+### Price discontinuity — liquid name or extreme move (QUARANTINES) — 24 events across 11 lines
 
-A >30% one-day move with no corporate action nearby and no round-number signature. On the CSE many of these are real moves in very thin small-caps; each still needs a human eye before it is trusted. THIS is the bucket the enforcing job quarantines on.
+A >30% one-day move with no corporate action nearby and no round-number signature, on a name that either trades liquidly (median 60-session turnover >= LKR 2,000,000) or moved past +130% / -57% regardless. A liquid name should not move this much without an explanation, and an extreme move on any name is decimal-shift / wrong-line territory. THIS is the only bucket the enforcing job quarantines on — each still needs a human eye to confirm.
 
 - TAP.N0000 2026-01-16 +464%
 - SCAP.N0000 2024-07-13 +137%
-- MERC.N0000 2025-10-13 +125%
 - AAIC.N0000 2024-09-28 +116%
-- TAP.N0000 2026-01-15 -82%
-- AFS.N0000 2024-01-26 -81%
 - LIOC.N0000 2026-01-07 +75%
 - SCAP.N0000 2025-03-23 +75%
+- RCL.N0000 2025-07-28 +63%
+- SCAP.N0000 2024-07-15 -58%
+- DOCK.N0000 2025-07-02 +57%
+- AAIC.N0000 2024-09-30 -53%
+- TKYO.X0000 2023-10-02 +50%
+- SHL.N0000 2026-03-10 +47%
+- SCAP.N0000 2025-03-24 -44%
+- SEMB.N0000 2025-10-09 +43%
+- LIOC.N0000 2026-01-08 -42%
+- SCAP.N0000 2023-09-30 +41%
+- SCAP.N0000 2025-07-05 +41%
+- TKYO.X0000 2023-09-30 -34%
+- RCL.N0000 2025-07-27 -33%
+- BIL.N0000 2024-12-02 +33%
+- BIL.N0000 2025-12-22 +32%
+- LOFC.N0000 2024-09-16 +31%
+- SCAP.N0000 2023-10-02 -31%
+- DOCK.N0000 2025-12-29 +31%
+- SCAP.N0000 2025-07-07 -30%
+
+### Price discontinuity — thin name, ordinary jump (report only) — 303 events across 32 lines
+
+A 30-130% one-day move on a thinly-traded name (median 60-session turnover < LKR 2,000,000, or too little real history to assess). A single small trade genuinely moves an illiquid CSE small-cap this far — spec §Check 6's band is meant to be 'wide enough to never fire on a real opportunity' — so these are surfaced for a human worklist but do NOT quarantine the name.
+
+- MERC.N0000 2025-10-13 +125%
+- TAP.N0000 2026-01-15 -82%
+- AFS.N0000 2024-01-26 -81%
 - LGL.N0000 2025-09-08 +65%
 - LPL.X0000 2025-09-08 +63%
 - BRWN.N0000 2026-04-15 +63%
-- RCL.N0000 2025-07-28 +63%
 - ASPH.N0000 2026-07-08 +60%
 - NEH.N0000 2024-01-12 +60%
 - LPL.N0000 2025-09-08 +58%
-- SCAP.N0000 2024-07-15 -58%
-- DOCK.N0000 2025-07-02 +57%
 - LGL.X0000 2025-09-08 +56%
 - SING.N0000 2023-08-23 +54%
-- AAIC.N0000 2024-09-30 -53%
 - ASPH.N0000 2023-10-12 +50%
 - ASPH.N0000 2023-10-16 +50%
 - ASPH.N0000 2023-10-19 +50%
@@ -194,13 +215,23 @@ A >30% one-day move with no corporate action nearby and no round-number signatur
 - SEMB.X0000 2024-02-14 +50%
 - SEMB.X0000 2024-02-20 +50%
 - SEMB.X0000 2024-02-27 +50%
-- … and 287 more
+- SEMB.X0000 2024-02-29 +50%
+- SEMB.X0000 2024-04-03 +50%
+- SEMB.X0000 2024-05-29 +50%
+- SEMB.X0000 2024-06-04 +50%
+- SEMB.X0000 2024-06-14 +50%
+- SEMB.X0000 2024-07-05 +50%
+- SEMB.X0000 2024-07-23 +50%
+- SEMB.X0000 2024-07-29 +50%
+- SEMB.X0000 2024-08-02 +50%
+- … and 263 more
 
 ## Currently-open DataAlerts (the enforcing side, already live)
 
 | alert_type | open |
 |---|---|
 | valuation_sanity_block | 8 |
+| price_discontinuity | 7 |
 | second_source_mismatch | 5 |
 | market_cap_mismatch | 5 |
 

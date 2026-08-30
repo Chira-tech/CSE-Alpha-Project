@@ -35,7 +35,9 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.domain import universe_integrity as ui
+from app.domain.liquidity_view import liquidity_snapshot_for
 from app.models.corporate_actions import CorporateAction, CorporateActionType
 from app.models.data_quality import DataAlert
 from app.models.prices import PriceDaily
@@ -195,14 +197,26 @@ def check_ticker(db: Session, ticker: str, as_of: dt.date) -> list[DataAlert]:
         if alert is not None:
             raised.append(alert)
 
-    # --- Unexplained 1-day price discontinuity
+    # --- Unexplained 1-day price discontinuity. Gated on liquidity: a
+    # thin name printing +40% on one small trade is normal thin-market
+    # behaviour, not a data error, so it stays report-only rather than
+    # quarantining the name (see check_price_discontinuity's docstring).
     worst = _worst_recent_discontinuity(db, ticker, as_of)
-    disc = (
-        ui.check_price_discontinuity(ticker, worst[1], worst[0], has_nearby_corporate_action=False)
-        if worst is not None
-        else None
-    )
-    alert = _apply(db, ticker, disc, ui.ALERT_PRICE_DISCONTINUITY)
+    disc = None
+    if worst is not None:
+        snap = liquidity_snapshot_for(db, ticker, as_of)
+        is_liquid = (
+            snap.median_daily_turnover_60d_lkr >= settings.gate1_min_median_daily_turnover_lkr
+            if snap.days_of_real_history_available > 0
+            else None
+        )
+        disc = ui.check_price_discontinuity(
+            ticker, worst[1], worst[0], has_nearby_corporate_action=False, is_liquid=is_liquid
+        )
+    # Only a HARD finding raises/holds a quarantine row; the report-only
+    # `info` finding for a thin name's ordinary jump does not.
+    hard_disc = disc if disc is not None and disc.severity == "hard" else None
+    alert = _apply(db, ticker, hard_disc, ui.ALERT_PRICE_DISCONTINUITY)
     if alert is not None:
         raised.append(alert)
 

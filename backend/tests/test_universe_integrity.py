@@ -118,18 +118,41 @@ class TestImpliedMultipleBand:
 
 
 class TestPriceDiscontinuity:
-    def test_large_move_with_no_nearby_action_fails(self):
+    def test_extreme_move_quarantines_a_thin_name(self):
         f = ui.check_price_discontinuity(
-            "ABL.N0000", Decimal("9.18"), dt.date(2024, 7, 15), has_nearby_corporate_action=False
+            "ABL.N0000", Decimal("9.18"), dt.date(2024, 7, 15),
+            has_nearby_corporate_action=False, is_liquid=False,
         )
-        assert f is not None and f.check == ui.ALERT_PRICE_DISCONTINUITY
+        assert f is not None and f.severity == "hard" and f.check == ui.ALERT_PRICE_DISCONTINUITY
+
+    def test_large_move_on_a_liquid_name_quarantines(self):
+        f = ui.check_price_discontinuity(
+            "LIOC.N0000", Decimal("0.75"), dt.date(2026, 1, 7),
+            has_nearby_corporate_action=False, is_liquid=True,
+        )
+        assert f is not None and f.severity == "hard"
+
+    def test_ordinary_large_move_on_a_thin_name_is_report_only(self):
+        f = ui.check_price_discontinuity(
+            "TINY.N0000", Decimal("0.45"), dt.date(2026, 1, 7),
+            has_nearby_corporate_action=False, is_liquid=False,
+        )
+        assert f is not None and f.severity == "info" and f.check == "thin_name_price_jump"
+
+    def test_unknown_liquidity_is_treated_like_thin(self):
+        f = ui.check_price_discontinuity(
+            "NEW.N0000", Decimal("0.5"), dt.date(2026, 1, 7),
+            has_nearby_corporate_action=False, is_liquid=None,
+        )
+        assert f is not None and f.severity == "info"
 
     def test_large_move_near_a_corporate_action_is_clean(self):
         # "near", not "on" — a split's ex_date and the real re-basing
         # session are routinely a few days apart on the CSE.
         assert (
             ui.check_price_discontinuity(
-                "X.N0000", Decimal("-0.5"), dt.date(2024, 1, 1), has_nearby_corporate_action=True
+                "X.N0000", Decimal("-0.5"), dt.date(2024, 1, 1),
+                has_nearby_corporate_action=True, is_liquid=True,
             )
             is None
         )
@@ -137,7 +160,8 @@ class TestPriceDiscontinuity:
     def test_ordinary_move_is_clean(self):
         assert (
             ui.check_price_discontinuity(
-                "X.N0000", Decimal("0.04"), dt.date(2024, 1, 1), has_nearby_corporate_action=False
+                "X.N0000", Decimal("0.04"), dt.date(2024, 1, 1),
+                has_nearby_corporate_action=False, is_liquid=True,
             )
             is None
         )

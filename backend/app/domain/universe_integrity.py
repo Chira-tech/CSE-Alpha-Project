@@ -78,10 +78,20 @@ SOFT_ALERT_TYPES: frozenset[str] = frozenset(
 #: without risking a live line during a slow offer.
 RIGHTS_LINE_STALE_DAYS = 21
 
-#: A 1-day return larger than this with no corporate action on the date is
-#: not a price move, it is a data error (a split not applied, a decimal
-#: shift, a wrong-line swap). Spec §Check 6.
+#: A 1-day return larger than this, with no corporate action nearby, is
+#: suspicious. On a LIQUID name it is quarantined outright — a name that
+#: trades every day should not move this much without an explanation.
+#: Spec §Check 6.
 PRICE_DISCONTINUITY_RETURN = Decimal("0.30")
+
+#: On a THIN name (or one whose liquidity can't be assessed), an ordinary
+#: >30% print is genuinely normal thin-market behaviour — a single small
+#: trade can move an illiquid stock that far — so it stays a report-only
+#: signal, not a quarantine (spec §Check 6: "wide enough to never fire on
+#: a real opportunity"). Only a move past THIS threshold — a +130% /
+#: -57% single session, well into decimal-shift / wrong-line territory —
+#: quarantines a thin name.
+EXTREME_DISCONTINUITY_RETURN = Decimal("1.30")
 
 #: How close the nil-paid-rights implied cum-price must land to a real
 #: computed TERP before it is called a fingerprint match rather than a
@@ -320,7 +330,9 @@ def check_price_discontinuity(
     on_date: dt.date | None,
     has_nearby_corporate_action: bool,
     *,
+    is_liquid: bool | None,
     threshold: Decimal = PRICE_DISCONTINUITY_RETURN,
+    extreme_threshold: Decimal = EXTREME_DISCONTINUITY_RETURN,
 ) -> IntegrityFinding | None:
     """A single-day return past ±30% with no corporate action NEAR that
     date (spec §Check 6, line 1). "Near", not "on": a split's stored
@@ -328,26 +340,60 @@ def check_price_discontinuity(
     few days apart on the CSE (settlement lag, or the scraper capturing
     the announcement date) — measured against the real dev data, exact-
     date matching left ~330 explained split/rights moves looking
-    unexplained. The caller passes a windowed check (see
-    `app.jobs.universe_integrity_checks._worst_recent_discontinuity`). The
-    companion "corporate action on the date but adjustment factor still
-    1.0" is already caught for the whole universe by `app.jobs.
-    reconciliation`."""
+    unexplained.
+
+    `is_liquid` gates whether an ordinary >30% move quarantines or is
+    merely reported. Measured against the real dev universe, 21 of 26
+    names this check would have quarantined trade fewer than 8 sessions
+    in 120 at under LKR 1M/day — an illiquid stock genuinely CAN print
+    +40% on a single small trade, and excluding it from the whole product
+    for that is the "fires on a real opportunity" failure spec §Check 6
+    explicitly warns against. So on a thin name (`is_liquid=False`), or
+    one whose liquidity can't be assessed yet (`is_liquid=None`), only an
+    EXTREME move (`extreme_threshold`, +130% / -57% — decimal-shift and
+    wrong-line territory) quarantines; a merely-large one returns a
+    report-only `info` finding. The caller passes a windowed corporate-
+    action check (see `app.jobs.universe_integrity_checks._worst_recent_
+    discontinuity`). The companion "corporate action on the date but
+    adjustment factor still 1.0" is already caught for the whole universe
+    by `app.jobs.reconciliation`."""
     if return_1d is None:
         return None
     if abs(return_1d) <= threshold or has_nearby_corporate_action:
         return None
+
+    extreme = abs(return_1d) > extreme_threshold
+    quarantines = bool(is_liquid) or extreme
+    where = f" on {on_date}" if on_date is not None else ""
+    if quarantines:
+        detail = (
+            f"{symbol} moved {return_1d:+.0%} in one session{where} with no corporate action "
+            "anywhere near that date"
+            + (
+                " — far past any plausible thin-market print, so a decimal shift, a split not "
+                "applied, or a wrong-line swap rather than a real move."
+                if extreme and not is_liquid
+                else ", and the name trades liquidly enough that a move this size should be "
+                "explicable — a split not applied, a decimal shift, or a wrong-line swap."
+            )
+        )
+        return IntegrityFinding(
+            check=ALERT_PRICE_DISCONTINUITY,
+            severity="hard",
+            bucket="Unexplained price discontinuity",
+            detail=detail,
+            evidence={"return_1d": f"{return_1d:+.2%}", "on_date": str(on_date), "liquid": str(is_liquid)},
+        )
     return IntegrityFinding(
-        check=ALERT_PRICE_DISCONTINUITY,
-        severity="hard",
-        bucket="Unexplained price discontinuity",
+        check="thin_name_price_jump",
+        severity="info",
+        bucket="Large one-day move on a thin name (report only)",
         detail=(
-            f"{symbol} moved {return_1d:+.0%} in one session"
-            + (f" on {on_date}" if on_date is not None else "")
-            + " with no corporate action anywhere near that date — a split not applied, a decimal "
-            "shift, or a wrong-line swap rather than a real move."
+            f"{symbol} moved {return_1d:+.0%} in one session{where} with no corporate action "
+            "nearby — but the name is thinly traded, where a single small trade can move the "
+            "price this far, so this is surfaced for a human eye rather than quarantined."
         ),
-        evidence={"return_1d": f"{return_1d:+.2%}", "on_date": str(on_date)},
+        evidence={"return_1d": f"{return_1d:+.2%}", "on_date": str(on_date), "liquid": str(is_liquid)},
     )
 
 
