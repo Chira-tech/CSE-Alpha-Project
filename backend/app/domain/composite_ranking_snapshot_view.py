@@ -52,6 +52,10 @@ INSIGHT_MIN_SCORE_MOVE = Decimal(4)
 #: `pillars_included` disclosure.
 INSIGHT_MIN_PILLARS = 5
 
+#: A verdict-transition sentence names at most this many tickers, then
+#: "and N more" — enough to scan, not a wall of text on a heavy week.
+INSIGHT_MAX_VERDICT_NAMES = 10
+
 
 # --------------------------------------------------------------------------
 # Canonical serialization: CompositeRankingView -> plain JSON-able dict
@@ -215,11 +219,17 @@ def build_insights(latest_payload: dict, prior_payload: dict | None) -> list[str
     prior_rows = {r["ticker"]: r for r in prior_payload.get("ranked", [])}
 
     # --- Verdict transitions
+    #
+    # Only transitions between two REAL calls count as a decision. A move
+    # in or out of "Insufficient data" / "Withheld" is the engine gaining
+    # or losing coverage for a name, not a view changing — reporting it
+    # here (especially in bulk, the week a backlog of filings lands or a
+    # backfill runs) would bury the handful of genuine re-rates under a
+    # coverage-churn list. Coverage is the trust bar's job, not this one.
     improved: list[str] = []
     softened: list[str] = []
     _RANK = {
-        "Strong Buy": 0, "Buy": 1, "Accumulate": 2, "Hold": 3,
-        "Trim": 4, "Sell": 5, "Insufficient data": 6, "Withheld": 7,
+        "Strong Buy": 0, "Buy": 1, "Accumulate": 2, "Hold": 3, "Trim": 4, "Sell": 5,
     }
     for ticker, row in latest_rows.items():
         prior = prior_rows.get(ticker)
@@ -232,10 +242,17 @@ def build_insights(latest_payload: dict, prior_payload: dict | None) -> list[str
             improved.append(f"{ticker} {was_v}→{now_v}")
         else:
             softened.append(f"{ticker} {was_v}→{now_v}")
+
+    def _verdict_sentence(lead: str, items: list[str]) -> str:
+        shown = sorted(items)[:INSIGHT_MAX_VERDICT_NAMES]
+        rest = len(items) - len(shown)
+        tail = f", and {rest} more" if rest > 0 else ""
+        return f"{lead}: " + ", ".join(shown) + tail
+
     if improved:
-        insights.append("Verdict improved since last week: " + ", ".join(sorted(improved)))
+        insights.append(_verdict_sentence("Verdict improved since last week", improved))
     if softened:
-        insights.append("Verdict softened since last week: " + ", ".join(sorted(softened)))
+        insights.append(_verdict_sentence("Verdict softened since last week", softened))
 
     # --- Biggest score movers (well-corroborated rows only)
     movers: list[tuple[Decimal, str]] = []

@@ -155,6 +155,48 @@ def test_build_insights_reports_verdict_moves_score_moves_and_sector_shifts():
     assert "Banks sector average" in blob
 
 
+def test_build_insights_ignores_transitions_in_and_out_of_no_call_states():
+    """Gaining or losing coverage for a name (Insufficient data / Withheld
+    ↔ a real verdict) is not a decision changing — it belongs to the
+    trust bar, not the decisions list — so it never appears here, however
+    many names move at once."""
+    prior = serialize_ranking(
+        _view(
+            dt.date(2026, 8, 23),
+            [
+                _row("NEWCOV.N0000", score=55, verdict="Insufficient data"),
+                _row("LOSTCOV.N0000", score=55, verdict="Sell"),
+                _row("REAL.N0000", score=60, verdict="Hold"),
+            ],
+        )
+    )
+    latest = serialize_ranking(
+        _view(
+            dt.date(2026, 8, 30),
+            [
+                _row("NEWCOV.N0000", score=55, verdict="Sell"),      # coverage gained — ignored
+                _row("LOSTCOV.N0000", score=55, verdict="Withheld"),  # coverage lost — ignored
+                _row("REAL.N0000", score=60, verdict="Trim"),         # real re-rate — reported
+            ],
+        )
+    )
+    blob = " | ".join(build_insights(latest, prior))
+    assert "NEWCOV" not in blob and "LOSTCOV" not in blob
+    assert "REAL.N0000" in blob and "Hold→Trim" in blob
+
+
+def test_verdict_transition_sentence_caps_the_name_list():
+    prior = serialize_ranking(
+        _view(dt.date(2026, 8, 23), [_row(f"T{i:03d}.N0000", score=50, verdict="Hold") for i in range(20)])
+    )
+    latest = serialize_ranking(
+        _view(dt.date(2026, 8, 30), [_row(f"T{i:03d}.N0000", score=50, verdict="Sell") for i in range(20)])
+    )
+    (sentence,) = [s for s in build_insights(latest, prior) if "Verdict softened" in s]
+    assert "and 10 more" in sentence
+    assert sentence.count("→") == 10
+
+
 def test_score_series_by_ticker_is_oldest_first_and_skips_unranked_runs(db_session):
     write_snapshot(
         db_session, _view(dt.date(2026, 8, 20), [_row("AAA.N0000", score=55)]),
