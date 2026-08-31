@@ -1097,7 +1097,17 @@ function SecurityStatusBanner({ data }: { data: SecurityDetail }) {
   if (data.status === "provisional") {
     return (
       <div className="notice notice-neutral" role="status">
-        <h3>Provisional — no maximum-conviction verdict for this name</h3>
+        <h3>
+          {data.verdict_cap === "hold"
+            ? "Provisional — rating capped at Hold (trailing net loss, declining earnings)"
+            : "Provisional — no maximum-conviction verdict for this name"}
+        </h3>
+        {data.verdict_cap === "hold" && (
+          <p className="prose t-body" style={{ margin: "var(--s2) 0 0" }}>
+            Any positive fair value below is turnaround-dependent — it prices in a return to profit
+            that is not yet in the reported numbers. No Buy / Accumulate verdict is shown.
+          </p>
+        )}
         <ul style={{ margin: "var(--s2) 0 0", paddingLeft: "var(--s4)" }}>
           {data.soft_flags.map((f) => (
             <li key={f} className="t-body prose">{f}</li>

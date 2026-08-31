@@ -178,3 +178,119 @@ class TestCase9And10_PeriodAndCurrency:
             value=Decimal("1"), currency="USD",
         )
         assert f.currency == "USD"
+
+
+# --------------------------------------------------------------------------
+# Case 11 — HDFC.N0000, FY trailing net loss on a declining earnings trend
+#
+# The second confirmed real case (2026-08-31): a "Strong Accumulate" at
+# composite 65.9/100 published on a company with a FY2025 net loss and a
+# multi-year declining earnings trend. The verdict must be capped.
+# --------------------------------------------------------------------------
+class TestCase11_NegativeEarningsTrendVerdictCap:
+    def test_check8_fires_on_a_trailing_loss_and_declining_trend(self):
+        f = ui.check_profitability_trend_consistency(
+            "HDFC.N0000", Decimal("-93000000"), True, trend_periods=5
+        )
+        assert f is not None
+        assert f.severity == "soft"
+        assert f.check == ui.ALERT_NEGATIVE_EARNINGS_TREND
+        assert ui.ALERT_NEGATIVE_EARNINGS_TREND in ui.SOFT_ALERT_TYPES  # → PROVISIONAL, not QUARANTINED
+
+    def test_security_status_caps_the_verdict_at_hold(self, db_session):
+        from app.domain.security_status_view import SecurityStatus, security_status_for
+        from app.models.enums import ProvenanceTier
+        from app.models.fundamentals import Fundamental
+        from app.models.prices import PriceDaily
+        from app.models.securities import Security
+
+        as_of = dt.date(2026, 8, 31)
+        db_session.add(Security(ticker="HDFC.N0000", name="HDFC Bank of Sri Lanka",
+                                issuer_code="HDFC", instrument_type="ordinary"))
+        db_session.add(PriceDaily(ticker="HDFC.N0000", date=as_of - dt.timedelta(days=1),
+                                  close=Decimal("40"), source="cse.lk",
+                                  fetched_at=dt.datetime(2026, 8, 31, tzinfo=dt.timezone.utc)))
+        for year, ni in ((2021, "900000000"), (2022, "500000000"), (2023, "120000000"),
+                         (2024, "-15000000"), (2025, "-93000000")):
+            db_session.add(Fundamental(
+                ticker="HDFC.N0000", period_end=dt.date(year, 12, 31), period_type="annual",
+                first_available_date=dt.date(year + 1, 3, 1), version=1,
+                statement_line="net_income", value=Decimal(ni),
+                provenance_tier=ProvenanceTier.REPORTED,
+            ))
+        db_session.commit()
+
+        v = security_status_for(db_session, "HDFC.N0000", as_of=as_of)
+        assert v.status is SecurityStatus.PROVISIONAL
+        assert v.verdict_cap == "hold"
+        assert v.blockers == ()  # not quarantined — the valuation may still be shown
+
+
+# --------------------------------------------------------------------------
+# Case 6 — a suspended security
+#
+# Spec Part 6 case 6: a suspended (or delisted) line is QUARANTINED and
+# drops out of the ranking entirely — the exchange has halted trading, so
+# there is no live price to rank on. `securities.trading_status` carries
+# the state; `scripts.backfill_trading_status` derives it.
+# --------------------------------------------------------------------------
+class TestCase6_SuspendedSecurityIsQuarantined:
+    def test_suspended_status_is_quarantined_and_excluded_from_ranking(self, db_session):
+        from app.domain.security_status_view import SecurityStatus, security_status_for
+        from app.jobs.reconciliation import is_quarantined
+        from app.models.prices import PriceDaily
+        from app.models.securities import Security
+
+        as_of = dt.date(2026, 8, 31)
+        db_session.add(Security(ticker="SUSP.N0000", name="Suspended Co",
+                                issuer_code="SUSP", instrument_type="ordinary",
+                                trading_status="suspended"))
+        db_session.add(PriceDaily(ticker="SUSP.N0000", date=as_of - dt.timedelta(days=200),
+                                  close=Decimal("8.00"), source="cse.lk",
+                                  fetched_at=dt.datetime(2026, 8, 31, tzinfo=dt.timezone.utc)))
+        db_session.commit()
+
+        v = security_status_for(db_session, "SUSP.N0000", as_of=as_of)
+        assert v.status is SecurityStatus.QUARANTINED
+        assert any("suspended" in b for b in v.blockers)
+        # is_quarantined is the gate both ranking views call to drop a name.
+        assert is_quarantined(db_session, "SUSP.N0000") is True
+
+    def test_an_active_line_is_not_quarantined_by_status(self, db_session):
+        from app.jobs.reconciliation import is_quarantined
+        from app.models.securities import Security
+
+        db_session.add(Security(ticker="LIVE.N0000", name="Trading Co",
+                                issuer_code="LIVE", instrument_type="ordinary",
+                                trading_status="active"))
+        db_session.commit()
+        assert is_quarantined(db_session, "LIVE.N0000") is False
+
+
+# --------------------------------------------------------------------------
+# Case 7 — an illiquid name whose last trade is weeks old
+#
+# Out of numeric order because it needs the same DB fixture as case 11.
+# Spec Part 6 case 7: a name that has not traded in over a month is
+# PROVISIONAL (not quarantined) and the staleness is surfaced as a named
+# soft flag rather than the stale price being served as if it were live.
+# --------------------------------------------------------------------------
+class TestCase7_IlliquidStalePriceIsProvisional:
+    def test_a_month_old_last_trade_makes_the_name_provisional(self, db_session):
+        from app.domain.security_status_view import SecurityStatus, security_status_for
+        from app.models.prices import PriceDaily
+        from app.models.securities import Security
+
+        as_of = dt.date(2026, 8, 31)
+        db_session.add(Security(ticker="THIN.N0000", name="Thinly Traded PLC",
+                                issuer_code="THIN", instrument_type="ordinary"))
+        db_session.add(PriceDaily(ticker="THIN.N0000", date=as_of - dt.timedelta(days=35),
+                                  close=Decimal("12.50"), source="cse.lk",
+                                  fetched_at=dt.datetime(2026, 8, 31, tzinfo=dt.timezone.utc)))
+        db_session.commit()
+
+        v = security_status_for(db_session, "THIN.N0000", as_of=as_of)
+        assert v.status is SecurityStatus.PROVISIONAL
+        assert v.blockers == ()  # not quarantined
+        assert any("stale" in f.lower() and "35 days" in f for f in v.soft_flags)
+        assert v.verdict_cap is None  # staleness alone does not cap at Hold

@@ -57,7 +57,7 @@ app = FastAPI(
 # are limited to local dev ports, never a wildcard.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5180"],
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
     # R1 T3.1/T3.2: Content-Disposition isn't one of the handful of

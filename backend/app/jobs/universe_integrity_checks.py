@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.domain import universe_integrity as ui
 from app.domain.liquidity_view import liquidity_snapshot_for
+from app.domain.security_status_view import negative_and_declining_earnings
 from app.models.corporate_actions import CorporateAction, CorporateActionType
 from app.models.data_quality import DataAlert
 from app.models.prices import PriceDaily
@@ -182,6 +183,22 @@ def check_ticker(db: Session, ticker: str, as_of: dt.date) -> list[DataAlert]:
     if expired is not None and security.delisting_date is None:
         security.delisting_date = close_date
     alert = _apply(db, ticker, expired, ui.ALERT_RIGHTS_LINE_EXPIRED)
+    if alert is not None:
+        raised.append(alert)
+
+    # --- Spec §Check 8 (soft): trailing net loss on a declining earnings
+    # trend → verdict capped at Hold. Same pure predicate the live
+    # `security_status_for` uses, raised here so it also shows on the Data
+    # Health quarantine list and the nightly triage.
+    trailing_ni, declining, n_periods = negative_and_declining_earnings(db, ticker, as_of)
+    alert = _apply(
+        db,
+        ticker,
+        ui.check_profitability_trend_consistency(
+            ticker, trailing_ni, declining, trend_periods=n_periods
+        ),
+        ui.ALERT_NEGATIVE_EARNINGS_TREND,
+    )
     if alert is not None:
         raised.append(alert)
 

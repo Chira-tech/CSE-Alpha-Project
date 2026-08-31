@@ -77,6 +77,20 @@ class Security(Base):
 
     listing_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     delisting_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    trading_status: Mapped[str] = mapped_column(
+        String(12), nullable=False, server_default="active"
+    )
+    """`'active' | 'suspended' | 'delisted'` — the line's CURRENT trading
+    state, as distinct from `delisting_date` (the historical fact of when
+    it left). `docs/CSE_Universe_Integrity_Rollout.md` Part 4 / golden
+    case 6: a suspended or delisted line carries no verdict and no
+    scoreboard rank — the exchange has halted trading, so there is no
+    live price to value against and any ranking would be on stale data.
+    This is a harder state than a merely illiquid name whose last trade
+    is weeks old but which is still trading (golden case 7) — that stays
+    PROVISIONAL, valuation shown with the staleness surfaced. Backfilled
+    by `scripts.backfill_trading_status`; a real exchange suspension feed
+    would set it directly."""
     board: Mapped[str | None] = mapped_column(String(50), nullable=True)
     fiscal_year_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
     """MM-DD, e.g. '03-31'. A large share of CSE companies use 31 March

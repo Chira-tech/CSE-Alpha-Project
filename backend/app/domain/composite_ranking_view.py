@@ -307,9 +307,10 @@ def _composite_ranking_for_uncached(db: Session, stamp: dt.date) -> CompositeRan
                     discount_to_fair_value_pct=None,
                     valuation_pillar_percentile=None,
                     warnings=(
-                        f"{ticker!r} is quarantined — its stored adjustment factors failed the §7 "
-                        "reconciliation check against real corporate actions, so its numbers are "
-                        "not trusted for ranking until a human resolves the data-health alert.",
+                        f"{ticker!r} is quarantined — an open data-health alert, a failed §7 "
+                        "adjustment-factor reconciliation, or a suspended/delisted trading "
+                        "status. Its numbers are not trusted for ranking until a human resolves "
+                        "it; the specific reason is on the Data Health page.",
                     ),
                 )
             )

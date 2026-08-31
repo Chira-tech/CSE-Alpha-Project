@@ -286,6 +286,10 @@ export interface SecurityDetail {
   soft_flags: string[];
   primary_line_ticker: string | null;
   primary_line_confidence: string;
+  /** docs/CSE_Universe_Integrity_Rollout.md Check 8 — "hold" when a
+   * trailing net loss on a declining earnings trend means no Buy-side
+   * verdict may be shown, whatever the models output. `null` otherwise. */
+  verdict_cap: string | null;
   price_history: PricePoint[];
   corporate_actions: CorporateActionSummary[];
   /** R1 T2.6: when the scheduled daily scan (`app.jobs.scheduler.
@@ -546,6 +550,14 @@ export interface QuarantinedTicker {
   raised_at: string;
 }
 
+export interface UniverseStatusCounts {
+  clean: number;
+  provisional: number;
+  quarantined: number;
+  unresolved: number;
+  total: number;
+}
+
 export interface UniverseIntegrityMetrics {
   issuers_total: number;
   issuers_with_a_primary_line: number;
@@ -556,6 +568,15 @@ export interface UniverseIntegrityMetrics {
   market_cap_identity_pass_pct: string | null;
   price_ratio_actions_confirmed_pct: string | null;
   median_price_staleness_days: number | null;
+  /** Part 4 / golden case 6 — lines whose trading_status is suspended or
+   * delisted. Quarantined, but carry no DataAlert. */
+  suspended_or_delisted_lines: number;
+  /** Part 7 — target 100%. PROXY: financial-sector lines carrying a
+   * published beta, so a cost of equity can be produced. */
+  cost_of_equity_available_pct: string | null;
+  /** Part 7 / Check 8 — target 0. Lines where a trailing net loss on a
+   * declining earnings trend has capped the verdict at Hold. */
+  buy_side_verdicts_on_negative_earnings_trend: number;
 }
 
 export interface DataHealth {
@@ -581,6 +602,9 @@ export interface DataHealth {
   corporate_actions_confirmed_last_7d: number;
   quarantined: QuarantinedTicker[];
   universe_integrity: UniverseIntegrityMetrics;
+  /** One row per security, classified by the formal 4-state status —
+   * backs the homepage trust bar (§6). */
+  universe_status: UniverseStatusCounts;
   /** R1 T4.1.5: top tickers by pending-figure count — real, cheap
    * proxy for where confirming pays off most. See the backend's own
    * `DataHealth.fundamentals_pending_by_ticker` docstring for why this

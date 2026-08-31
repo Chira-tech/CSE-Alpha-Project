@@ -37,9 +37,13 @@ from app.db.session import SessionLocal  # noqa: E402
 from app.domain import universe_integrity as ui  # noqa: E402
 from app.domain.instrument_type import issuer_code  # noqa: E402
 from app.domain.liquidity_view import liquidity_snapshot_for  # noqa: E402
+from app.domain.provenance import can_enter_valuation  # noqa: E402
+from app.domain.security_status_view import negative_and_declining_earnings  # noqa: E402
 from app.models.corporate_actions import CorporateAction, CorporateActionType  # noqa: E402
 from app.models.data_quality import DataAlert  # noqa: E402
+from app.models.enums import ProvenanceTier  # noqa: E402
 from app.models.float_data import FloatData  # noqa: E402
+from app.models.fundamentals import Fundamental  # noqa: E402
 from app.models.prices import PriceDaily  # noqa: E402
 from app.models.securities import Security  # noqa: E402
 
@@ -99,6 +103,26 @@ def _recent_rights_action(db: Session, ticker: str) -> CorporateAction | None:
             CorporateAction.ex_date >= TODAY - dt.timedelta(days=RIGHTS_OPEN_WINDOW_DAYS),
         )
         .order_by(CorporateAction.ex_date.desc())
+        .limit(1)
+    )
+
+
+_ENTERABLE_TIERS = [t for t in ProvenanceTier if can_enter_valuation(t)]
+
+
+def _latest_confirmed_line(db: Session, ticker: str, line: str) -> Decimal | None:
+    """The most recent confirmed value of one statement line for `ticker`,
+    point-in-time as of today — the newest `period_end`, latest `version`.
+    Used only for the report-only §Check 7 units sweep."""
+    return db.scalar(
+        select(Fundamental.value)
+        .where(
+            Fundamental.ticker == ticker,
+            Fundamental.statement_line == line,
+            Fundamental.first_available_date <= TODAY,
+            Fundamental.provenance_tier.in_(_ENTERABLE_TIERS),
+        )
+        .order_by(Fundamental.period_end.desc(), Fundamental.version.desc())
         .limit(1)
     )
 
@@ -174,6 +198,22 @@ def _run(db: Session, out_path: Path) -> None:
         record(
             ui.check_sector_model_routed(
                 s.ticker, s.archetype, s.archetype  # archetype IS the routing key today
+            )
+        )
+        trailing_ni, declining, n_periods = negative_and_declining_earnings(db, s.ticker, TODAY)
+        record(
+            ui.check_profitability_trend_consistency(
+                s.ticker, trailing_ni, declining, trend_periods=n_periods
+            )
+        )
+        record(
+            ui.check_statement_line_units(
+                s.ticker,
+                _latest_confirmed_line(db, s.ticker, "total_equity"),
+                _latest_confirmed_line(db, s.ticker, "total_assets"),
+                _latest_confirmed_line(db, s.ticker, "revenue"),
+                _latest_confirmed_line(db, s.ticker, "net_income"),
+                is_financial=s.archetype in FINANCIAL_ARCHETYPES,
             )
         )
 
@@ -261,6 +301,8 @@ def _run(db: Session, out_path: Path) -> None:
         "Rights line not reaped",
         "Stale price",
         "Sector model routing gap",
+        "Verdict overrides negative earnings trend",
+        "Statement-line units / magnitude suspect",
     ]
     disc_tickers = lambda evs: len({e[0] for e in evs})  # noqa: E731
     table_rows: list[list[str]] = []

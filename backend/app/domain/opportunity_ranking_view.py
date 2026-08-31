@@ -299,9 +299,10 @@ def _opportunity_ranking_for_uncached(db: Session, stamp: dt.date) -> Opportunit
                 price_ladder_zone=None, buy_below_price=None, gap_to_buy_below_pct=None,
                 dispersion_pct=None, verdict="Withheld", decision_confidence="low",
                 warnings=(
-                    f"{ticker!r} is quarantined — its stored adjustment factors failed the §7 "
-                    "reconciliation check against real corporate actions, so its numbers are not "
-                    "trusted for ranking until a human resolves the underlying data-health alert.",
+                    f"{ticker!r} is quarantined — an open data-health alert, a failed §7 "
+                    "adjustment-factor reconciliation, or a suspended/delisted trading status. "
+                    "Its numbers are not trusted for ranking until a human resolves it; the "
+                    "specific reason is on the Data Health page.",
                 ),
             ))
             continue

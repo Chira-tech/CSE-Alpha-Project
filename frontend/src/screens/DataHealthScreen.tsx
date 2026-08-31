@@ -249,7 +249,35 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             }
             caution={ui.median_price_staleness_days !== null && ui.median_price_staleness_days > 3}
           />
+          <Stat
+            label="Suspended / delisted lines"
+            value={formatInteger(ui.suspended_or_delisted_lines)}
+            caution={ui.suspended_or_delisted_lines > 0}
+          />
+          <Stat
+            label="Cost of equity available (proxy)"
+            value={
+              ui.cost_of_equity_available_pct !== null
+                ? `${ui.cost_of_equity_available_pct}%`
+                : UNAVAILABLE
+            }
+            caution={
+              ui.cost_of_equity_available_pct !== null &&
+              Number(ui.cost_of_equity_available_pct) < 95
+            }
+          />
+          <Stat
+            label="Verdicts capped — negative earnings trend"
+            value={formatInteger(ui.buy_side_verdicts_on_negative_earnings_trend)}
+            caution={ui.buy_side_verdicts_on_negative_earnings_trend > 0}
+          />
         </div>
+        <p className="t-caption muted" style={{ margin: 0 }}>
+          "Verdicts capped" is Check 8: names with a trailing net loss on a multi-year declining
+          earnings trend. Their fair value is still shown, but any Buy-side verdict is withheld and
+          the rating held at Hold — so the count of published buy-side calls on negative-trend names
+          stays at zero.
+        </p>
         {Object.keys(ui.open_alerts_by_type).length > 0 && (
           <p className="t-caption muted" style={{ margin: 0 }}>
             Open alerts:{" "}

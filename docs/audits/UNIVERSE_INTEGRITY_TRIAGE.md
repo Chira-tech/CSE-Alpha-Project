@@ -1,6 +1,6 @@
 # Universe Integrity — Phase 1 Triage
 
-Generated: 2026-08-30T11:29:08+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
+Generated: 2026-08-31T14:19:20+00:00Z · DB: `sqlite+pysqlite:///./devdb.sqlite`
 
 Report-only. Every number below is reproducible by re-running `python -m scripts.audit_universe_integrity` from `backend/`. Nothing was written; no ticker was quarantined. This is the measurement the rollout's Phase 2 acts on.
 
@@ -19,7 +19,9 @@ Report-only. Every number below is reproducible by re-running `python -m scripts
 | Implausible implied multiple | 0 | — |
 | Rights line not reaped | 0 | — |
 | Stale price | 0 | — |
-| Sector model routing gap | 58 | AFS.N0000 |
+| Sector model routing gap | 53 | AFS.N0000 |
+| Verdict overrides negative earnings trend | 7 | COCO.N0000 |
+| Statement-line units / magnitude suspect | 27 | AAIC.N0000 |
 | Price discontinuity — at a raw/adjusted feed join, near a split | 36 events / 34 lines | ACL.N0000 |
 | Price discontinuity — decimal / units artefact (~10x, no action) | 1 events / 1 lines | ABL.N0000 |
 | Price discontinuity — liquid name or extreme move (QUARANTINES) | 24 events / 11 lines | AAIC.N0000 |
@@ -60,7 +62,7 @@ _None._
 
 _None._
 
-### Sector model routing gap — 58
+### Sector model routing gap — 53
 
 - AFS.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - ASIR.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
@@ -72,7 +74,6 @@ _None._
 - CALI.U0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - CALT.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - CALU.U0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
-- CFLB.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - CFVF.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - CIC.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - CIC.X0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
@@ -98,11 +99,52 @@ _None._
 - LAMB.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - LCBF.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - LGIL.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
-- LION.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - LOLC.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
-- LPRT.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
 - LUMX.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
-- … and 18 more
+- MDL.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
+- ONAL.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
+- PACK.N0000 has no archetype — its valuation cannot be routed to the correct model family for its sector.
+- … and 13 more
+
+### Verdict overrides negative earnings trend — 7
+
+- COCO.N0000 has a trailing NET LOSS (-799,068,709) and a declining earnings trend over the last 3 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+- COCO.X0000 has a trailing NET LOSS (-799,068,709) and a declining earnings trend over the last 3 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+- CRL.N0000 has a trailing NET LOSS (-902,851,106) and a declining earnings trend over the last 5 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+- HBS.N0000 has a trailing NET LOSS (-293,110,886) and a declining earnings trend over the last 3 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+- LVEN.N0000 has a trailing NET LOSS (-50,384,000) and a declining earnings trend over the last 4 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+- MAL.N0000 has a trailing NET LOSS (-228,219,066) and a declining earnings trend over the last 3 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+- MAL.X0000 has a trailing NET LOSS (-228,219,066) and a declining earnings trend over the last 4 confirmed annual periods — a Buy-side verdict here prices in a profitability turnaround that is not in the reported numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent.
+
+### Statement-line units / magnitude suspect — 27
+
+- AAIC.N0000: equity/assets is -74.3% — negative equity, so accumulated losses have exceeded capital (a genuinely distressed name) or one line carries a sign error; either way no fair value should lean on book.
+- BERU.N0000: equity/assets is 0.9% — a >50x-levered balance sheet, which no CSE non-bank carries; assets are likely mapped into the equity field, or the two lines are in different units.
+- BUKI.N0000: net_profit (17,919,426,000) is more than 10x revenue (1,267,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- CARS.N0000: net_profit (18,362,211,000) is more than 10x revenue (30,287,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- CCS.N0000: net_profit (1,063,200,000) is more than 10x revenue (50,942,430) — almost always revenue and earnings stored in different units, not a real one-off.
+- CFI.N0000: equity/assets is 98.4% for a financial issuer — a lender with almost no liabilities is a units mismatch between the two lines.
+- CFIN.N0000: net_profit (2,894,914,000) is more than 10x revenue (53,700,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- CHMX.N0000: net_profit (1,838,000) is more than 10x revenue (2,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- CINS.N0000: net_profit (11,524,465,000) is more than 10x revenue (418,490,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- CINS.X0000: net_profit (11,524,465,000) is more than 10x revenue (418,490,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- CIT.N0000: equity/assets is 98.9% for a financial issuer — a lender with almost no liabilities is a units mismatch between the two lines.
+- CPRT.N0000: equity/assets is -287.7% — negative equity, so accumulated losses have exceeded capital (a genuinely distressed name) or one line carries a sign error; either way no fair value should lean on book.
+- CTC.N0000: net_profit (16,146,485,000) is more than 10x revenue (4,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- DFCC.N0000: net_profit (16,028,237,000) is more than 10x revenue (652,521,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- HVA.N0000: equity/assets is -5.2% — negative equity, so accumulated losses have exceeded capital (a genuinely distressed name) or one line carries a sign error; either way no fair value should lean on book.
+- JAT.N0000: net_profit (1,524,637,426) is more than 10x revenue (4) — almost always revenue and earnings stored in different units, not a real one-off.
+- KZOO.N0000: net_profit (114,350,911) is more than 10x revenue (2,105,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- LGL.N0000: total_equity (20,765,772,000) exceeds total_assets (8,030,860,000) — an accounting impossibility.
+- LOFC.N0000: net_profit (5,400,963,979) is more than 10x revenue (204,239,311) — almost always revenue and earnings stored in different units, not a real one-off.
+- MBSL.N0000: total_equity (4,095,343,000) exceeds total_assets (2,492,473,000) — an accounting impossibility.
+- MCPL.N0000: net_profit (140,390,208) is more than 10x revenue (21) — almost always revenue and earnings stored in different units, not a real one-off.
+- OSEA.N0000: net_profit (1,360,135,000) is more than 10x revenue (41,833,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- PHAR.N0000: net_profit (238,717,000) is more than 10x revenue (18,650,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- RCL.N0000: net_profit (2,796,496,626) is more than 10x revenue (218,097,000) — almost always revenue and earnings stored in different units, not a real one-off.
+- SHL.N0000: equity/assets is -22.7% — negative equity, so accumulated losses have exceeded capital (a genuinely distressed name) or one line carries a sign error; either way no fair value should lean on book.
+- TAJ.N0000: equity/assets is -36.9% — negative equity, so accumulated losses have exceeded capital (a genuinely distressed name) or one line carries a sign error; either way no fair value should lean on book.
+- VFIN.N0000: equity/assets is 1.4% — a >50x-levered balance sheet, which no CSE non-bank carries; assets are likely mapped into the equity field, or the two lines are in different units.
 
 ### Price discontinuity — near a corporate action — 36 events across 34 lines
 

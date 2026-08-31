@@ -25,6 +25,8 @@ from app.models.fundamentals import Fundamental
 from app.models.prices import PriceDaily
 from app.models.registry import IssuerRegistry
 from app.models.securities import Security
+from app.domain import universe_integrity as ui
+from app.domain.security_status_view import universe_status_summary
 
 
 router = APIRouter(prefix="/data-health", tags=["data-health"])
@@ -40,6 +42,18 @@ class QuarantinedTicker(BaseModel):
 class TickerPendingCount(BaseModel):
     ticker: str
     count: int
+
+
+class UniverseStatusCounts(BaseModel):
+    """The homepage trust bar (`docs/CSE_Company_Page_And_Homepage_
+    Redesign.md` §6). One row per `Security`, classified by the formal
+    4-state status (`app.domain.security_status_view`)."""
+
+    clean: int
+    provisional: int
+    quarantined: int
+    unresolved: int
+    total: int
 
 
 class UniverseIntegrityMetrics(BaseModel):
@@ -68,6 +82,26 @@ class UniverseIntegrityMetrics(BaseModel):
     """Of price-ratio corporate actions (bonus / split / consolidation /
     rights), the share that are confirmed (so a factor is applied)."""
     median_price_staleness_days: int | None
+    suspended_or_delisted_lines: int
+    """`docs/CSE_Universe_Integrity_Rollout.md` Part 4 / golden case 6 —
+    lines whose `trading_status` is suspended or delisted. They are
+    QUARANTINED (no verdict, no rank) but carry no `DataAlert`, so they
+    do not appear in the alert-driven quarantine list above."""
+    cost_of_equity_available_pct: Decimal | None
+    """`docs/CSE_Universe_Integrity_Rollout.md` Part 7 — target 100%. Of
+    the financial-sector lines whose valuation models all require a cost
+    of equity, the share for which `app.domain.cost_of_equity_view.
+    cost_of_equity_for` actually resolves a value today (CBSL risk-free +
+    Sri Lanka ERP + a computable beta). The rollout spec was drafted with
+    this "near 0"; the CoE service now exists, so this should read high."""
+    buy_side_verdicts_on_negative_earnings_trend: int
+    """`docs/CSE_Universe_Integrity_Rollout.md` Part 7 / §Check 8 — target
+    0. The count of lines where a trailing net loss on a declining
+    multi-year earnings trend has forced the verdict to be capped at
+    Hold: these names cannot publish a Buy-side verdict whatever the
+    fair-value models output, so the number of *published* buy-side
+    verdicts on negative-trend names is held at 0 by construction. This
+    figure tracks how many names the cap is currently acting on."""
 
 
 class DataHealth(BaseModel):
@@ -108,6 +142,7 @@ class DataHealth(BaseModel):
 
     quarantined: list[QuarantinedTicker]
     universe_integrity: UniverseIntegrityMetrics
+    universe_status: UniverseStatusCounts
 
     fundamentals_pending_by_ticker: list[TickerPendingCount]
     """R1 T4.1.5: top tickers by pending-figure count — a real, cheap
@@ -197,6 +232,32 @@ def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
     else:
         median_stale = None
 
+    # --- CoE availability (Part 7). The real per-name resolve, run only
+    # over financial-sector lines (their models all need a Ke), not the
+    # whole ~290 — an admin screen can afford ~60 lookups.
+    from app.domain.cost_of_equity_view import cost_of_equity_for
+
+    _FIN = ("bank", "non_bank_finance", "insurance")
+    fin_tickers = list(
+        db.scalars(
+            select(Security.ticker).where(
+                Security.archetype.in_(_FIN), Security.delisting_date.is_(None)
+            )
+        )
+    )
+    coe_ok = sum(1 for t in fin_tickers if cost_of_equity_for(db, t, today).ke is not None)
+    coe_pct = (
+        (Decimal(coe_ok) / Decimal(len(fin_tickers)) * 100).quantize(Decimal("0.1"))
+        if fin_tickers
+        else None
+    )
+
+    suspended_or_delisted = db.scalar(
+        select(func.count())
+        .select_from(Security)
+        .where(Security.trading_status.in_(("suspended", "delisted")))
+    ) or 0
+
     return UniverseIntegrityMetrics(
         issuers_total=len(issuer_codes),
         issuers_with_a_primary_line=with_primary,
@@ -207,6 +268,11 @@ def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
         market_cap_identity_pass_pct=mcap_pass_pct,
         price_ratio_actions_confirmed_pct=pr_pct,
         median_price_staleness_days=median_stale,
+        suspended_or_delisted_lines=suspended_or_delisted,
+        cost_of_equity_available_pct=coe_pct,
+        buy_side_verdicts_on_negative_earnings_trend=open_by_type.get(
+            ui.ALERT_NEGATIVE_EARNINGS_TREND, 0
+        ),
     )
 
 
@@ -343,4 +409,5 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
             for a in alerts
         ],
         universe_integrity=_universe_integrity_metrics(db),
+        universe_status=UniverseStatusCounts(**vars(universe_status_summary(db))),
     )

@@ -6,9 +6,41 @@ This spec turns that one catch into a system that catches all of them, forever, 
 
 Companion to `aaf-factcheck-and-company-page-redesign.md`. Prepared 2026-08-30.
 
+## Update — 2026-08-31: second confirmed case
+
+The premise above wasn't hypothetical. A second, independent fact-check — on HDFC Bank of Sri Lanka (HDFC.N0000), unrelated to AAF and checked on a different day — found the same shape of failure: a confident "Strong Accumulate" (composite 65.9/100) published on a company that is currently loss-making with a 5-year declining earnings trend and near-zero independent growth/quality scores. Different proximate cause (this one looks like unconfirmed statement lines plus a fair value that doesn't discount for negative trailing profitability, rather than AAF's wrong-listed-line bug), same root failure: **the system had signals telling it not to publish a high-conviction verdict, and published one anyway.** See `hdfc-bank-factcheck-and-verdict.md` and `verdict-reliability-fix-plan.md` for full detail. Failure class 11 and golden regression case 11 below were added because of it.
+
 ---
 
-## Part 0 — The ten failure classes
+## Rollout status — 2026-08-31
+
+| Phase | State | Where it lives |
+|---|---|---|
+| 0 — Ingest security master | **Done.** 294 lines, every one with a resolved instrument type (0 `UNKNOWN`). | `app.domain.instrument_type`, `instrument_type_view.resolve_primary_line` |
+| 1 — Dry-run triage | **Done**, re-runnable. | `scripts/audit_universe_integrity.py` → `docs/audits/UNIVERSE_INTEGRITY_TRIAGE.md` |
+| 2 — Enforce the gate | **Done.** Nightly job raises `DataAlert` quarantine rows; wired into the scheduler and the manual runner. | `app.jobs.universe_integrity_checks`, `app.jobs.scheduler` |
+| 3 — Fix by bucket | **Partial.** (1) Wrong-line rebinds: none needed — triage shows 0. (2) CoE service: **exists and resolves for 58/59 financial lines** (`cost_of_equity_view.cost_of_equity_for`); the spec's "near 0" predates it. (3) Sector routing: +5 auto-classified; the remaining 53 are the deliberate human-review set (`docs/audits/ARCHETYPE_REVIEW_WORKLIST.md`) — 28 need `cse_sector` backfilled first, 25 are conglomerate-named and need a segment-mix call. (4) Statement-line units: 27 report-only flags on the triage as a correction worklist; each needs per-row verification against the filing, so not bulk-fixed. (5) Price-discontinuity feed-join (36 events): a `companyChartDataByStock` ↔ EOD reconciliation, still open. | `scripts/audit_universe_integrity.py`, `app.ingestion.archetype_loader` |
+| 4 — Recompute and diff | **Done**, re-runnable. Recomputes the universe now and diffs against a frozen snapshot: verdict changes, entries/exits, score movers. | `scripts/universe_verdict_diff.py` → `docs/audits/UNIVERSE_VERDICT_DIFF.md` |
+| 5 — Make it permanent | **Done.** Nightly gate; golden regression set (cases 1–11, run in the suite); Data Health page shows the Part 7 metrics over time. | `tests/test_golden_universe_integrity.py`, `GET /data-health` |
+| 6 — Golden regression set | **Done**, cases 1–11 pinned. Case 6 (suspended → QUARANTINED) is now enforced via `securities.trading_status`; case 11 (HDFC) via Check 8. | `tests/test_golden_universe_integrity.py` |
+
+**Trading status (case 6).** `securities.trading_status` (`active` / `suspended` / `delisted`, migration `0021`) is the current-state field the spec's Part 1 schema calls for. `is_quarantined` and `security_status_for` both treat `suspended` / `delisted` as QUARANTINED — no verdict, no rank. Backfilled by `scripts/backfill_trading_status.py` (`delisted` from `delisting_date`; `suspended` from a >90-day trade gap on a live line — a heuristic, since the exchange publishes no clean suspension flag).
+
+**Reproduce the archetype worklist:**
+
+```python
+from app.db.session import SessionLocal
+from app.models.securities import Security
+from app.domain.archetype import propose_archetype
+from sqlalchemy import select
+db = SessionLocal()
+for s in db.scalars(select(Security).where(Security.archetype.is_(None)).order_by(Security.ticker)):
+    print(s.ticker, "::", propose_archetype(s.name, s.cse_sector).reason)
+```
+
+---
+
+## Part 0 — The eleven failure classes
 
 Before designing anything, name what can go wrong. Each of these silently produces a confident wrong number, and each needs its own universe-wide detector.
 
@@ -21,13 +53,14 @@ Before designing anything, name what can go wrong. Each of these silently produc
 | 5 | **Missing cost of equity** | CoE-dependent models unavailable, engine falls back silently | ✅ Confirmed (AAF, likely universe-wide) |
 | 6 | **Wrong model family for sector** | Industrial DCF applied to banks/LFCs | ⚠️ Check routing table |
 | 7 | **Fiscal period misalignment** | March, June, December year-ends stitched into one "TTM" | ⚠️ Likely |
-| 8 | **Unconfirmed statement lines** | Pending-review data feeding published valuations | ✅ Confirmed |
+| 8 | **Unconfirmed statement lines** | Pending-review data feeding published valuations | ✅ Confirmed (AAF, HDFC) |
 | 9 | **Consolidated vs standalone** | Group revenue against parent-only equity | ⚠️ Likely |
 | 10 | **Stale / illiquid price** | Last trade weeks old, treated as live | ✅ Confirmed (sidebar: "EOD prices 7d ago") |
+| 11 | **Verdict overrides negative/declining reported profitability** | Positive fair value and Buy-side verdict published on a company with negative trailing net income and a multi-year declining earnings trend, no visible discount applied | ✅ Confirmed (HDFC) |
 
-Classes 1–4 corrupt the *inputs*. Classes 5–7 corrupt the *model*. Classes 8–10 corrupt the *confidence*. All three groups need gates, and they need to be separate gates — a stale price is a different problem from a wrong security.
+Classes 1–4 corrupt the *inputs*. Classes 5–7 corrupt the *model*. Classes 8–11 corrupt the *confidence*. All groups need gates, and they need to be separate gates — a stale price is a different problem from a wrong security, which is a different problem from a verdict that ignores the trend in the P&L.
 
-**Rough scale estimate (to be measured, not assumed):** on the CSE at any given time, a meaningful minority of issuers carry a second line — non-voting, preference, or a temporary rights line during an offer. Add the names with a corporate action in the last 24 months and you are plausibly looking at **10–25% of the universe** carrying at least one of failure classes 1–2. Phase 1 below measures this number precisely before you fix anything.
+**Rough scale estimate (to be measured, not assumed):** on the CSE at any given time, a meaningful minority of issuers carry a second line — non-voting, preference, or a temporary rights line during an offer. Add the names with a corporate action in the last 24 months and you are plausibly looking at **10–25% of the universe** carrying at least one of failure classes 1–2. Phase 1 below measures this number precisely before you fix anything. Classes 5, 8 and 11 are structurally universe-wide by definition — they're properties of a shared service (cost of equity) or a shared rule (how the verdict treats unconfirmed or negative data), not properties of any one company, so once the pipeline reaches any loss-making or partially-confirmed name, it fires again.
 
 ---
 
@@ -206,6 +239,18 @@ assert |value| not within 1000x or 1e6x of a sibling in a different unit
 
 > **AAF (suspected):** a `total_equity` reading ~45.7bn against total assets of 53.8bn implies an 85% equity ratio for a 4.5x-levered finance company. Actual equity is **4.78 bn**. Either a units error or assets mapped onto the equity field.
 
+### Check 8 — Profitability-trend consistency (new, from HDFC)
+
+A verdict-blocking check, not just an input check: the verdict language itself must match the direction of trailing profitability.
+
+```
+if trailing_net_income < 0 and 3yr_earnings_trend < 0:
+    max_rating = HOLD          # never Buy / Accumulate / Strong Accumulate
+    fair_value.flag = "assumes a profitability turnaround not yet in the reported numbers"
+```
+
+> **HDFC:** FY2025 net loss −LKR 93M, 5-year earnings trend declining ~30%/yr, yet the page published "Strong Accumulate" at composite 65.9/100 → **FAIL**.
+
 ---
 
 ## Part 3 — Layer 3: The corporate actions engine
@@ -247,7 +292,7 @@ A failed check must never silently degrade the answer. It changes the *state* of
 | State | Meaning | What the system may publish |
 |---|---|---|
 | `CLEAN` | All checks pass | Full valuation + verdict |
-| `PROVISIONAL` | Soft failures only (unconfirmed lines, stale price, LOW-confidence binding) | Valuation, marked provisional. **No Strong Accumulate, no Strong Sell.** |
+| `PROVISIONAL` | Soft failures only (unconfirmed lines, stale price, LOW-confidence binding, negative-trend profitability per Check 8) | Valuation, marked provisional. **No Strong Accumulate, no Strong Sell — and Check 8 additionally caps the rating at Hold.** |
 | `QUARANTINED` | Any hard check failed | Facts and raw data only. **No fair value, no verdict, no scoreboard rank.** |
 | `UNRESOLVED` | No primary line, or `line_type = UNKNOWN` | Company page renders identity only |
 
@@ -265,7 +310,7 @@ Sequenced so you learn the size of the problem before committing to fixes, and s
 Load every CSE line into `listed_line`. Confirm the suffix→type map against the exchange's own file. Backfill `shares_in_issue` as a dated series. **Exit criterion:** every symbol in your price table maps to exactly one `line_id`, and every issuer has exactly one primary line or is explicitly `UNRESOLVED`.
 
 ### Phase 1 — Dry run, report only *(1 day, no user-facing change)*
-Run all seven checks across the full universe in report-only mode. Change nothing. Produce a triage table:
+Run all eight checks across the full universe in report-only mode. Change nothing. Produce a triage table:
 
 | Bucket | Names | Example | Remediation |
 |---|---|---|---|
@@ -276,6 +321,7 @@ Run all seven checks across the full universe in report-only mode. Change nothin
 | Stale > 7d | ? | | Refetch or mark PROVISIONAL |
 | CoE unavailable | ? | | Build CoE service (see Phase 3) |
 | Sector model mismatch | ? | | Fix routing table |
+| Verdict overrides negative earnings trend | ? | HDFC | Cap at Hold, apply Check 8 |
 
 **This table is the actual deliverable of the rollout.** Everything after it is execution. It also tells you whether this is a 20-name problem or a 200-name problem — decide effort after you know.
 
@@ -290,7 +336,7 @@ Turn the checks from report-only into blocking. Expect the Opportunities board t
 5. Work the confirm queue by bucket with bulk actions
 
 ### Phase 4 — Recompute and diff *(the important one)*
-Recompute the universe and publish a **before/after verdict diff**: every name whose score or verdict changed, with the reason. This is your evidence the fix worked, and your check that it didn't break something else. Expect meaningful churn — several current Strong Buys will evaporate, exactly as AAF's did.
+Recompute the universe and publish a **before/after verdict diff**: every name whose score or verdict changed, with the reason. This is your evidence the fix worked, and your check that it didn't break something else. Expect meaningful churn — several current Strong Buys will evaporate, exactly as AAF's and HDFC's did.
 
 ### Phase 5 — Make it permanent
 - Checks run as a **gate on every nightly load**, not as an ad-hoc script. A load that fails the gate does not publish.
@@ -315,8 +361,9 @@ Pin real securities as permanent test cases so this class of bug can never come 
 | 8 | Bank vs LFC vs manufacturer | Each routes to its correct model family; no industrial DCF on a lender |
 | 9 | Non-March fiscal year end | TTM stitching aligns periods correctly |
 | 10 | Company reporting in USD | Currency converted once, at the right date, not twice |
+| 11 | **HDFC.N0000, FY2025 trailing net loss** | Verdict capped at Hold or below despite any positive DCF/DDM output; fair-value display flags that it assumes a turnaround not yet in the reported numbers; composite score reflects the negative 5yr earnings trend rather than treating it as neutral |
 
-Case 1 is the highest-value test you own — it's a real, verified, known-wrong-answer scenario. Never delete it.
+Case 1 is the highest-value test you own — it's a real, verified, known-wrong-answer scenario. Case 11 is the second. Never delete either.
 
 ---
 
@@ -334,6 +381,7 @@ Put these on the Data health page and track them weekly. This is how "measurable
 | Universe with CoE available | 100% (currently near 0) |
 | Median price staleness | < 1 trading day |
 | Confirm queue depth | Trending down week over week |
+| Buy-side verdicts on negative-trend earnings names | 0 (Check 8) |
 
 One inversion worth internalising: **a rising quarantine count is good news early on.** It means detection is working. The number to watch is quarantine count *after* Phase 3 — that's the one that should fall.
 
@@ -343,7 +391,7 @@ One inversion worth internalising: **a rising quarantine count is good news earl
 
 Your system's job is not to have an opinion on every one of the ~300 CSE names. It's to have a *trustworthy* opinion on the subset where the data supports one, and to say plainly where it doesn't.
 
-AAF had four separate signals screaming that something was wrong — a multi-line banner, a missing cost of equity, fourteen unconfirmed statement lines, and an unapplied corporate action. The system saw all four and published **Strong Accumulate** anyway. Not because any single component was badly written, but because nothing in the architecture had the authority to say *no*.
+AAF had four separate signals screaming that something was wrong — a multi-line banner, a missing cost of equity, fourteen unconfirmed statement lines, and an unapplied corporate action. HDFC had its own signals — unconfirmed statement lines and a multi-year negative earnings trend. Both times, the system saw the signals and published a maximum-conviction verdict anyway. Not because any single component was badly written, but because nothing in the architecture had the authority to say *no*.
 
 This rollout gives it that authority. Everything else here is plumbing.
 
@@ -353,8 +401,8 @@ This rollout gives it that authority. Everything else here is plumbing.
 
 1. **Check 1 — market cap identity.** One join. Catches most magnitude errors across the whole universe. Ship it this week.
 2. **Exclude non-ordinary line types from primary binding.** Ten lines of code. Makes the AAF class of failure structurally impossible.
-3. **Block the verdict when cost of equity is unavailable.** Stops the engine publishing confident numbers it cannot support — universe-wide, today.
+3. **Block the verdict when cost of equity is unavailable, or when trailing earnings are negative and declining (Check 8).** Stops the engine publishing confident numbers it cannot support — universe-wide, today.
 
 Those three are a few days of work and remove the majority of the risk. The rest is thoroughness.
 
-*Companion to `aaf-factcheck-and-company-page-redesign.md`, `portfolio-page-redesign-spec.md`, and `scoreboard-queue-redesign-spec.md`.*
+*Companion to `aaf-factcheck-and-company-page-redesign.md`, `portfolio-page-redesign-spec.md`, `scoreboard-queue-redesign-spec.md`, `hdfc-bank-factcheck-and-verdict.md`, and `verdict-reliability-fix-plan.md`.*

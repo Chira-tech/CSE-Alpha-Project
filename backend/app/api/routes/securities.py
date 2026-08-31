@@ -265,6 +265,11 @@ class SecurityDetail(BaseModel):
     published. Empty when `status` is clean."""
     primary_line_ticker: str | None
     primary_line_confidence: str
+    verdict_cap: str | None
+    """`docs/CSE_Universe_Integrity_Rollout.md` §Check 8 — `"hold"` when a
+    trailing net loss on a declining earnings trend means no Buy-side
+    verdict may be shown for this name, whatever the fair-value models
+    output. `null` otherwise."""
     price_history: list[PricePoint]
     corporate_actions: list[CorporateActionSummary]
     corporate_actions_last_scanned_at: dt.datetime | None
@@ -612,6 +617,7 @@ def get_security(ticker: str, db: Session = Depends(get_db)) -> SecurityDetail:
         soft_flags=list(_status.soft_flags),
         primary_line_ticker=_status.primary_line_ticker,
         primary_line_confidence=_status.primary_line_confidence.value,
+        verdict_cap=_status.verdict_cap,
         price_history=[
             PricePoint(
                 date=p.date,

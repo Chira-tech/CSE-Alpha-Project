@@ -42,6 +42,7 @@ ALERT_WRONG_LINE_FINGERPRINT = "wrong_line_fingerprint"
 ALERT_IMPLAUSIBLE_MULTIPLE = "implausible_multiple"
 ALERT_PRICE_DISCONTINUITY = "price_discontinuity"
 ALERT_RIGHTS_LINE_EXPIRED = "rights_line_expired"
+ALERT_NEGATIVE_EARNINGS_TREND = "verdict_vs_profitability_trend"
 
 #: Alert types that mean "this ticker's numbers are not trusted at all" —
 #: a hard failure. Consumed by `app.domain.security_status_view` to decide
@@ -68,6 +69,7 @@ SOFT_ALERT_TYPES: frozenset[str] = frozenset(
     {
         "stale_source",
         ALERT_RIGHTS_LINE_EXPIRED,
+        ALERT_NEGATIVE_EARNINGS_TREND,
     }
 )
 
@@ -320,6 +322,129 @@ def check_implied_multiple_band(
             "pb": str(price_to_book),
             "pe": str(price_to_earnings),
             "roe": str(roe),
+        },
+    )
+
+
+def check_profitability_trend_consistency(
+    symbol: str,
+    trailing_net_income: Decimal | None,
+    earnings_trend_declining: bool | None,
+    *,
+    trend_periods: int = 0,
+) -> IntegrityFinding | None:
+    """Spec §Check 8 (added after HDFC.N0000) — a VERDICT-blocking check,
+    not an input check. When trailing net income is negative AND the
+    multi-year earnings trend is declining, the verdict language must not
+    read Buy / Accumulate / Strong Accumulate: any positive fair value is
+    pricing in a turnaround that is not yet in the reported numbers, and
+    that assumption has to be visible, not silent.
+
+    Soft, not hard: the valuation may still be shown (a loss-making
+    company can genuinely be worth buying on a turnaround thesis) — it is
+    the maximum-conviction VERDICT that is withheld and the rating capped
+    at Hold. Skipped, never fired, when either input is unknown or when
+    there are too few real annual periods to call a trend."""
+    if trailing_net_income is None or not earnings_trend_declining or trend_periods < 3:
+        return None
+    if trailing_net_income >= 0:
+        return None
+    return IntegrityFinding(
+        check=ALERT_NEGATIVE_EARNINGS_TREND,
+        severity="soft",
+        bucket="Verdict overrides negative earnings trend",
+        detail=(
+            f"{symbol} has a trailing NET LOSS ({trailing_net_income:,.0f}) and a declining "
+            f"earnings trend over the last {trend_periods} confirmed annual periods — a Buy-side "
+            "verdict here prices in a profitability turnaround that is not in the reported "
+            "numbers. Verdict capped at Hold; fair value flagged as turnaround-dependent."
+        ),
+        evidence={
+            "trailing_net_income": f"{trailing_net_income:,.0f}",
+            "annual_periods_assessed": str(trend_periods),
+        },
+    )
+
+
+def check_statement_line_units(
+    symbol: str,
+    total_equity: Decimal | None,
+    total_assets: Decimal | None,
+    revenue: Decimal | None,
+    net_profit: Decimal | None,
+    *,
+    is_financial: bool = False,
+) -> IntegrityFinding | None:
+    """Spec §Check 7 — every statement line should sit in a plausible band
+    relative to its siblings; one that does not is almost always a units /
+    scale mismatch (LKR vs LKR'000 vs LKR mn mixed across sources, or a
+    value mapped into the wrong field). Report-only (`info`): it names a
+    line to re-map on a human worklist, it does not quarantine — the true
+    accounting impossibility (`total_equity > total_assets`) is already a
+    hard block at valuation time in `app.domain.sanity.units_consistent`,
+    so raising it again here would double the write path.
+
+    Each sub-test is skipped, never failed, on a missing input. The
+    equity/assets upper-bound test only runs for a financial issuer
+    (`is_financial`): a bank or finance company with almost no liabilities
+    is a units error, but an unlevered holding company or closed-end fund
+    legitimately sits near an all-equity balance sheet, so a blanket
+    ceiling would fire on real names."""
+    reasons: list[str] = []
+
+    if total_equity is not None and total_assets is not None and total_assets > 0:
+        ratio = _ratio(total_equity, total_assets)
+        if ratio is not None:
+            if total_equity > total_assets:
+                reasons.append(
+                    f"total_equity ({total_equity:,.0f}) exceeds total_assets "
+                    f"({total_assets:,.0f}) — an accounting impossibility"
+                )
+            elif ratio < Decimal("0"):
+                reasons.append(
+                    f"equity/assets is {ratio:.1%} — negative equity, so accumulated losses "
+                    "have exceeded capital (a genuinely distressed name) or one line carries "
+                    "a sign error; either way no fair value should lean on book"
+                )
+            elif ratio < Decimal("0.02"):
+                reasons.append(
+                    f"equity/assets is {ratio:.1%} — a >50x-levered balance sheet, "
+                    "which no CSE non-bank carries; assets are likely mapped into the "
+                    "equity field, or the two lines are in different units"
+                )
+            elif is_financial and ratio > Decimal("0.98"):
+                reasons.append(
+                    f"equity/assets is {ratio:.1%} for a financial issuer — a lender with "
+                    "almost no liabilities is a units mismatch between the two lines"
+                )
+
+    # The spec's literal test is `net_profit < revenue x 1.5`, but on the
+    # CSE a holding or property company legitimately books associate income
+    # or fair-value gains several times its own revenue in a good year —
+    # 1.5x fires on real names, which §Check 6's own "wide enough to never
+    # fire on a real opportunity" principle warns against. 10x is past any
+    # plausible real ratio and isolates the genuine units error (revenue
+    # in LKR mn against net_profit in raw LKR).
+    if revenue is not None and net_profit is not None and revenue > 0:
+        if net_profit > revenue * Decimal("10"):
+            reasons.append(
+                f"net_profit ({net_profit:,.0f}) is more than 10x revenue "
+                f"({revenue:,.0f}) — almost always revenue and earnings stored in "
+                "different units, not a real one-off"
+            )
+
+    if not reasons:
+        return None
+    return IntegrityFinding(
+        check="statement_line_units_suspect",
+        severity="info",
+        bucket="Statement-line units / magnitude suspect",
+        detail=f"{symbol}: " + "; ".join(reasons) + ".",
+        evidence={
+            "total_equity": str(total_equity),
+            "total_assets": str(total_assets),
+            "revenue": str(revenue),
+            "net_profit": str(net_profit),
         },
     )
 

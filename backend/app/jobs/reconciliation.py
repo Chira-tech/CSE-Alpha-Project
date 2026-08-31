@@ -29,6 +29,7 @@ from app.models.corporate_actions import CorporateAction
 from app.models.corporate_actions import CorporateActionType as DbActionType
 from app.models.data_quality import DataAlert
 from app.models.prices import PriceDaily
+from app.models.securities import Security
 
 logger = logging.getLogger("cse_alpha.jobs.reconciliation")
 
@@ -142,11 +143,21 @@ def reconcile_ticker(db: Session, ticker: str) -> DataAlert | None:
 
 def is_quarantined(db: Session, ticker: str) -> bool:
     """§7 / §50: a quarantined ticker must be excluded from every model
-    until a human resolves the underlying alert."""
+    until a human resolves the underlying alert.
+
+    Two kinds of quarantine collapse to one boolean here: an unresolved
+    `DataAlert` (a data-quality failure), and a `trading_status` of
+    `suspended` / `delisted` (`docs/CSE_Universe_Integrity_Rollout.md`
+    golden case 6 — the exchange has halted trading, so there is no live
+    price to rank on). Callers that need the specific reason use
+    `app.domain.security_status_view.security_status_for`."""
     unresolved = db.scalar(
         select(DataAlert).where(DataAlert.ticker == ticker, DataAlert.resolved.is_(False)).limit(1)
     )
-    return unresolved is not None
+    if unresolved is not None:
+        return True
+    status = db.scalar(select(Security.trading_status).where(Security.ticker == ticker))
+    return status in ("suspended", "delisted")
 
 
 def run_nightly_reconciliation(db: Session, tickers: list[str]) -> dict[str, DataAlert | None]:

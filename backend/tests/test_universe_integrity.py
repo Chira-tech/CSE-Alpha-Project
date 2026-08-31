@@ -186,6 +186,110 @@ class TestReportOnlyChecks:
         assert ui.check_cost_of_equity_available("X.N0000", False, None) is None
 
 
+class TestProfitabilityTrendConsistency:
+    """Spec §Check 8, added after HDFC.N0000."""
+
+    def test_trailing_loss_on_a_declining_trend_is_a_soft_finding(self):
+        f = ui.check_profitability_trend_consistency(
+            "HDFC.N0000", Decimal("-93000000"), True, trend_periods=5
+        )
+        assert f is not None
+        assert f.severity == "soft" and f.check == ui.ALERT_NEGATIVE_EARNINGS_TREND
+        assert "Hold" in f.detail
+
+    def test_a_loss_but_a_rising_trend_does_not_fire(self):
+        # A turnaround genuinely in progress — trailing still negative but
+        # earnings improving — is not what this check is for.
+        assert (
+            ui.check_profitability_trend_consistency(
+                "X.N0000", Decimal("-1000"), False, trend_periods=5
+            )
+            is None
+        )
+
+    def test_a_profitable_company_never_fires_even_on_a_decline(self):
+        assert (
+            ui.check_profitability_trend_consistency(
+                "X.N0000", Decimal("500000"), True, trend_periods=5
+            )
+            is None
+        )
+
+    def test_too_few_periods_is_skipped(self):
+        assert (
+            ui.check_profitability_trend_consistency(
+                "X.N0000", Decimal("-1000"), True, trend_periods=2
+            )
+            is None
+        )
+
+    def test_unknown_trailing_income_is_skipped(self):
+        assert ui.check_profitability_trend_consistency("X.N0000", None, True, trend_periods=5) is None
+
+
+class TestStatementLineUnits:
+    """Spec §Check 7 — report-only units / magnitude sanity."""
+
+    def test_equity_exceeding_assets_is_flagged(self):
+        f = ui.check_statement_line_units(
+            "X.N0000", Decimal("53800000000"), Decimal("53000000000"), None, None
+        )
+        assert f is not None
+        assert f.severity == "info" and f.check == "statement_line_units_suspect"
+        assert "impossibility" in f.detail
+
+    def test_grossly_overlevered_balance_sheet_is_flagged(self):
+        # equity is 1% of assets -> ~100x leverage -> assets-in-equity-field
+        f = ui.check_statement_line_units(
+            "X.N0000", Decimal("1000000"), Decimal("100000000"), None, None
+        )
+        assert f is not None and "50x-levered" in f.detail
+
+    def test_near_all_equity_only_flags_for_a_financial_issuer(self):
+        args = ("X.N0000", Decimal("99"), Decimal("100"), None, None)
+        assert ui.check_statement_line_units(*args, is_financial=False) is None
+        assert ui.check_statement_line_units(*args, is_financial=True) is not None
+
+    def test_profit_far_above_revenue_is_flagged(self):
+        # revenue in LKR mn (2,105) against net_profit in raw LKR (114m)
+        f = ui.check_statement_line_units(
+            "KZOO.N0000", None, None, Decimal("2105000"), Decimal("114350911")
+        )
+        assert f is not None and "10x revenue" in f.detail
+
+    def test_profit_a_few_times_revenue_is_not_flagged(self):
+        # A holding company with associate income ~2x its own revenue is a
+        # real good year, not a units error.
+        assert (
+            ui.check_statement_line_units(
+                "CLND.N0000", None, None, Decimal("266830150"), Decimal("623960019")
+            )
+            is None
+        )
+
+    def test_negative_equity_gets_its_own_message(self):
+        f = ui.check_statement_line_units(
+            "TAJ.N0000", Decimal("-369000000"), Decimal("1000000000"), None, None
+        )
+        assert f is not None and "negative equity" in f.detail
+
+    def test_an_ordinary_balance_sheet_is_clean(self):
+        assert (
+            ui.check_statement_line_units(
+                "COMB.N0000",
+                Decimal("200000000000"),
+                Decimal("2500000000000"),
+                Decimal("180000000000"),
+                Decimal("25000000000"),
+                is_financial=True,
+            )
+            is None
+        )
+
+    def test_missing_inputs_are_skipped_not_failed(self):
+        assert ui.check_statement_line_units("X.N0000", None, None, None, None) is None
+
+
 def test_alert_type_sets_are_disjoint_and_cover_the_new_checks():
     assert ui.HARD_ALERT_TYPES.isdisjoint(ui.SOFT_ALERT_TYPES)
     for t in (
@@ -196,3 +300,4 @@ def test_alert_type_sets_are_disjoint_and_cover_the_new_checks():
     ):
         assert t in ui.HARD_ALERT_TYPES
     assert ui.ALERT_RIGHTS_LINE_EXPIRED in ui.SOFT_ALERT_TYPES
+    assert ui.ALERT_NEGATIVE_EARNINGS_TREND in ui.SOFT_ALERT_TYPES
