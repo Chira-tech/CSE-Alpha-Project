@@ -82,7 +82,7 @@ export function App() {
     }
     switch (screen) {
       case "today":
-        return <TodayScreen onOpenScreen={(id) => go(id)} />;
+        return <TodayScreen onOpenScreen={(id) => go(id)} onOpen={setOpenTicker} />;
       case "companies":
         return <CompaniesScreen onOpen={setOpenTicker} />;
       case "macro":

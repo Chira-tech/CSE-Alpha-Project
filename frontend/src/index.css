@@ -1077,6 +1077,63 @@ pre.code-block {
   }
 }
 
+/* ===================================================================
+   Today screen — Homepage redesign §6
+   =================================================================== */
+
+/* The trust bar: a thin strip, never a card (§6). One line on a good
+   day; the stacked proportion sits above a compact legend. */
+.trust-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.trust-bar-track {
+  background: var(--surface-sunken);
+  border-radius: 2px;
+}
+
+.trust-bar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s4);
+  font-size: 12px;
+}
+
+.trust-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* Decisions today: factual sentences, generous line height, no card
+   chrome — this is the hero, it should read like a short note. */
+.decisions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.decisions-list li {
+  padding-left: var(--s4);
+  border-left: 2px solid var(--brand-300);
+  line-height: 22px;
+}
+
+/* Two panels side by side on wide viewports, stacked on narrow. */
+.today-duo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--s4);
+}
+
 /* §15.3: "Mobile is for checking, not deciding." */
 @media (max-width: 767px) {
   .content {
@@ -1084,7 +1141,8 @@ pre.code-block {
   }
 
   .stat-grid,
-  .fact-grid {
+  .fact-grid,
+  .today-duo {
     grid-template-columns: minmax(0, 1fr);
   }
 

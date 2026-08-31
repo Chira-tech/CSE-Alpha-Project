@@ -1,111 +1,151 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ApiRequestError,
+  getCompositeRanking,
   getDataHealth,
-  getIndexHistory,
   getMarketOverview,
-  getOpportunityRanking,
   getPortfolioHoldingsValued,
   getSpread,
 } from "../api";
+import { DecisionsToday } from "../components/DecisionsToday";
 import { Delta } from "../components/Delta";
-import { SpreadHero } from "../components/SpreadHero";
-import { TrendChip } from "../components/TrendChip";
+import { MarketValuationHistogram } from "../components/MarketValuationHistogram";
+import { ScoreBar } from "../components/ScoreBar";
+import { SectorValueBars } from "../components/SectorValueBars";
+import { TrustBar } from "../components/TrustBar";
+import { VerdictChip } from "../components/VerdictChip";
 import { ZoneChip } from "../components/ZoneChip";
-import { EmptyState, ErrorState, PartialNotice, SkeletonCard } from "../components/states";
-import { directionOf, formatIndexValue, formatInteger, formatPrice, trendWindowPct, UNAVAILABLE } from "../format";
-import type { DataHealth, IndexHistory, MarketOverview, OpportunityRanking, Spread, ValuedPortfolio } from "../types";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/states";
+import { directionOf, formatPrice, UNAVAILABLE } from "../format";
+import type {
+  CompositeRanking,
+  DataHealth,
+  MarketOverview,
+  Spread,
+  ValuedPortfolio,
+} from "../types";
 
 /**
- * UI & Experience Specification §8 — Screen 1, "Today". Four questions in
- * descending order of importance.
+ * UI & Experience Specification §8 — Screen 1 — rebuilt to the Company
+ * Page & Homepage Redesign §6 information architecture. The screen's job
+ * is not "what's happening in the market"; it is "where is price wrong
+ * today, and can I trust that answer", read top to bottom:
  *
- * WHERE AM I? (§3) reads the same real holdings valuation the Portfolio
- * screen shows — a one-line summary here, the full breakdown there.
- * WHAT IS ON THE BOARD? (§4) does the same against the Opportunities
- * screen's real ranking — §40's own full risk-adjusted-return metric
- * still needs engines that don't exist yet (named on Opportunities
- * itself), but the real, narrower gap-to-buy-below ranking that DOES
- * exist belongs here too, not hidden behind a stale "not built" notice.
+ *   1. Trust bar        — is the data behind everything below sound?
+ *   2. Decisions today  — did any verdict actually change? (usually no)
+ *   3. Three tiles      — my book · the market's valuation · the macro lever
+ *   4. Is it cheap?     — price ÷ fair value across the universe, by sector
+ *   5. Where to look    — best risk-adjusted names · positions to review
  *
- * §7.2's governing constraint on this screen: it "must be fully readable
- * in under two minutes and must usually conclude with 'nothing to do'."
- * Section 2 below is written to reach that conclusion plainly when
- * there's genuinely nothing pending.
+ * Deliberately absent (redesign §6): top gainers / losers / most active.
+ * They reward momentum and volatility, which is the opposite of what
+ * this system is for, and they compete with the decisions list for the
+ * top of the page. They belong on a Market tab.
  */
 export function TodayScreen({
   onOpenScreen,
+  onOpen,
 }: {
   onOpenScreen: (id: "macro" | "portfolio" | "opportunities" | "review") => void;
+  onOpen: (ticker: string) => void;
 }) {
   const [market, setMarket] = useState<MarketOverview | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
-  const [health, setHealth] = useState<DataHealth | null>(null);
+  const [health, setHealth] = useState<DataHealth | null | undefined>(undefined);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [spread, setSpread] = useState<Spread | null>(null);
   const [portfolio, setPortfolio] = useState<ValuedPortfolio | null | undefined>(undefined);
-  const [opportunities, setOpportunities] = useState<OpportunityRanking | null | undefined>(undefined);
-  const [aspiHistory, setAspiHistory] = useState<IndexHistory | null>(null);
-  // TASK 2.1 (product-owner brief): this preview card shows 5 ranked
-  // opportunities with a "Show 5 more" that APPENDS rather than paginates
-  // away — deliberately not `usePagination`/`PaginationControls`
-  // (`components/PaginatedTable.tsx`), which is the right shape for the
-  // full Opportunities screen's own table but a "Previous" control makes
-  // no sense on a homepage teaser card that only ever grows.
-  const [boardShown, setBoardShown] = useState(5);
+  const [ranking, setRanking] = useState<CompositeRanking | null | undefined>(undefined);
+  const [rankingError, setRankingError] = useState<string | null>(null);
 
   useEffect(() => {
     getMarketOverview()
       .then(setMarket)
       .catch((e) => setMarketError(e instanceof ApiRequestError ? e.message : String(e)));
-    // T4.1.2's TrendChip — real ASPI history, independent of the live
-    // market call above so one failing doesn't take the other down.
-    getIndexHistory()
-      .then(setAspiHistory)
-      .catch(() => setAspiHistory(null));
     getDataHealth()
       .then(setHealth)
-      .catch((e) => setHealthError(e instanceof ApiRequestError ? e.message : String(e)));
-    // The spread reads the local database, so it survives the CSE feed
-    // being unreachable — it is deliberately not tied to the market call.
+      .catch((e) => {
+        setHealth(null);
+        setHealthError(e instanceof ApiRequestError ? e.message : String(e));
+      });
     getSpread()
       .then(setSpread)
       .catch(() => setSpread(null));
     getPortfolioHoldingsValued()
       .then(setPortfolio)
       .catch(() => setPortfolio(null));
-    getOpportunityRanking()
-      .then(setOpportunities)
-      .catch(() => setOpportunities(null));
+    getCompositeRanking()
+      .then(setRanking)
+      .catch((e) => {
+        setRanking(null);
+        setRankingError(e instanceof ApiRequestError ? e.message : String(e));
+      });
   }, []);
 
-  const attention: string[] = [];
-  if (health) {
-    if (health.corporate_actions_pending > 0) {
-      attention.push(
-        `${health.corporate_actions_pending} corporate action${health.corporate_actions_pending === 1 ? "" : "s"} awaiting confirmation`,
-      );
-    }
-    if (health.fundamentals_pending_confirmation > 0) {
-      attention.push(
-        `${health.fundamentals_pending_confirmation} extracted financial figure${health.fundamentals_pending_confirmation === 1 ? "" : "s"} awaiting confirmation`,
-      );
-    }
-    if (health.quarantined.length > 0) {
-      attention.push(
-        `${health.quarantined.length} ticker${health.quarantined.length === 1 ? "" : "s"} quarantined by a data-quality alert`,
-      );
-    }
-    if (health.price_feed_age_days !== null && health.price_feed_age_days > 2) {
-      attention.push(`Price data is ${health.price_feed_age_days} days old`);
-    }
-  }
+  const heldTickers = useMemo(
+    () => new Set((portfolio?.positions ?? []).map((p) => p.ticker)),
+    [portfolio],
+  );
+  const knownTickers = useMemo(
+    () => new Set((ranking?.ranked ?? []).map((r) => r.ticker)),
+    [ranking],
+  );
+
+  // Market P/E as a percentile of its own history — "11.8×" means
+  // nothing on its own; "62nd percentile of its own range" answers the
+  // macro question a value investor actually has (redesign §6).
+  const perPercentile = useMemo(() => {
+    if (!spread || spread.market_per === null || spread.history.length < 8) return null;
+    const cur = Number(spread.market_per);
+    const hist = spread.history
+      .map((h) => (Number(h.earnings_yield) > 0 ? 1 / Number(h.earnings_yield) : null))
+      .filter((x): x is number => x !== null && Number.isFinite(x));
+    if (hist.length < 8) return null;
+    const below = hist.filter((x) => x <= cur).length;
+    return { pct: Math.round((below / hist.length) * 100), n: hist.length };
+  }, [spread]);
+
+  // Real bp move in the risk-free rate over the tail of its own history —
+  // the lever every cost of equity in the system sits on (redesign §6:
+  // "express macro as its effect on fair value, not as a rate").
+  const tbillMoveBp = useMemo(() => {
+    if (!spread || spread.tbill_yield === null || spread.history.length < 6) return null;
+    const now = Number(spread.tbill_yield);
+    const past = Number(spread.history[Math.max(0, spread.history.length - 30)].tbill_yield);
+    if (!Number.isFinite(now) || !Number.isFinite(past)) return null;
+    return Math.round((now - past) * 10000);
+  }, [spread]);
+
+  const bestRiskAdjusted = useMemo(() => {
+    if (!ranking) return [];
+    const quarantined = new Set((health?.quarantined ?? []).map((q) => q.ticker));
+    const noCall = new Set(["Withheld", "Insufficient data"]);
+    return ranking.ranked
+      .filter(
+        (r) =>
+          r.total_score !== null &&
+          !quarantined.has(r.ticker) &&
+          !noCall.has(r.verdict) &&
+          r.discount_to_fair_value_pct !== null &&
+          Number(r.discount_to_fair_value_pct) > 0,
+      )
+      .sort((a, b) => Number(b.total_score) - Number(a.total_score))
+      .slice(0, 6);
+  }, [ranking, health]);
+
+  const needAttention = useMemo(() => {
+    if (!portfolio) return [];
+    return portfolio.positions
+      .filter(
+        (p) => p.attention_flags.length > 0 || p.price_ladder_zone === "exit" || p.price_ladder_zone === "trim",
+      )
+      .slice(0, 6);
+  }, [portfolio]);
 
   return (
     <div className="route stack">
       <header className="screen-head">
-        {/* R1 T4.1.1 */}
-        <h1>Today's summary</h1>
+        <h1>Today</h1>
         <p className="prose">
           {new Date().toLocaleDateString("en-GB", {
             weekday: "long",
@@ -116,270 +156,310 @@ export function TodayScreen({
         </p>
       </header>
 
-      {/* ---- 1. WHAT IS THE WEATHER? ------------------------------- */}
-      <section aria-labelledby="weather-heading" className="stack-tight">
-        <h2 id="weather-heading">1 · What is the weather?</h2>
+      {/* ---- 1. TRUST BAR ---------------------------------------------- */}
+      {health === undefined ? (
+        <SkeletonCard lines={1} />
+      ) : healthError ? (
+        <ErrorState
+          whatFailed="The data-quality summary could not be loaded"
+          whatItAffects="The trust bar only — the rest of this screen reads independent data."
+          whatStillWorks="Companies, Portfolio and the confirm queues are unaffected."
+          whatHappensNext={<>Check the API is reachable, then reload. Underlying error: {healthError}</>}
+        />
+      ) : health?.universe_status ? (
+        <TrustBar
+          status={health.universe_status}
+          computedAt={ranking ? ranking.computed_at : undefined}
+          stale={ranking?.is_stale}
+        />
+      ) : null}
 
-        {marketError ? (
+      {/* ---- 2. DECISIONS TODAY (hero) ------------------------------- */}
+      <section aria-labelledby="decisions-heading" className="stack-tight">
+        <h2 id="decisions-heading">Decisions today</h2>
+        {ranking === undefined ? (
+          <SkeletonCard lines={2} />
+        ) : rankingError ? (
           <ErrorState
-            whatFailed="The market overview could not be loaded"
-            whatItAffects="Index levels and sector performance on this screen only."
-            whatStillWorks="Everything served from the local database — Companies, Data health and the confirm queues — is unaffected."
-            whatHappensNext={
+            whatFailed="The composite ranking could not be loaded"
+            whatItAffects="The decisions list, the valuation histogram and the best-risk-adjusted table."
+            whatStillWorks="The trust bar, portfolio summary and market tiles read independent data."
+            whatHappensNext={<>Check the API is running, then reload. Underlying error: {rankingError}</>}
+          />
+        ) : (
+          <DecisionsToday
+            insights={ranking?.insights ?? []}
+            tickers={knownTickers}
+            onOpen={onOpen}
+            historyAvailable={Boolean(ranking?.snapshot_available)}
+          />
+        )}
+      </section>
+
+      {/* ---- 3. THREE TILES ---------------------------------------- */}
+      <section aria-labelledby="tiles-heading" className="stack-tight">
+        <h2 id="tiles-heading">Where things stand</h2>
+        <div className="stat-grid">
+          {/* Portfolio */}
+          <div className="card">
+            <span className="t-label">Portfolio</span>
+            {portfolio === undefined ? (
+              <SkeletonCard lines={2} />
+            ) : portfolio === null ? (
               <>
-                This screen reads the CSE feed live. Check the API is running at{" "}
-                <span className="code-hint">http://localhost:8000</span>, then reload. Underlying
-                error: {marketError}
+                <p className="t-body prose" style={{ marginTop: "var(--s2)" }}>
+                  No holdings uploaded yet.
+                </p>
+                <button onClick={() => onOpenScreen("portfolio")}>Go to Portfolio</button>
               </>
-            }
-          />
-        ) : !market ? (
-          <SkeletonCard lines={3} />
-        ) : (
-          <>
-            {market.unavailable.length > 0 && <PartialNotice sections={market.unavailable} />}
-            <div className="card">
-              <span className="t-label">All Share Price Index</span>
-              <div className="hero-value">{formatIndexValue(market.aspi?.value)}</div>
-              <div className="row" style={{ marginTop: "var(--s2)" }}>
-                <Delta percentage={market.aspi?.percentage} />
-                <span className="t-caption">
-                  day range {formatIndexValue(market.aspi?.low)} – {formatIndexValue(market.aspi?.high)}
-                </span>
-                {market.status && <span className="status-tag">{market.status}</span>}
-              </div>
-              {aspiHistory && aspiHistory.points.length > 1 && (
-                <div style={{ marginTop: "var(--s3)" }}>
-                  <TrendChip
-                    windows={[15, 30, 45].map((n) => ({
-                      label: `${n}d`,
-                      pct: trendWindowPct(aspiHistory.points, n),
-                    }))}
-                  />
-                </div>
-              )}
-            </div>
-
-            {spread && <SpreadHero spread={spread} />}
-
-            <div className="notice notice-neutral">
-              <h3>The regime gauge lives on Macro</h3>
-              <p className="prose t-body">
-                It is real and live now: the blended read, the two independent sub-reads behind it
-                (a Markov switching fit on ASPI returns and a rule-based macro composite), what the
-                current regime is already doing to every fair value in the system, §30's
-                error-correction half-life, and the §33 sector tilts that are statistically
-                significant right now. Two parts of it are still genuinely missing and say so
-                there — a recommended gross exposure (§31 names exposure-capping but gives no
-                number for it, and there is no portfolio-sizing layer for one to act on) and
-                validation against a real historical Sri Lankan regime, which this system's own
-                macro series aren't deep enough for yet.{" "}
-                <button className="btn-link" onClick={() => onOpenScreen("macro")}>
-                  Open the regime gauge
-                </button>
-              </p>
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* ---- 2. WHAT NEEDS MY ATTENTION? ---------------------------- */}
-      <section aria-labelledby="attention-heading" className="stack-tight">
-        <h2 id="attention-heading">2 · What needs my attention?</h2>
-        {healthError ? (
-          <ErrorState
-            whatFailed="The attention list could not be loaded"
-            whatItAffects="This section only."
-            whatStillWorks="The rest of this screen, and every other screen."
-            whatHappensNext={<>Check the API is reachable, then reload. Underlying error: {healthError}</>}
-          />
-        ) : !health ? (
-          <SkeletonCard lines={2} />
-        ) : attention.length === 0 ? (
-          <EmptyState title="Nothing needs your attention.">
-            <p style={{ margin: 0 }}>
-              No pending confirmations, no quarantined tickers, and the price feed is current. On a
-              normal day this section should read exactly like this — a 12–36 month strategy should
-              not demand daily action.
-            </p>
-          </EmptyState>
-        ) : (
-          <div className="card">
-            <ul style={{ margin: 0, paddingLeft: "var(--s5)" }}>
-              {attention.map((line) => (
-                <li key={line} className="t-body" style={{ marginBottom: "var(--s1)" }}>
-                  {line}
-                </li>
-              ))}
-            </ul>
-            {health.fundamentals_pending_by_ticker.length > 0 && (
-              <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
-                Highest-count tickers in the queue:{" "}
-                {health.fundamentals_pending_by_ticker
-                  .slice(0, 5)
-                  .map((t) => `${t.ticker} (${t.count})`)
-                  .join(", ")}
-                .
-              </p>
-            )}
-            <div style={{ marginTop: "var(--s4)" }}>
-              <button onClick={() => onOpenScreen("review")}>Open the confirm queue</button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <section aria-labelledby="where-heading" className="stack-tight">
-        <h2 id="where-heading">3 · Where am I?</h2>
-        {portfolio === null ? (
-          <div className="notice notice-neutral">
-            <h3>No portfolio uploaded yet</h3>
-            <p className="prose t-body">
-              Upload a real CDS/broker holdings export to see your current positions valued against
-              this system's own fair-value engine.
-            </p>
-            <div style={{ marginTop: "var(--s4)" }}>
-              <button onClick={() => onOpenScreen("portfolio")}>Go to Portfolio</button>
-            </div>
-          </div>
-        ) : portfolio === undefined ? (
-          <SkeletonCard lines={2} />
-        ) : (
-          <div className="card">
-            <div style={{ display: "flex", gap: "var(--s6)", flexWrap: "wrap", alignItems: "baseline" }}>
-              <div>
-                <span className="t-label">Cost</span>
-                <div className="t-data">{formatPrice(portfolio.total_cost)}</div>
-              </div>
-              <div>
-                <span className="t-label">Live value</span>
-                <div className="t-data">
+            ) : (
+              <>
+                <div className="stat-value">
                   {portfolio.total_live_market_value !== null
                     ? formatPrice(portfolio.total_live_market_value)
                     : UNAVAILABLE}
                 </div>
-              </div>
-              {portfolio.total_live_market_value !== null &&
-                (() => {
-                  const gain = Number(portfolio.total_live_market_value) - Number(portfolio.total_cost);
-                  const gainPct = (gain / Number(portfolio.total_cost)) * 100;
-                  return (
-                    <div>
-                      <span className="t-label">Unrealised P&amp;L</span>
-                      <div className={`t-data delta delta-${directionOf(gain)}`}>
-                        <Delta percentage={gainPct} />
+                {portfolio.total_live_market_value !== null &&
+                  (() => {
+                    const gain =
+                      Number(portfolio.total_live_market_value) - Number(portfolio.total_cost);
+                    const gainPct = (gain / Number(portfolio.total_cost)) * 100;
+                    return (
+                      <div className={`delta delta-${directionOf(gain)}`} style={{ marginTop: "var(--s1)" }}>
+                        <Delta percentage={gainPct} /> unrealised
                       </div>
-                    </div>
-                  );
-                })()}
-              <div>
-                <span className="t-label">Positions</span>
-                <div className="t-data">{portfolio.positions.length}</div>
+                    );
+                  })()}
+                <p className="t-caption" style={{ marginTop: "var(--s2)" }}>
+                  {portfolio.positions.length} position{portfolio.positions.length === 1 ? "" : "s"}
+                  {needAttention.length > 0 ? ` · ${needAttention.length} need review` : ""}
+                </p>
+                <button onClick={() => onOpenScreen("portfolio")}>Open Portfolio</button>
+              </>
+            )}
+          </div>
+
+          {/* Market valuation */}
+          <div className="card">
+            <span className="t-label">Market valuation</span>
+            {marketError && !spread ? (
+              <p className="t-caption" style={{ marginTop: "var(--s2)" }}>
+                Live market feed unavailable.
+              </p>
+            ) : (
+              <>
+                <div className="stat-value">
+                  {market?.aspi?.value != null
+                    ? `ASPI ${market.aspi.value.toLocaleString("en-GB", { maximumFractionDigits: 0 })}`
+                    : UNAVAILABLE}
+                </div>
+                {market?.aspi?.percentage != null && (
+                  <div style={{ marginTop: "var(--s1)" }}>
+                    <Delta percentage={market.aspi.percentage} />
+                  </div>
+                )}
+                <p className="t-caption prose" style={{ marginTop: "var(--s2)" }}>
+                  {spread?.market_per != null
+                    ? `Market P/E ${Number(spread.market_per).toFixed(1)}×`
+                    : "Market P/E unavailable"}
+                  {perPercentile
+                    ? ` — ${perPercentile.pct}th percentile of its own ${perPercentile.n}-observation history`
+                    : ""}
+                  .
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Macro → valuations */}
+          <div className="card">
+            <span className="t-label">Macro → valuations</span>
+            {spread?.tbill_yield != null ? (
+              <>
+                <div className="stat-value">
+                  Risk-free {(Number(spread.tbill_yield) * 100).toFixed(2)}%
+                  {tbillMoveBp !== null && tbillMoveBp !== 0 && (
+                    <span style={{ fontSize: 13, fontWeight: 500, marginLeft: "var(--s2)", color: "var(--ink-3)" }}>
+                      {tbillMoveBp > 0 ? "▲" : "▼"} {Math.abs(tbillMoveBp)}bp
+                    </span>
+                  )}
+                </div>
+                <p className="t-caption prose" style={{ marginTop: "var(--s2)" }}>
+                  The 364-day T-bill is the base of every cost of equity in the system. When it
+                  {tbillMoveBp !== null && tbillMoveBp < 0 ? " falls, as now, " : " moves, "}
+                  every fair value re-rates the other way. The regime read and its sector tilts live
+                  on{" "}
+                  <button className="btn-link" onClick={() => onOpenScreen("macro")}>
+                    Macro
+                  </button>
+                  .
+                </p>
+              </>
+            ) : (
+              <p className="t-caption" style={{ marginTop: "var(--s2)" }}>
+                No risk-free observation available yet.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* ---- 4. IS THE MARKET CHEAP? ------------------------------- */}
+      <section aria-labelledby="cheap-heading" className="stack-tight">
+        <h2 id="cheap-heading">Is the market cheap, and where?</h2>
+        {ranking === undefined ? (
+          <SkeletonCard lines={4} />
+        ) : !ranking || ranking.ranked.length === 0 ? (
+          <EmptyState title="No universe ranking yet">
+            <p style={{ margin: 0 }}>
+              The scheduled composite pass has not produced a snapshot with fair values yet.
+            </p>
+          </EmptyState>
+        ) : (
+          <div className="today-duo">
+            <div className="card">
+              <span className="t-label">Price ÷ fair value, whole universe</span>
+              <div style={{ marginTop: "var(--s3)" }}>
+                <MarketValuationHistogram rows={ranking.ranked} holdings={heldTickers} />
               </div>
             </div>
-            {/* R1 T4.1.6: FOUR windows here specifically (not three like
-                Portfolio's own summary) — the brief's own instruction. */}
-            <div style={{ marginTop: "var(--s4)" }}>
-              <TrendChip
-                windows={["15d", "30d", "45d", "60d"].map((label) => ({
-                  label,
-                  pct: portfolio.value_trend_pct[label] !== null && portfolio.value_trend_pct[label] !== undefined
-                    ? Number(portfolio.value_trend_pct[label])
-                    : null,
-                }))}
-              />
-            </div>
-            <div style={{ marginTop: "var(--s4)" }}>
-              <button onClick={() => onOpenScreen("portfolio")}>Open Portfolio</button>
+            <div className="card">
+              <span className="t-label">Median discount to fair value, by sector</span>
+              <div style={{ marginTop: "var(--s3)" }}>
+                <SectorValueBars rows={ranking.ranked} />
+              </div>
             </div>
           </div>
         )}
       </section>
 
-      <section aria-labelledby="board-heading" className="stack-tight">
-        <h2 id="board-heading">4 · What is on the board?</h2>
-        {opportunities === null ? (
-          <div className="notice notice-neutral">
-            <h3>The board could not be loaded</h3>
-            <p className="prose t-body">
-              Check the API is running, then reload — every other section on this screen reads
-              independent data.
-            </p>
-          </div>
-        ) : opportunities === undefined ? (
-          <SkeletonCard lines={2} />
-        ) : opportunities.ranked.length === 0 ? (
-          <div className="notice notice-neutral">
-            <h3>Nothing ranks yet</h3>
-            <p className="prose t-body">
-              §40's full risk-adjusted-return ranking still isn't built — the §38 composite score
-              itself is real now (see any company file), but blending it into a ranked list here
-              needs a universe-wide pass this system doesn't yet run on a schedule — see{" "}
-              <button className="btn-link" onClick={() => onOpenScreen("opportunities")}>
-                Opportunities
-              </button>{" "}
-              for the real, narrower ranking this system can compute today, and why nothing
-              qualifies yet.
-            </p>
-          </div>
-        ) : (
+      {/* ---- 5. WHERE TO LOOK ------------------------------------- */}
+      <section aria-labelledby="look-heading" className="stack-tight">
+        <h2 id="look-heading">Where to look</h2>
+        <div className="today-duo">
           <div className="card">
-            <p className="t-caption" style={{ margin: "0 0 var(--s3)" }}>
-              Real gap-to-buy-below ranking (§25-26) — not yet §40's full risk-adjusted-return metric,
-              see Opportunities for what's still missing.
-            </p>
-            <div className="table-wrap table-scroll">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Ticker</th>
-                    <th scope="col" className="right">Price</th>
-                    <th scope="col">Zone</th>
-                    <th scope="col" className="right">Gap to buy below</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {opportunities.ranked.slice(0, boardShown).map((c) => (
-                    <tr key={c.ticker}>
-                      <th scope="row" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
-                        {c.ticker}
-                      </th>
-                      <td className="right num">{c.current_price !== null ? formatPrice(c.current_price) : UNAVAILABLE}</td>
-                      <td>
-                        <ZoneChip zone={c.price_ladder_zone} why={c.warnings.join(" ") || undefined} />
-                      </td>
-                      <td className="right">
-                        {c.gap_to_buy_below_pct !== null ? (
-                          <Delta percentage={Number(c.gap_to_buy_below_pct) * 100} />
-                        ) : (
-                          <span className="muted">{UNAVAILABLE}</span>
-                        )}
-                      </td>
+            <span className="t-label">Best risk-adjusted · cheap &amp; not quarantined</span>
+            {ranking === undefined ? (
+              <SkeletonCard lines={3} />
+            ) : bestRiskAdjusted.length === 0 ? (
+              <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
+                Nothing currently scores well AND trades below its blended fair value. That is a
+                legitimate state — the system is not obliged to find a buy every day.
+              </p>
+            ) : (
+              <div className="table-wrap" style={{ marginTop: "var(--s3)" }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticker</th>
+                      <th scope="col" className="right">Score</th>
+                      <th scope="col" className="right">Fair value</th>
+                      <th scope="col" className="right">Upside</th>
+                      <th scope="col">Verdict</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="row" style={{ marginTop: "var(--s4)", gap: "var(--s3)" }}>
-              {boardShown < opportunities.ranked.length && (
-                <button onClick={() => setBoardShown((n) => n + 5)}>
-                  Show 5 more ({opportunities.ranked.length - boardShown} remaining)
-                </button>
-              )}
-              <button onClick={() => onOpenScreen("opportunities")}>
-                Open Opportunities ({opportunities.ranked.length} ranked)
+                  </thead>
+                  <tbody>
+                    {bestRiskAdjusted.map((r) => (
+                      <tr key={r.ticker} className="selectable" onClick={() => onOpen(r.ticker)}>
+                        <th scope="row" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
+                          {r.ticker}
+                        </th>
+                        <td className="right">
+                          <ScoreBar score={Number(r.total_score)} width={96} />
+                        </td>
+                        <td className="right num">
+                          {r.blended_fair_value_per_share !== null
+                            ? formatPrice(r.blended_fair_value_per_share)
+                            : UNAVAILABLE}
+                        </td>
+                        <td className="right">
+                          <Delta percentage={Number(r.discount_to_fair_value_pct) * 100} />
+                        </td>
+                        <td>
+                          <VerdictChip verdict={r.verdict} confidence={r.decision_confidence} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {ranking && (
+              <button style={{ marginTop: "var(--s3)" }} onClick={() => onOpenScreen("opportunities")}>
+                Open Opportunities
               </button>
-            </div>
+            )}
           </div>
-        )}
+
+          <div className="card">
+            <span className="t-label">Positions needing attention</span>
+            {portfolio === undefined ? (
+              <SkeletonCard lines={3} />
+            ) : portfolio === null ? (
+              <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
+                No holdings uploaded — nothing to review.
+              </p>
+            ) : needAttention.length === 0 ? (
+              <p className="t-caption prose" style={{ marginTop: "var(--s3)" }}>
+                No held position is in the trim or exit zone and none carries an attention flag.
+              </p>
+            ) : (
+              <div className="table-wrap" style={{ marginTop: "var(--s3)" }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticker</th>
+                      <th scope="col">Zone</th>
+                      <th scope="col" className="right">Unrealised</th>
+                      <th scope="col">Why</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {needAttention.map((p) => {
+                      const pl =
+                        p.live_unrealized_gain_loss !== null && Number(p.total_cost) !== 0
+                          ? (Number(p.live_unrealized_gain_loss) / Number(p.total_cost)) * 100
+                          : null;
+                      return (
+                        <tr key={p.ticker} className="selectable" onClick={() => onOpen(p.ticker)}>
+                          <th scope="row" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
+                            {p.ticker}
+                          </th>
+                          <td>
+                            <ZoneChip zone={p.price_ladder_zone} />
+                          </td>
+                          <td className="right">
+                            {pl !== null ? <Delta percentage={pl} /> : <span className="muted">{UNAVAILABLE}</span>}
+                          </td>
+                          <td className="t-caption">
+                            {p.attention_flags[0]?.label ??
+                              (p.price_ladder_zone === "exit" ? "In the exit zone" : "In the trim zone")}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {portfolio && (
+              <button style={{ marginTop: "var(--s3)" }} onClick={() => onOpenScreen("portfolio")}>
+                Open Portfolio
+              </button>
+            )}
+          </div>
+        </div>
       </section>
 
       {market && (
         <p className="t-caption">
           Market figures fetched {new Date(market.fetched_at).toLocaleTimeString()}
-          {market.cached ? " (cached, refreshes at most once a minute)" : ""} · live passthrough from
-          cse.lk, not stored and not point-in-time · {formatInteger(health?.securities_count ?? null)}{" "}
-          companies in the local store
+          {market.cached ? " (cached, at most once a minute)" : ""} · live passthrough from cse.lk,
+          not stored · composite scores from{" "}
+          {ranking?.computed_at
+            ? `a run at ${new Date(ranking.computed_at).toLocaleString()}`
+            : "a live pass (no scheduled snapshot yet)"}
+          .
         </p>
       )}
     </div>
