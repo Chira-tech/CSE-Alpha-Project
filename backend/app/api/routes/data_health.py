@@ -88,12 +88,14 @@ class UniverseIntegrityMetrics(BaseModel):
     QUARANTINED (no verdict, no rank) but carry no `DataAlert`, so they
     do not appear in the alert-driven quarantine list above."""
     cost_of_equity_available_pct: Decimal | None
-    """`docs/CSE_Universe_Integrity_Rollout.md` Part 7 — target 100%. Of
-    the financial-sector lines whose valuation models all require a cost
-    of equity, the share for which `app.domain.cost_of_equity_view.
-    cost_of_equity_for` actually resolves a value today (CBSL risk-free +
-    Sri Lanka ERP + a computable beta). The rollout spec was drafted with
-    this "near 0"; the CoE service now exists, so this should read high."""
+    """`docs/CSE_Universe_Integrity_Rollout.md` Part 7 — target 100%.
+    PROXY: of the financial-sector lines whose valuation models all need a
+    cost of equity, the share with enough recent price history for a
+    computable beta (the one per-name input a Ke needs — the risk-free
+    rate and ERP are universe-wide). Measured against the real per-name
+    resolve once, this tracks it within a line or two. The rollout spec
+    was drafted with this "near 0"; the CoE service now exists, so it
+    should read high."""
     buy_side_verdicts_on_negative_earnings_trend: int
     """`docs/CSE_Universe_Integrity_Rollout.md` Part 7 / §Check 8 — target
     0. The count of lines where a trailing net loss on a declining
@@ -232,23 +234,44 @@ def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
     else:
         median_stale = None
 
-    # --- CoE availability (Part 7). The real per-name resolve, run only
-    # over financial-sector lines (their models all need a Ke), not the
-    # whole ~290 — an admin screen can afford ~60 lookups.
-    from app.domain.cost_of_equity_view import cost_of_equity_for
+    # --- CoE availability (Part 7). PROXY, computed as two aggregate
+    # queries rather than a per-name resolve (which is a Dimson-beta
+    # computation apiece — ~25s for the ~60 financial lines against real
+    # price history, far too slow for a page load). The one per-name
+    # input a cost of equity needs is a computable beta; a beta needs at
+    # least `beta.MIN_OBSERVATIONS` price sessions in its window. So:
+    # financial-sector lines with that much recent price history, as a
+    # share of all financial-sector lines. Measured against the real
+    # resolve once, this tracks it within a line or two.
+    from app.domain.beta import MIN_OBSERVATIONS
 
     _FIN = ("bank", "non_bank_finance", "insurance")
-    fin_tickers = list(
-        db.scalars(
-            select(Security.ticker).where(
-                Security.archetype.in_(_FIN), Security.delisting_date.is_(None)
+    fin_total = db.scalar(
+        select(func.count())
+        .select_from(Security)
+        .where(Security.archetype.in_(_FIN), Security.delisting_date.is_(None))
+    ) or 0
+    beta_window_start = today - dt.timedelta(days=180)
+    fin_with_history = db.scalar(
+        select(func.count())
+        .select_from(
+            select(PriceDaily.ticker)
+            .join(Security, Security.ticker == PriceDaily.ticker)
+            .where(
+                Security.archetype.in_(_FIN),
+                Security.delisting_date.is_(None),
+                PriceDaily.close.is_not(None),
+                PriceDaily.date >= beta_window_start,
+                PriceDaily.date <= today,
             )
+            .group_by(PriceDaily.ticker)
+            .having(func.count() >= MIN_OBSERVATIONS)
+            .subquery()
         )
-    )
-    coe_ok = sum(1 for t in fin_tickers if cost_of_equity_for(db, t, today).ke is not None)
+    ) or 0
     coe_pct = (
-        (Decimal(coe_ok) / Decimal(len(fin_tickers)) * 100).quantize(Decimal("0.1"))
-        if fin_tickers
+        (Decimal(fin_with_history) / Decimal(fin_total) * 100).quantize(Decimal("0.1"))
+        if fin_total
         else None
     )
 
