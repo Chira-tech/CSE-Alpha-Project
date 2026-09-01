@@ -41,14 +41,23 @@ class TestCategoryDerivation:
     def test_manufacturing_is_operating(self):
         assert triangulation_category_for_archetype(route_valuation("manufacturing")) == "operating"
 
-    def test_none_archetype_gives_none(self):
-        assert triangulation_category_for_archetype(route_valuation(None)) is None
+    def test_none_archetype_falls_through_to_operating(self):
+        # An unconfirmed archetype no longer blocks the blend — whatever
+        # anchors computed are worth an "operating" DCF+relative+book
+        # blend, graded down elsewhere on the low anchor count.
+        assert triangulation_category_for_archetype(route_valuation(None)) == "operating"
 
-    def test_unrecognised_archetype_gives_none(self):
-        assert triangulation_category_for_archetype(route_valuation("not_a_real_archetype")) is None
+    def test_unrecognised_archetype_falls_through_to_operating(self):
+        assert (
+            triangulation_category_for_archetype(route_valuation("not_a_real_archetype"))
+            == "operating"
+        )
 
-    def test_other_archetype_not_in_published_table_gives_none(self):
-        assert triangulation_category_for_archetype(route_valuation("other")) is None
+    def test_archetype_not_in_the_published_table_falls_through_to_operating(self):
+        # healthcare / logistics / "other" route to real models but were
+        # not in §15's 12-row table, so they used to get no blend at all.
+        for a in ("other", "healthcare", "logistics"):
+            assert triangulation_category_for_archetype(route_valuation(a)) == "operating"
 
 
 class TestTriangulate:
@@ -99,8 +108,11 @@ class TestTriangulate:
         assert result.dispersion_pct is None
         assert any("at least 2" in w for w in result.warnings)
 
-    def test_unconfirmed_archetype_cannot_triangulate(self):
+    def test_unconfirmed_archetype_still_blends_whatever_computed(self):
+        # No archetype -> the generic "operating" blend of whatever
+        # anchors are supplied, rather than withholding a fair value the
+        # inputs can actually support.
         routing = route_valuation(None)
         result = triangulate(routing, (ValuationAnchor("FCFF DCF", "intrinsic", Decimal(100)),))
-        assert result.blended_fair_value_per_share is None
-        assert result.weights is None
+        assert result.blended_fair_value_per_share == Decimal(100)
+        assert result.triangulation_category == "operating"

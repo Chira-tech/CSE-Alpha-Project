@@ -74,12 +74,21 @@ TRIANGULATION_WEIGHTS: dict[str, TriangulationWeights] = {
 }
 
 
-def triangulation_category_for_archetype(routing: RoutingDecision) -> str | None:
-    """`None` when the archetype isn't confirmed, isn't one of Appendix
-    P2's 15, or (rare) isn't in §24's published table at all — the same
-    honesty `RoutingDecision.in_published_table` already tracks."""
-    if routing.archetype is None or not routing.in_published_table:
-        return None
+def triangulation_category_for_archetype(routing: RoutingDecision) -> str:
+    """Which §24 weight row to blend an archetype's anchors with. Always
+    returns one — an archetype that isn't specifically a financial firm,
+    a holding company, property, or a cyclical falls through to
+    `"operating"` (the DCF + relative + book blend), and so does an
+    archetype not in §15's published 12-row table (healthcare, logistics,
+    "other") or one that has not been confirmed yet (`archetype is None`).
+
+    Earlier this returned `None` for those last two cases, which meant a
+    company whose anchors DID compute — a book NAV, a justified P/B —
+    still got no blended fair value and read as "Insufficient data". That
+    is a coverage hole, not honesty: `triangulate` already renormalises
+    the weights over whichever categories actually have an anchor, so a
+    generic "operating" blend of whatever computed is a real number, and
+    the decision engine already grades it down on a low anchor count."""
     if routing.archetype == "insurance":
         return "insurance"
     if routing.is_financial_firm:
@@ -130,9 +139,13 @@ class TriangulationResult:
 def triangulate(routing: RoutingDecision, anchors: tuple[ValuationAnchor, ...]) -> TriangulationResult:
     warnings: list[str] = []
     category = triangulation_category_for_archetype(routing)
-    weights = TRIANGULATION_WEIGHTS.get(category) if category else None
+    weights = TRIANGULATION_WEIGHTS.get(category)
 
-    if category is None or weights is None:
+    if weights is None:
+        # Only reachable if `TRIANGULATION_WEIGHTS` itself is missing a
+        # row for a category name this function can return — a code bug,
+        # not a data state. Keep the honest empty result rather than
+        # guessing a weight split.
         return TriangulationResult(
             triangulation_category=category,
             weights=None,
