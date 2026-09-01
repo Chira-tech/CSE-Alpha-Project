@@ -4,7 +4,7 @@ import { AsOf, EmptyState, ErrorState, SkeletonCard } from "../components/states
 import { downloadBlob } from "../csv";
 import { onDataRefreshed } from "../dataRefresh";
 import { formatInteger, UNAVAILABLE } from "../format";
-import type { CheckLedgerRow, DataHealth } from "../types";
+import type { CheckLedgerRow, CohortStat, DataHealth } from "../types";
 
 export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void }) {
   const [data, setData] = useState<DataHealth | null>(null);
@@ -514,7 +514,31 @@ function CheckLedgerRowView({ row }: { row: CheckLedgerRow }) {
           {row.blocking ? "blocking" : "report-only"}
         </span>
         {rowCaution && <span aria-hidden> ⚠</span>}
+        {row.cohorts && <CohortSplit cohorts={row.cohorts} />}
       </td>
     </tr>
+  );
+}
+
+function CohortSplit({ cohorts }: { cohorts: Record<string, CohortStat> }) {
+  const rows = Object.entries(cohorts).filter(([, c]) => c.passed + c.failed + c.not_evaluable > 0);
+  if (rows.length < 2) return null;
+  // Flag a cohort whose fail rate (of what it could check) is at least
+  // double the row's overall — the "concentrates in one cohort" signal.
+  const rates = rows.map(([, c]) => (c.passed + c.failed ? c.failed / (c.passed + c.failed) : null));
+  const worst = Math.max(...rates.filter((r): r is number => r !== null), 0);
+  return (
+    <div className="t-caption muted" style={{ fontWeight: 400, marginTop: 2 }}>
+      {rows.map(([k, c], i) => {
+        const rate = rates[i];
+        const hot = rate !== null && worst > 0 && rate === worst && rate >= 0.1 && rows.length > 1;
+        return (
+          <div key={k} style={hot ? { color: "var(--caution)" } : undefined}>
+            {k}: {c.failed}✗ / {c.passed + c.failed} checked
+            {c.not_evaluable > 0 ? ` · ${c.not_evaluable} n/e` : ""}
+          </div>
+        );
+      })}
+    </div>
   );
 }

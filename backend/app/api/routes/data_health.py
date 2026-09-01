@@ -91,6 +91,12 @@ class UniverseStatusCounts(BaseModel):
     total: int
 
 
+class CohortStat(BaseModel):
+    passed: int
+    failed: int
+    not_evaluable: int
+
+
 class CheckLedgerRow(BaseModel):
     """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` E0 / §9.1 — one row
     per universe-wide check, split three ways so "could not be checked" is
@@ -114,6 +120,12 @@ class CheckLedgerRow(BaseModel):
     scope_total: int
     checkable_pct: Decimal | None
     pass_pct_of_checkable: Decimal | None
+    cohorts: dict[str, CohortStat] | None = None
+    """When a failure is suspected to concentrate in one cohort rather
+    than being spread evenly — multi-line issuers for the identity checks
+    (§6 / E4), non-voting `.X` lines for the sanity gate (§6 / E7) — the
+    same three-way split, one bucket per cohort. `None` when the check
+    has no cohort hypothesis."""
 
 
 class UniverseIntegrityMetrics(BaseModel):
@@ -379,13 +391,48 @@ def _pct(numer: int, denom: int) -> Decimal | None:
     return (Decimal(numer) / Decimal(denom) * 100).quantize(Decimal("0.1")) if denom else None
 
 
+def _cohort_rate(items: list[tuple[str, str]], failed: set[str], passed: set[str]) -> dict[str, "CohortStat"]:
+    """`items` = (ticker, cohort_key). Split pass / fail / not-evaluable
+    per cohort — the primary metric for E4 (single vs multi-line issuer)
+    and E7 (`.X` vs `.N`), where the question is which cohort the failures
+    concentrate in, not which ticker."""
+    out: dict[str, CohortStat] = {}
+    for tkr, key in items:
+        c = out.setdefault(key, CohortStat(passed=0, failed=0, not_evaluable=0))
+        if tkr in failed:
+            c.failed += 1
+        elif tkr in passed:
+            c.passed += 1
+        else:
+            c.not_evaluable += 1
+    return out
+
+
 def _check_ledger(db: Session) -> list[CheckLedgerRow]:
     """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` E0 — every
     universe-wide check as pass / fail / not-evaluable with reason codes.
     No data is changed; this only re-expresses what the checks already
     know."""
-    tickers = [t for (t,) in db.execute(select(Security.ticker))]
+    from app.domain.instrument_type import InstrumentType, classify, issuer_code
+
+    sec_rows = list(db.execute(select(Security.ticker, Security.issuer_code)))
+    tickers = [t for (t, _c) in sec_rows]
     scope = len(tickers)
+
+    lines_per_issuer: dict[str, int] = {}
+    for t, code in sec_rows:
+        lines_per_issuer[code or issuer_code(t)] = lines_per_issuer.get(code or issuer_code(t), 0) + 1
+
+    def issuer_cohort(t: str, code: str | None) -> str:
+        return "multi_line_issuer" if lines_per_issuer.get(code or issuer_code(t), 1) > 1 else "single_line_issuer"
+
+    def class_cohort(t: str) -> str:
+        k = classify(t)
+        if k is InstrumentType.ORDINARY:
+            return "voting (.N)"
+        if k is InstrumentType.NON_VOTING:
+            return "non_voting (.X)"
+        return "other (.P/.R/.U/…)"
 
     open_by_type: dict[str, int] = {
         t: c
@@ -435,9 +482,12 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
 
     rows: list[CheckLedgerRow] = []
 
+    _issuer_items = [(t, issuer_cohort(t, c)) for t, c in sec_rows]
+
     # --- market_cap_identity: price × shares vs the exchange's published
     # figure, within 2%. Not evaluable without all three inputs.
-    passed = failed = 0
+    mci_pass: set[str] = set()
+    mci_fail: set[str] = set()
     reasons: dict[str, int] = {}
     for t in tickers:
         pmc, sh, px = mcap.get(t), shares.get(t), last_close.get(t)
@@ -450,19 +500,17 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
         else:
             local = px * Decimal(sh)
             off = abs(pmc - local) / pmc if pmc else None
-            if off is not None and off <= _MARKET_CAP_IDENTITY_TOLERANCE:
-                passed += 1
-            else:
-                failed += 1
-    ne = sum(reasons.values())
+            (mci_pass if off is not None and off <= _MARKET_CAP_IDENTITY_TOLERANCE else mci_fail).add(t)
     rows.append(
         CheckLedgerRow(
             check="market_cap_identity",
             label="Market-cap identity (latest close × shares vs exchange)",
-            passed=passed, failed=failed, not_evaluable=ne, not_evaluable_reasons=reasons,
+            passed=len(mci_pass), failed=len(mci_fail), not_evaluable=sum(reasons.values()),
+            not_evaluable_reasons=reasons,
             blocking=True, scope_total=scope,
-            checkable_pct=_pct(passed + failed, scope),
-            pass_pct_of_checkable=_pct(passed, passed + failed),
+            checkable_pct=_pct(len(mci_pass) + len(mci_fail), scope),
+            pass_pct_of_checkable=_pct(len(mci_pass), len(mci_pass) + len(mci_fail)),
+            cohorts=_cohort_rate(_issuer_items, mci_fail, mci_pass),
         )
     )
 
@@ -472,7 +520,8 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
     # tolerance (0.5%) than the market-cap check because a share count
     # barely moves. Not evaluable until `enrich_securities` has run since
     # migration 0022 — older FloatData rows carry no published_price.
-    sc_pass = sc_fail = 0
+    sc_pass: set[str] = set()
+    sc_fail: set[str] = set()
     sc_reasons: dict[str, int] = {}
     for t in tickers:
         pmc, sh, pp = mcap.get(t), shares.get(t), pub_price.get(t)
@@ -486,19 +535,17 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
             )
         else:
             implied = pmc / pp
-            if abs(implied - Decimal(sh)) / Decimal(sh) <= Decimal("0.005"):
-                sc_pass += 1
-            else:
-                sc_fail += 1
+            (sc_pass if abs(implied - Decimal(sh)) / Decimal(sh) <= Decimal("0.005") else sc_fail).add(t)
     rows.append(
         CheckLedgerRow(
             check="share_count_identity",
             label="Share-count identity (published market cap ÷ published price)",
-            passed=sc_pass, failed=sc_fail, not_evaluable=sum(sc_reasons.values()),
+            passed=len(sc_pass), failed=len(sc_fail), not_evaluable=sum(sc_reasons.values()),
             not_evaluable_reasons=sc_reasons,
             blocking=True, scope_total=scope,
-            checkable_pct=_pct(sc_pass + sc_fail, scope),
-            pass_pct_of_checkable=_pct(sc_pass, sc_pass + sc_fail),
+            checkable_pct=_pct(len(sc_pass) + len(sc_fail), scope),
+            pass_pct_of_checkable=_pct(len(sc_pass), len(sc_pass) + len(sc_fail)),
+            cohorts=_cohort_rate(_issuer_items, sc_fail, sc_pass),
         )
     )
 
@@ -597,8 +644,20 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
     # 5×, units) runs at valuation time, not here. Only its failures are
     # visible universe-wide as open alerts; the rest of the universe has
     # not been re-checked by this route, so it is not-evaluable here
-    # rather than assumed to pass.
-    vs_fail = open_by_type.get("valuation_sanity_block", 0)
+    # rather than assumed to pass. Cohort split by share class (§6 / E7):
+    # a fair value built from issuer-level fundamentals and compared
+    # against a non-voting `.X` line's (persistently discounted) price is
+    # wrong by that discount for every `.X` line — the question is whether
+    # `.X` blocks at a materially higher rate than `.N`.
+    vs_fail_tickers = {
+        t
+        for (t,) in db.execute(
+            select(DataAlert.ticker).where(
+                DataAlert.resolved.is_(False), DataAlert.alert_type == "valuation_sanity_block"
+            )
+        )
+    }
+    vs_fail = len(vs_fail_tickers)
     rows.append(
         CheckLedgerRow(
             check="valuation_sanity",
@@ -607,6 +666,9 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
             not_evaluable_reasons={"only_evaluated_at_valuation_time": scope - vs_fail},
             blocking=True, scope_total=scope,
             checkable_pct=_pct(vs_fail, scope), pass_pct_of_checkable=_pct(0, vs_fail),
+            cohorts=_cohort_rate(
+                [(t, class_cohort(t)) for t in tickers], vs_fail_tickers, set()
+            ),
         )
     )
 

@@ -133,6 +133,39 @@ class TestCheckLedgerThreeWaySplit:
         assert "ca_feed_never_succeeded" in car.not_evaluable_reasons
 
 
+class TestCohortSplits:
+    def test_valuation_sanity_splits_block_rate_by_share_class(self, db_session):
+        # 2 voting + 2 non-voting lines; one of each is blocked.
+        for t in ("COMB.N0000", "HNB.N0000", "COMB.X0000", "HNB.X0000"):
+            db_session.add(Security(ticker=t, name=t, issuer_code=t.split(".")[0],
+                                    instrument_type="ordinary" if ".N" in t else "non_voting"))
+        db_session.add(DataAlert(ticker="COMB.N0000", alert_type="valuation_sanity_block",
+                                 detail="x", raised_at=NOW))
+        db_session.add(DataAlert(ticker="COMB.X0000", alert_type="valuation_sanity_block",
+                                 detail="x", raised_at=NOW))
+        db_session.commit()
+        vs = {r.check: r for r in _check_ledger(db_session)}["valuation_sanity"]
+        assert vs.cohorts is not None
+        assert vs.cohorts["voting (.N)"].failed == 1
+        assert vs.cohorts["voting (.N)"].not_evaluable == 1
+        assert vs.cohorts["non_voting (.X)"].failed == 1
+        assert vs.cohorts["non_voting (.X)"].not_evaluable == 1
+
+    def test_identity_checks_split_by_issuer_line_count(self, db_session):
+        # SOLO has one line; PAIR has two.
+        db_session.add(Security(ticker="SOLO.N0000", name="Solo", issuer_code="SOLO",
+                                instrument_type="ordinary"))
+        db_session.add(Security(ticker="PAIR.N0000", name="Pair N", issuer_code="PAIR",
+                                instrument_type="ordinary"))
+        db_session.add(Security(ticker="PAIR.X0000", name="Pair X", issuer_code="PAIR",
+                                instrument_type="non_voting"))
+        db_session.commit()
+        mci = {r.check: r for r in _check_ledger(db_session)}["market_cap_identity"]
+        assert mci.cohorts is not None
+        assert mci.cohorts["single_line_issuer"].not_evaluable == 1   # SOLO
+        assert mci.cohorts["multi_line_issuer"].not_evaluable == 2    # PAIR.N + PAIR.X
+
+
 class TestFreshnessSplit:
     @freeze_time("2026-09-01")  # a Tuesday
     def test_missing_monday_is_flagged_weekend_is_not(self, db_session, client):

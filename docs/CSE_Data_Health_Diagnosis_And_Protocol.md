@@ -291,7 +291,19 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 > share-count check still fails at a similar rate and sign, the errors are real share counts, a
 > more serious finding than stale-price noise.
 >
-> Steps 3–4 (run the CA and CBSL feeds — E5, E6) and 5–6, 8–9 (E1, E2, E4, E7) are next.
+>
+> **E4 + E7 diagnostics shipped** (steps 8–9's first half — "the diagnostic is a cohort split,
+> not a ticker investigation"). Each identity check now carries a `cohorts` breakdown by issuer
+> line count (E4), and `valuation_sanity` carries one by share class (E7), each a full
+> pass/fail/not-evaluable split. First reads: **`.X` non-voting lines block the valuation
+> sanity gate at ~10% (2 of 20) vs ~2.2% (6 of 270) for `.N`** — a ~4.5× rate difference, which
+> is the class-defect signal E7 predicts (fair value from issuer-level fundamentals compared
+> against a persistently-discounted non-voting price). The E4 issuer-multiplicity split is in
+> place but not yet informative: only 1 of the 42 multi-line lines is even checkable — the rest
+> have no published market cap on file, the same coverage gap E3 is blocked on.
+>
+> Steps 3–4 (run the CA and CBSL feeds — E5, E6) and the E1/E2/E4/E7 *fixes* (as opposed to the
+> diagnostics now in place) are next.
 
 **Instrument first**
 

@@ -584,6 +584,12 @@ export interface UniverseIntegrityMetrics {
   buy_side_verdicts_on_negative_earnings_trend: number;
 }
 
+export interface CohortStat {
+  passed: number;
+  failed: number;
+  not_evaluable: number;
+}
+
 /** docs/CSE_Data_Health_Diagnosis_And_Protocol.md E0 / §9.1 — one row per
  * universe-wide check, split so "not checked" is never counted as "passed". */
 export interface CheckLedgerRow {
@@ -600,6 +606,9 @@ export interface CheckLedgerRow {
   checkable_pct: string | null;
   /** passed / (passed + failed) — the honest pass rate. */
   pass_pct_of_checkable: string | null;
+  /** §6 / E4, E7 — the same split per cohort, when failure is suspected
+   * to concentrate in one (multi-line issuers, non-voting .X lines). */
+  cohorts: Record<string, CohortStat> | null;
 }
 
 export interface DataHealth {
