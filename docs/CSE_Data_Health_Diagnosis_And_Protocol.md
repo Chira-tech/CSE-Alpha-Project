@@ -321,7 +321,17 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 > separate look. E1 for the *market-cap* check is E3 (use `published_price` from the same
 > payload), already coded and waiting on `enrich_securities`.
 >
-> Next: E7 fix (per-class `.X` price/shares), then run the feeds (E5, E6, enrichment), then E4.
+>
+> **E7 fix shipped.** The valuation sanity gate's fair-value-vs-price rules (`fv_within_5x_price`,
+> `fv_within_2x_price`) now put the fair value on a non-voting basis before comparing against an
+> `.X` line's price: `fair_value × (observed .X ÷ .N price ratio)`. When both lines trade the
+> ratio is the market's own; when the voting line has no price, the two rules are *skipped* for
+> that `.X` line (recorded in `skipped`, not `blocked`) rather than failing on a comparison known
+> to be biased by the discount. `SanityContext` gained `is_non_voting` / `nonvoting_price_ratio`;
+> `valuation_view` fills them. Takes effect on the next `recompute` — the `.X` vs `.N` block-rate
+> cohort split on the check ledger is the falsifier (it should converge).
+>
+> Next: run the feeds (E5, E6, enrichment), then E4.
 
 **Instrument first**
 

@@ -28,6 +28,39 @@ def _ctx(**overrides) -> SanityContext:
     return SanityContext(**defaults)
 
 
+class TestNonVotingClass:
+    """§6 / E7 — the fair-value-vs-price rules must account for the
+    persistent .X discount rather than block on it."""
+
+    def test_a_voting_basis_fair_value_far_above_a_discounted_x_price_blocks_without_the_ratio(self):
+        # FV 200 vs .X price 30 → ratio 6.67x, past fv_within_5x_price —
+        # but that is the voting/non-voting discount, not a bad valuation.
+        blocked = run_sanity_checks(Decimal("200"), _ctx(price=Decimal("30")))
+        assert "fv_within_5x_price" in blocked.blocked_by
+
+    def test_no_observable_ratio_skips_the_price_rules_for_an_x_line(self):
+        r = run_sanity_checks(
+            Decimal("200"), _ctx(price=Decimal("30"), is_non_voting=True, nonvoting_price_ratio=None)
+        )
+        assert "fv_within_5x_price" in r.skipped
+        assert "fv_within_2x_price" in r.skipped
+        assert "fv_within_5x_price" not in r.blocked_by
+
+    def test_an_observed_ratio_puts_the_fair_value_on_a_non_voting_basis(self):
+        # .X trades at 0.15 of .N → fair value 200 becomes 30 for the
+        # price comparison, which lines up with the 30 .X price.
+        r = run_sanity_checks(
+            Decimal("200"),
+            _ctx(price=Decimal("30"), is_non_voting=True, nonvoting_price_ratio=Decimal("0.15")),
+        )
+        assert "fv_within_5x_price" not in r.blocked_by
+        assert "fv_within_2x_price" not in r.warned_by
+
+    def test_a_voting_line_is_unaffected(self):
+        r = run_sanity_checks(Decimal("253.87"), _ctx(is_non_voting=False))
+        assert "fv_within_5x_price" not in r.skipped
+
+
 class TestRunSanityChecks:
     def test_comb_after_the_ttm_fix_publishes_cleanly(self):
         """COMB's real, corrected post-fix numbers (fair value 253.87,

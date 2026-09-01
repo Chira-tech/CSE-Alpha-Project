@@ -131,6 +131,21 @@ class SanityContext:
     genuinely profitable company; a loss-maker trading on a tiny P/E is
     a different, expected thing)."""
 
+    is_non_voting: bool = False
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §6 / E7 — this
+    line is a non-voting `.X` class. Its market price carries a
+    persistent discount to the voting line, but the fair value handed in
+    is built from issuer-level (voting-basis) fundamentals, so a raw
+    fair-value-vs-price comparison is wrong by the size of that discount
+    for every `.X` line."""
+
+    nonvoting_price_ratio: Decimal | None = None
+    """The market's own observed `.X` ÷ `.N` price ratio, when both lines
+    trade. When present, the fair-value-vs-price rules compare
+    `fair_value × this` against the `.X` price. When a non-voting line has
+    no observable ratio (`None` while `is_non_voting`), those rules are
+    skipped rather than blocking on a comparison known to be biased."""
+
 
 @dataclass(frozen=True)
 class SanityRule:
@@ -247,6 +262,13 @@ class SanityCheckResult:
     "checked and passed" from "not checked" rather than conflating them."""
 
 
+#: Rules that compare the fair value directly against the traded price.
+#: For a non-voting line these need the fair value put on a non-voting
+#: basis first (§6 / E7) — otherwise the persistent voting/non-voting
+#: discount reads as an implausible valuation.
+_PRICE_RELATIVE_RULES = frozenset({"fv_within_5x_price", "fv_within_2x_price"})
+
+
 def run_sanity_checks(fair_value: Decimal, ctx: SanityContext) -> SanityCheckResult:
     """§1's own plausibility gate, run on one already-triangulated fair
     value before it is allowed to become a price ladder. Never mutates,
@@ -261,8 +283,19 @@ def run_sanity_checks(fair_value: Decimal, ctx: SanityContext) -> SanityCheckRes
         if any(getattr(ctx, field_name) is None for field_name in rule.requires):
             skipped.append(rule.name)
             continue
+
+        rule_fair_value = fair_value
+        if rule.name in _PRICE_RELATIVE_RULES and ctx.is_non_voting:
+            if ctx.nonvoting_price_ratio is None:
+                # No observable .X/.N ratio — comparing a voting-basis
+                # fair value against a discounted non-voting price would
+                # fail structurally, so skip rather than block (§6 / E7).
+                skipped.append(rule.name)
+                continue
+            rule_fair_value = fair_value * ctx.nonvoting_price_ratio
+
         try:
-            passed = rule.predicate(fair_value, ctx)
+            passed = rule.predicate(rule_fair_value, ctx)
         except (DivisionByZero, InvalidOperation, ZeroDivisionError):
             # A required field WAS present but produced an undefined
             # comparison (e.g. price == 0) — genuinely unevaluable, same

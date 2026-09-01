@@ -135,6 +135,7 @@ from app.domain.market_cap_view import latest_shares_issued_all_classes
 from app.domain.national_projects_view import confirmed_base_case_revenue_growth_adjustment_for
 from app.domain.margin_of_safety import MarginOfSafetyResult, compute_margin_of_safety
 from app.domain.normalization import NormalisedRatio, normalise_ratio, per_period_roe
+from app.domain.instrument_type import InstrumentType, classify, issuer_code
 from app.domain.point_in_time import fundamentals_as_of
 from app.domain.price_ladder import PriceLadderResult, compute_price_ladder
 from app.domain.provenance import can_enter_valuation
@@ -155,6 +156,7 @@ from app.domain.ttm import annualised_flow, trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
 from app.models.corporate_actions import CorporateAction
 from app.models.enums import CorporateActionType
+from app.models.prices import PriceDaily
 
 
 #: How far back `_confirmable_line_items` may reach for a line the anchor
@@ -2083,6 +2085,28 @@ def valuation_summary_for(
                 if _pb is not None and jpb.inputs.roe not in (None, 0)
                 else None
             )
+            # §6 / E7: for a non-voting `.X` line the fair value is on a
+            # voting basis but the price is the discounted `.X` price.
+            # Put the fair value on a non-voting basis for the price
+            # checks, using the market's own observed `.X` ÷ `.N` ratio.
+            _is_non_voting = classify(ticker) is InstrumentType.NON_VOTING
+            _nonvoting_ratio: Decimal | None = None
+            if _is_non_voting and current_price is not None:
+                _voting_ticker = f"{issuer_code(ticker)}.N0000"
+                _voting_price = db.scalar(
+                    select(PriceDaily.close)
+                    .where(
+                        PriceDaily.ticker == _voting_ticker,
+                        PriceDaily.date <= stamp,
+                        PriceDaily.close.is_not(None),
+                        PriceDaily.close > 0,
+                    )
+                    .order_by(PriceDaily.date.desc())
+                    .limit(1)
+                )
+                if _voting_price:
+                    _nonvoting_ratio = current_price / _voting_price
+
             sanity_ctx = SanityContext(
                 price=current_price,
                 bvps=_bvps,
@@ -2094,6 +2118,8 @@ def valuation_summary_for(
                 pb=_pb,
                 pe=_pe,
                 net_profit=jpb.inputs.net_income,
+                is_non_voting=_is_non_voting,
+                nonvoting_price_ratio=_nonvoting_ratio,
             )
             sanity_result = run_sanity_checks(triangulation.blended_fair_value_per_share, sanity_ctx)
             if sanity_result.blocked:
