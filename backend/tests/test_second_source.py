@@ -47,7 +47,7 @@ REAL_SCAN_RESPONSE = {
 class TestCrossCheck:
     def test_matching_closes_pass(self):
         result = cross_check(
-            "COMB.N0000", Decimal("205.5"), REAL_QUOTE, threshold_pct=Decimal("0.005")
+            "COMB.N0000", Decimal("205.5"), REAL_QUOTE, pct_floor=Decimal("0.005")
         )
         assert result.within_tolerance
         assert result.mismatch_pct == 0
@@ -60,7 +60,7 @@ class TestCrossCheck:
             close=Decimal("19.95"), high=Decimal("20"), low=Decimal("19.9"),
             open=Decimal("20"), volume=538865, currency="LKR", exchange="CSELK",
         )
-        result = cross_check("JKH.N0000", Decimal("19.9"), quote, threshold_pct=Decimal("0.005"))
+        result = cross_check("JKH.N0000", Decimal("19.9"), quote, pct_floor=Decimal("0.005"))
         assert result.within_tolerance  # 0.05/19.9 ~= 0.25%, under the 0.5% threshold
 
     def test_a_large_mismatch_fails(self):
@@ -68,7 +68,7 @@ class TestCrossCheck:
             close=Decimal("250.0"), high=Decimal("250"), low=Decimal("250"),
             open=Decimal("250"), volume=1, currency="LKR", exchange="CSELK",
         )
-        result = cross_check("COMB.N0000", Decimal("205.5"), quote, threshold_pct=Decimal("0.005"))
+        result = cross_check("COMB.N0000", Decimal("205.5"), quote, pct_floor=Decimal("0.005"))
         assert not result.within_tolerance
         assert result.mismatch_pct > Decimal("0.2")
 
@@ -80,7 +80,7 @@ class TestCrossCheck:
             open=Decimal("205"), volume=1, currency="USD", exchange="CSELK",
         )
         with pytest.raises(SecondSourceShapeError, match="not LKR"):
-            cross_check("COMB.N0000", Decimal("205.5"), quote, threshold_pct=Decimal("0.005"))
+            cross_check("COMB.N0000", Decimal("205.5"), quote, pct_floor=Decimal("0.005"))
 
     def test_wrong_exchange_refuses_to_compare(self):
         quote = SecondSourceQuote(
@@ -88,7 +88,61 @@ class TestCrossCheck:
             open=Decimal("205"), volume=1, currency="LKR", exchange="NSE",
         )
         with pytest.raises(SecondSourceShapeError, match="CSELK"):
-            cross_check("COMB.N0000", Decimal("205.5"), quote, threshold_pct=Decimal("0.005"))
+            cross_check("COMB.N0000", Decimal("205.5"), quote, pct_floor=Decimal("0.005"))
+
+
+class TestTickAwareTolerance:
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §2 / E2 — the
+    tolerance is `max(pct_floor, 2 × tick ÷ price)`."""
+
+    def _quote(self, close):
+        return SecondSourceQuote(
+            close=Decimal(close), high=Decimal(close), low=Decimal(close),
+            open=Decimal(close), volume=1, currency="LKR", exchange="CSELK",
+        )
+
+    def test_a_one_tick_gap_on_a_low_priced_line_is_within_tolerance(self):
+        # CITW: 1.60 stored vs 1.70 quote — one 0.10 tick = 6.25% of
+        # price, but two ticks span 12.5%, so this is not an error.
+        r = cross_check("CITW.N0000", Decimal("1.60"), self._quote("1.70"),
+                        pct_floor=Decimal("0.05"))
+        assert r.within_tolerance
+        assert r.tolerance_pct == Decimal("0.125")
+
+    def test_a_real_divergence_on_a_low_priced_line_still_fails(self):
+        # 1.60 vs 2.10 is five ticks / 31% — past the two-tick band.
+        r = cross_check("X.N0000", Decimal("1.60"), self._quote("2.10"),
+                        pct_floor=Decimal("0.05"))
+        assert not r.within_tolerance
+
+    def test_above_a_few_rupees_the_percentage_floor_governs(self):
+        # RGEM at 118.25: two 0.25 ticks are 0.42% of price, well under
+        # the 5% floor, so a 15% gap fails exactly as before.
+        r = cross_check("RGEM.N0000", Decimal("118.25"), self._quote("136.00"),
+                        pct_floor=Decimal("0.05"))
+        assert not r.within_tolerance
+        assert r.tolerance_pct == Decimal("0.05")
+
+    def test_auto_resolves_an_alert_now_inside_the_tick_band(self, db_session):
+        from app.jobs.second_source_reconciliation import (
+            ALERT_TYPE, resolve_alerts_now_within_tolerance,
+        )
+
+        db_session.add(Security(ticker="CITW.N0000", name="CITW", issuer_code="CITW"))
+        db_session.add(PriceDaily(ticker="CITW.N0000", date=TODAY, close=Decimal("1.60"),
+                                  fetched_at=dt.datetime.now(dt.timezone.utc), source="cse.lk"))
+        db_session.add(DataAlert(ticker="CITW.N0000", alert_type=ALERT_TYPE, detail="x",
+                                 mismatch_pct=0.0625, raised_at=dt.datetime.now(dt.timezone.utc)))
+        db_session.add(DataAlert(ticker="CITW.N0000", alert_type=ALERT_TYPE, detail="big",
+                                 mismatch_pct=0.40, raised_at=dt.datetime.now(dt.timezone.utc)))
+        db_session.commit()
+
+        n = resolve_alerts_now_within_tolerance(db_session, pct_floor=Decimal("0.05"))
+        assert n == 1
+        open_alerts = db_session.scalars(
+            select(DataAlert).where(DataAlert.resolved.is_(False))
+        ).all()
+        assert len(open_alerts) == 1 and float(open_alerts[0].mismatch_pct) == 0.40
 
 
 class TestTradingViewClientParsing:

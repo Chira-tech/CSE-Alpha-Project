@@ -302,8 +302,26 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 > place but not yet informative: only 1 of the 42 multi-line lines is even checkable — the rest
 > have no published market cap on file, the same coverage gap E3 is blocked on.
 >
-> Steps 3–4 (run the CA and CBSL feeds — E5, E6) and the E1/E2/E4/E7 *fixes* (as opposed to the
-> diagnostics now in place) are next.
+>
+> **E2 shipped.** `app/domain/tick_size.py` — CSE tick is LKR 0.10 at/below price 100, 0.25
+> above (ATS Rules, 2021-01-07 amendment). The second-source check tolerance is now
+> `max(pct_floor, 2 × tick ÷ price)`. The floor stays at this system's empirically-calibrated 5%
+> (the doc suggests 1%, but the 28-Aug calibration showed 1% re-creates a ~100-ticker
+> false-positive run); the two-tick term only ever *relaxes* it, and only below ~LKR 4. Effect on
+> the five open alerts: **CITW resolves** (1.60→1.70 is one legal tick), RGEM / SFCL / SHOT /
+> WIND stay flagged (5.3–15%). An auto-resolve pass retires alerts that fall inside the new band,
+> and runs at the top of every nightly reconciliation.
+>
+> **E1 finding — hypothesis falsified for the second-source check.** The job already refuses any
+> comparison where `as_of` is not today (`StaleComparisonError`), and the five open alerts were
+> raised 2026-08-28 comparing that day's own stored close against the live quote — a genuine
+> same-date comparison, not stale-vs-live. All four survivors have the stored close *below* the
+> external one; per the protocol's own falsifier that points to a **real systematic bias** (our
+> cse.lk capture reading low, or catching an earlier intraday price), not noise — worth a
+> separate look. E1 for the *market-cap* check is E3 (use `published_price` from the same
+> payload), already coded and waiting on `enrich_securities`.
+>
+> Next: E7 fix (per-class `.X` price/shares), then run the feeds (E5, E6, enrichment), then E4.
 
 **Instrument first**
 

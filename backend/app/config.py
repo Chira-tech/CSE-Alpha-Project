@@ -139,7 +139,16 @@ class Settings(BaseSettings):
     #: genuinely larger gaps, and leaves a wide margin against the error
     #: class this exists to catch (UCAR.N0000's real 2.6x / 160% stored-price
     #: discrepancy, R1_VALIDATION.md). See PARAMETERS.md #17.
-    second_source_mismatch_threshold_pct: Decimal = Decimal("0.05")
+    #:
+    #: E2 (`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §2): this is now
+    #: the FLOOR of `max(pct_floor, 2 × tick_size ÷ price)`, not the whole
+    #: tolerance. The two-tick term only ever RELAXES it, and only for a
+    #: line priced low enough that two 0.10 ticks exceed 5% (below ~LKR 4) —
+    #: the CITW class, where 1.60→1.70 is one legal tick, not an error. The
+    #: doc suggests a 1.0% floor; kept at the 28-Aug empirical 5% because
+    #: dropping it re-creates the 100-ticker false-positive run that
+    #: calibration fixed.
+    second_source_mismatch_pct_floor: Decimal = Decimal("0.05")
 
     # --- cse.lk client politeness (§5 — "the single biggest operational
     # fragility") ------------------------------------------------------------------

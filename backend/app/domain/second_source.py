@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from app.domain.tick_size import price_tolerance_fraction
+
 
 @dataclass(frozen=True)
 class SecondSourceQuote:
@@ -50,6 +52,10 @@ class CrossCheckResult:
     our_close: Decimal
     their_close: Decimal
     mismatch_pct: Decimal
+    tolerance_pct: Decimal
+    """The `max(pct_floor, 2 ticks)` band actually applied — carried so an
+    alert can quote it and the Data Health ledger can re-derive the same
+    verdict without re-fetching a quote."""
     within_tolerance: bool
 
 
@@ -71,22 +77,26 @@ def validate_quote(ticker: str, quote: SecondSourceQuote) -> None:
 
 
 def cross_check(
-    ticker: str, our_close: Decimal, quote: SecondSourceQuote, *, threshold_pct: Decimal
+    ticker: str, our_close: Decimal, quote: SecondSourceQuote, *, pct_floor: Decimal
 ) -> CrossCheckResult:
-    """Pure comparison — no I/O. The threshold is a parameter rather than
-    a constant baked in here: Part II §5.2 and this system's existing
-    internal reconciliation both use 0.5%, so the loader passes
-    `settings.reconciliation_mismatch_threshold_pct` rather than this
-    module inventing a second number that could drift from the first."""
+    """Pure comparison — no I/O. `docs/CSE_Data_Health_Diagnosis_And_
+    Protocol.md` §2 / E2: the tolerance is `max(pct_floor, 2 × tick_size ÷
+    price)`, not a bare percentage. `pct_floor` (1% by default,
+    `settings.second_source_mismatch_pct_floor`) covers genuine same-date
+    cross-source noise on a thin market; the two-tick term stops the
+    smallest legal CSE price move being read as an error on a low-priced
+    line."""
     validate_quote(ticker, quote)
     if our_close <= 0:
         raise SecondSourceShapeError(f"{ticker}: non-positive stored close {our_close}")
 
     mismatch = abs(quote.close - our_close) / our_close
+    tolerance = price_tolerance_fraction(our_close, pct_floor=pct_floor)
     return CrossCheckResult(
         ticker=ticker,
         our_close=our_close,
         their_close=quote.close,
         mismatch_pct=mismatch,
-        within_tolerance=mismatch <= threshold_pct,
+        tolerance_pct=tolerance,
+        within_tolerance=mismatch <= tolerance,
     )

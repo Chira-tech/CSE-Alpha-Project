@@ -25,8 +25,11 @@ from sqlalchemy.orm import Session
 
 from zoneinfo import ZoneInfo
 
+from decimal import Decimal
+
 from app.config import settings
 from app.domain.second_source import SecondSourceShapeError, cross_check
+from app.domain.tick_size import price_tolerance_fraction
 from app.ingestion.tradingview_client import fetch_quotes
 from app.models.data_quality import DataAlert
 from app.models.prices import PriceDaily
@@ -52,6 +55,45 @@ class StaleComparisonError(ValueError):
     """
 
 
+def resolve_alerts_now_within_tolerance(
+    db: Session, *, pct_floor: Decimal | None = None
+) -> int:
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §2 / E2 — an open
+    `second_source_mismatch` whose recorded gap now sits inside the
+    `max(pct_floor, 2 ticks)` band (because the tick term relaxes the
+    tolerance at a low price) is auto-resolved, the same way
+    `app.jobs.market_cap_reconciliation` retires an alert its check no
+    longer raises. Uses the ticker's latest stored close for the tick
+    band; skips an alert with no price or no recorded `mismatch_pct`.
+    Returns the number resolved."""
+    floor = pct_floor if pct_floor is not None else settings.second_source_mismatch_pct_floor
+    resolved = 0
+    for alert in db.scalars(
+        select(DataAlert).where(
+            DataAlert.resolved.is_(False), DataAlert.alert_type == ALERT_TYPE
+        )
+    ):
+        if alert.mismatch_pct is None:
+            continue
+        close = db.scalar(
+            select(PriceDaily.close)
+            .where(PriceDaily.ticker == alert.ticker, PriceDaily.close.is_not(None))
+            .order_by(PriceDaily.date.desc())
+            .limit(1)
+        )
+        if close is None:
+            continue
+        if Decimal(str(alert.mismatch_pct)) <= price_tolerance_fraction(close, pct_floor=floor):
+            alert.resolved = True
+            alert.resolved_at = dt.datetime.now(dt.timezone.utc)
+            alert.resolved_by = "system:second_source_tick_tolerance_e2"
+            resolved += 1
+    db.commit()
+    if resolved:
+        logger.info("E2: auto-resolved %d second-source alert(s) now within the tick tolerance", resolved)
+    return resolved
+
+
 def check_against_second_source(
     db: Session, tickers: list[str], *, as_of: dt.date
 ) -> dict[str, object]:
@@ -64,6 +106,10 @@ def check_against_second_source(
     Raises `StaleComparisonError` if `as_of` is not today in Colombo —
     see that class for why this is not merely a style preference.
     """
+    # E2: retire any open alert whose gap now falls inside the tick-aware
+    # tolerance before raising new ones.
+    resolve_alerts_now_within_tolerance(db)
+
     today = dt.datetime.now(dt.timezone.utc).astimezone(MARKET_TZ).date()
     if as_of != today:
         raise StaleComparisonError(
@@ -99,7 +145,7 @@ def check_against_second_source(
                 ticker,
                 our_close,
                 quote,
-                threshold_pct=settings.second_source_mismatch_threshold_pct,
+                pct_floor=settings.second_source_mismatch_pct_floor,
             )
         except SecondSourceShapeError:
             logger.exception("second-source quote for %s could not be trusted", ticker)
@@ -118,9 +164,10 @@ def check_against_second_source(
                 detail=(
                     f"stored close {result.our_close} for {as_of} disagrees with TradingView's "
                     f"current quote {result.their_close} by {result.mismatch_pct:.4%}, exceeding "
-                    f"the {settings.second_source_mismatch_threshold_pct:.2%} threshold. This is "
-                    f"an EXTERNAL second-source check (Part II §5.2), independent of the internal "
-                    f"adj_factor reconciliation. Ticker quarantined until resolved."
+                    f"the {result.tolerance_pct:.2%} tolerance (max of a {settings.second_source_mismatch_pct_floor:.1%} "
+                    f"floor and two CSE ticks at this price). This is an EXTERNAL second-source "
+                    f"check (Part II §5.2), independent of the internal adj_factor reconciliation. "
+                    f"Ticker quarantined until resolved."
                 ),
                 mismatch_pct=float(result.mismatch_pct),
                 raised_at=now,
