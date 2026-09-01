@@ -4,7 +4,7 @@ import { AsOf, EmptyState, ErrorState, SkeletonCard } from "../components/states
 import { downloadBlob } from "../csv";
 import { onDataRefreshed } from "../dataRefresh";
 import { formatInteger, UNAVAILABLE } from "../format";
-import type { DataHealth } from "../types";
+import type { CheckLedgerRow, DataHealth } from "../types";
 
 export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void }) {
   const [data, setData] = useState<DataHealth | null>(null);
@@ -125,16 +125,94 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
           />
           <Stat label="No price yet" value={formatInteger(data.securities_with_no_price)} />
         </div>
-        {stale && (
+
+        {/* Freshness, split: how old the newest data is (in TRADING days,
+            so a weekend is not a gap) vs when the capture job last
+            actually succeeded. Two quantities that were one label. */}
+        <div className="stat-grid">
+          <Stat label="Newest price date" value={data.latest_price_date ?? UNAVAILABLE} caution={stale} />
+          <Stat
+            label="Trading days behind"
+            value={
+              data.price_data_age_trading_days === null
+                ? UNAVAILABLE
+                : `${data.price_data_age_trading_days} session${
+                    data.price_data_age_trading_days === 1 ? "" : "s"
+                  }`
+            }
+            caution={
+              data.price_data_age_trading_days !== null && data.price_data_age_trading_days > 1
+            }
+          />
+          <Stat
+            label="Capture job last succeeded"
+            value={
+              data.price_capture_last_success_at === null
+                ? "never"
+                : `${data.price_capture_last_success_age_days}d ago`
+            }
+            caution={
+              data.price_capture_last_success_at === null ||
+              (data.price_capture_last_success_age_days ?? 0) > 2
+            }
+          />
+        </div>
+        {data.missing_trading_days.length > 0 && (
           <div className="notice notice-caution" role="status">
-            <h3>Price data is {data.price_feed_age_days} days old</h3>
+            <h3>
+              {data.missing_trading_days.length} trading day
+              {data.missing_trading_days.length === 1 ? "" : "s"} with no price data
+            </h3>
             <p className="prose t-body">
-              Models must refuse to emit new signals on stale inputs (§8), so this is surfaced rather
-              than silently rendered as current. Check whether the market has simply been closed, or
-              run the end-of-day snapshot.
+              {data.missing_trading_days.join(", ")}. These are weekday sessions after the newest
+              stored row — a genuine gap, not a weekend. (Public holidays are not yet on an exchange
+              calendar, so a holiday that falls on a weekday will show here until one is added.) Run
+              the end-of-day capture.
             </p>
           </div>
         )}
+        {data.missing_trading_days.length === 0 && stale && (
+          <div className="notice notice-caution" role="status">
+            <h3>Newest price is {data.price_feed_age_days} calendar days old</h3>
+            <p className="prose t-body">
+              No weekday session is actually missing, so this is most likely a closed market or a
+              long weekend rather than a failed capture. Models still refuse to emit new signals on
+              inputs this old (§8).
+            </p>
+          </div>
+        )}
+      </section>
+
+      <section aria-labelledby="ledger-heading" className="stack-tight">
+        <h2 id="ledger-heading">Check ledger</h2>
+        <p className="prose">
+          Every universe-wide check split three ways: <strong>pass</strong> (checked, agrees),{" "}
+          <strong>fail</strong> (checked, disagrees), <strong>not evaluable</strong> (could not be
+          checked). A pass rate over a check that can only see 3% of the universe is not the same as
+          one that can see 95% — <em>checkable&nbsp;%</em> is the number to watch.
+        </p>
+        <div className="table-wrap table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th scope="col">Check</th>
+                <th scope="col" className="right">Pass</th>
+                <th scope="col" className="right">Fail</th>
+                <th scope="col" className="right">Not eval.</th>
+                <th scope="col" className="right">Checkable</th>
+                <th scope="col" className="right">Pass of checkable</th>
+                <th scope="col">Blocking</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...data.check_ledger]
+                .sort((a, b) => b.failed - a.failed || b.not_evaluable - a.not_evaluable)
+                .map((r) => (
+                  <CheckLedgerRowView key={r.check} row={r} />
+                ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section aria-labelledby="survivorship-heading" className="stack-tight">
@@ -229,11 +307,11 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             caution={ui.quarantined_line_count > 0}
           />
           <Stat
-            label="Market-cap identity pass"
+            label="Market-cap identity — pass of checkable"
             value={ui.market_cap_identity_pass_pct !== null ? `${ui.market_cap_identity_pass_pct}%` : UNAVAILABLE}
           />
           <Stat
-            label="Price-ratio actions confirmed"
+            label="Corp. actions — confirmed of reviewed"
             value={
               ui.price_ratio_actions_confirmed_pct !== null
                 ? `${ui.price_ratio_actions_confirmed_pct}%`
@@ -250,20 +328,25 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             caution={ui.median_price_staleness_days !== null && ui.median_price_staleness_days > 3}
           />
           <Stat
-            label="Suspended / delisted lines"
+            label="Suspended/delisted lines (trading status)"
             value={formatInteger(ui.suspended_or_delisted_lines)}
             caution={ui.suspended_or_delisted_lines > 0}
           />
           <Stat
-            label="Cost of equity available (proxy)"
+            label={
+              data.macro_feed_last_success_at === null
+                ? "Cost of equity — PROXY ONLY (CBSL feed never ran)"
+                : "Cost of equity available"
+            }
             value={
               ui.cost_of_equity_available_pct !== null
                 ? `${ui.cost_of_equity_available_pct}%`
                 : UNAVAILABLE
             }
             caution={
-              ui.cost_of_equity_available_pct !== null &&
-              Number(ui.cost_of_equity_available_pct) < 95
+              data.macro_feed_last_success_at === null ||
+              (ui.cost_of_equity_available_pct !== null &&
+                Number(ui.cost_of_equity_available_pct) < 95)
             }
           />
           <Stat
@@ -390,5 +473,48 @@ function Stat({ label, value, caution }: { label: string; value: string; caution
         {value}
       </div>
     </div>
+  );
+}
+
+function CheckLedgerRowView({ row }: { row: CheckLedgerRow }) {
+  const checkable = row.checkable_pct === null ? null : Number(row.checkable_pct);
+  const reasons = Object.entries(row.not_evaluable_reasons);
+  // Amber, never red: a check that can barely see the universe, or is
+  // waiting on a feed that never ran, is unfinished work — not a failure.
+  const rowCaution = row.failed > 0 || (checkable !== null && checkable < 50);
+  return (
+    <tr>
+      <th
+        scope="row"
+        style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}
+      >
+        {row.label}
+        {reasons.length > 0 && (
+          <div className="t-caption muted" style={{ fontWeight: 400, marginTop: 2 }}>
+            not evaluable: {reasons.map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ")}
+          </div>
+        )}
+      </th>
+      <td className="right num" style={{ color: "var(--pos-strong)" }}>{formatInteger(row.passed)}</td>
+      <td className="right num" style={row.failed > 0 ? { color: "var(--neg-strong)" } : undefined}>
+        {formatInteger(row.failed)}
+      </td>
+      <td className="right num muted">{formatInteger(row.not_evaluable)}</td>
+      <td
+        className="right num"
+        style={checkable !== null && checkable < 50 ? { color: "var(--caution)" } : undefined}
+      >
+        {checkable === null ? UNAVAILABLE : `${row.checkable_pct}%`}
+      </td>
+      <td className="right num">
+        {row.pass_pct_of_checkable === null ? UNAVAILABLE : `${row.pass_pct_of_checkable}%`}
+      </td>
+      <td>
+        <span className={`status-tag ${row.blocking ? "status-pending" : ""}`}>
+          {row.blocking ? "blocking" : "report-only"}
+        </span>
+        {rowCaution && <span aria-hidden> ⚠</span>}
+      </td>
+    </tr>
   );
 }

@@ -10,6 +10,7 @@ how stale is it, what's quarantined, and how much is sitting unreviewed.
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -22,11 +23,45 @@ from app.models.data_quality import DataAlert
 from app.models.enums import ProvenanceTier
 from app.models.float_data import FloatData
 from app.models.fundamentals import Fundamental
+from app.models.job_run import JobRun
 from app.models.prices import PriceDaily
 from app.models.registry import IssuerRegistry
 from app.models.securities import Security
 from app.domain import universe_integrity as ui
 from app.domain.security_status_view import universe_status_summary
+
+#: `docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §5 — a "trading day"
+#: with no exchange holiday calendar on file yet is approximated as a
+#: weekday (Mon–Fri). A CSE public holiday falling on a weekday will
+#: therefore read as a spurious missing session until a real holiday
+#: list is ingested; documented rather than silently wrong.
+_MARKET_CAP_IDENTITY_TOLERANCE = Decimal("0.02")
+
+
+def _weekdays_in(start_exclusive: dt.date, end_inclusive: dt.date) -> list[dt.date]:
+    """Weekday dates in ``(start_exclusive, end_inclusive]``, oldest first.
+    Empty when the range is empty or inverted."""
+    out: list[dt.date] = []
+    d = start_exclusive + dt.timedelta(days=1)
+    while d <= end_inclusive:
+        if d.weekday() < 5:
+            out.append(d)
+        d += dt.timedelta(days=1)
+    return out
+
+
+def _last_successful_run(db: Session, job: str) -> dt.datetime | None:
+    ts = db.scalar(
+        select(JobRun.finished_at)
+        .where(JobRun.job == job, JobRun.status == "success")
+        .order_by(JobRun.finished_at.desc())
+        .limit(1)
+    )
+    # SQLite round-trips DateTime without tz; normalise so callers can do
+    # aware arithmetic against `datetime.now(timezone.utc)`.
+    if ts is not None and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=dt.timezone.utc)
+    return ts
 
 
 router = APIRouter(prefix="/data-health", tags=["data-health"])
@@ -56,6 +91,31 @@ class UniverseStatusCounts(BaseModel):
     total: int
 
 
+class CheckLedgerRow(BaseModel):
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` E0 / §9.1 — one row
+    per universe-wide check, split three ways so "could not be checked" is
+    never silently counted as "passed" (the denominator bug §0 calls out).
+
+    `blocking` means a failure quarantines the line (no verdict, no rank).
+    `checkable_pct` — (passed + failed) ÷ scope_total — is the number §11
+    says to watch: the share of the universe this check has any right to
+    an opinion on. `pass_pct_of_checkable` is the honest pass rate, not
+    diluted by the lines it could not evaluate."""
+
+    check: str
+    label: str
+    passed: int
+    failed: int
+    not_evaluable: int
+    not_evaluable_reasons: dict[str, int]
+    """reason code → count. Every not-evaluable line is accounted for by
+    exactly one code."""
+    blocking: bool
+    scope_total: int
+    checkable_pct: Decimal | None
+    pass_pct_of_checkable: Decimal | None
+
+
 class UniverseIntegrityMetrics(BaseModel):
     """`docs/CSE_Universe_Integrity_Rollout.md` Part 7 — the weekly-tracked
     numbers that turn "measurable progress" from theoretical into visible.
@@ -76,11 +136,15 @@ class UniverseIntegrityMetrics(BaseModel):
     "excluded from every model right now" count. A rising number early in
     the rollout is detection working; watch it after remediation."""
     market_cap_identity_pass_pct: Decimal | None
-    """Of lines with a published market cap on file, the share with no
-    open `market_cap_mismatch` alert."""
+    """`passed ÷ (passed + failed)` for the `market_cap_identity` check —
+    the honest pass rate over the lines that could actually be checked
+    (all three of published market cap, share count and price present).
+    See `check_ledger` for the pass / fail / not-evaluable split."""
     price_ratio_actions_confirmed_pct: Decimal | None
-    """Of price-ratio corporate actions (bonus / split / consolidation /
-    rights), the share that are confirmed (so a factor is applied)."""
+    """`confirmed ÷ (confirmed + rejected)` for price-ratio corporate
+    actions. Pending (unreviewed) actions are not-evaluable, not
+    failures — the old definition counted every unreviewed action as a
+    miss, which is why this read 15%. See `check_ledger`."""
     median_price_staleness_days: int | None
     suspended_or_delisted_lines: int
     """`docs/CSE_Universe_Integrity_Rollout.md` Part 4 / golden case 6 —
@@ -121,10 +185,32 @@ class DataHealth(BaseModel):
     source cannot tell apart. Reported rather than assumed either way."""
 
     price_rows: int
-    price_rows: int
     latest_price_date: dt.date | None
     price_feed_age_days: int | None
+    """Calendar days since the newest price row. Kept for continuity; the
+    trading-day figures below are the ones to read (§5: a weekend is not a
+    gap, a missed Monday is)."""
     securities_with_no_price: int
+
+    # --- Freshness, split (`docs/CSE_Data_Health_Diagnosis_And_Protocol.md`
+    # §5 / E8). "How old is the newest data" and "when did the job last
+    # succeed" are two quantities that were wearing one label.
+    price_data_age_trading_days: int | None
+    """Weekday sessions between the newest price row and today — a weekend
+    reads as fresh, a missed weekday reads as a gap."""
+    missing_trading_days: list[dt.date]
+    """Weekday sessions after the newest price row with no price data at
+    all, oldest first (capped). Non-empty here means the capture is
+    genuinely behind, not just that it's the weekend."""
+    price_capture_last_success_at: dt.datetime | None
+    """When the `capture_prices` job last finished with status success —
+    `null` if it has never succeeded, which is a different and worse state
+    than 'data is a few days old'."""
+    price_capture_last_success_age_days: int | None
+    macro_feed_last_success_at: dt.datetime | None
+    """When `capture_macro` (the CBSL risk-free / macro series feed) last
+    succeeded. `null` means every cost of equity in the system is on the
+    proxy (§4)."""
 
     corporate_actions_total: int
     corporate_actions_pending: int
@@ -145,6 +231,11 @@ class DataHealth(BaseModel):
     quarantined: list[QuarantinedTicker]
     universe_integrity: UniverseIntegrityMetrics
     universe_status: UniverseStatusCounts
+    check_ledger: list[CheckLedgerRow]
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` E0 — every
+    universe-wide check as pass / fail / not-evaluable, so a metric that
+    moved because coverage changed can be told apart from one that moved
+    because the data improved."""
 
     fundamentals_pending_by_ticker: list[TickerPendingCount]
     """R1 T4.1.5: top tickers by pending-figure count — a real, cheap
@@ -160,9 +251,17 @@ class DataHealth(BaseModel):
     downgraded."""
 
 
-def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
-    from decimal import Decimal
-
+def _universe_integrity_metrics(
+    db: Session,
+    *,
+    market_cap_identity_pass_pct: Decimal | None,
+    price_ratio_actions_confirmed_pct: Decimal | None,
+) -> UniverseIntegrityMetrics:
+    """The two pass-rate arguments are derived from the E0 check ledger
+    (`_check_ledger`) and passed in so this function and the ledger cannot
+    report different numbers for the same check. Both are now
+    `passed ÷ (passed + failed)` — lines that could not be evaluated are
+    excluded from the denominator, not counted as failures (§0)."""
     today = dt.date.today()
 
     issuer_codes = [
@@ -197,29 +296,6 @@ def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
     quarantined_lines = db.scalar(
         select(func.count(func.distinct(DataAlert.ticker))).where(DataAlert.resolved.is_(False))
     ) or 0
-
-    lines_with_mcap = db.scalar(
-        select(func.count(func.distinct(FloatData.ticker))).where(FloatData.published_market_cap.is_not(None))
-    ) or 0
-    mcap_fail = open_by_type.get("market_cap_mismatch", 0)
-    mcap_pass_pct = (
-        (Decimal(lines_with_mcap - mcap_fail) / Decimal(lines_with_mcap) * 100).quantize(Decimal("0.1"))
-        if lines_with_mcap
-        else None
-    )
-
-    price_ratio_types = ("bonus_issue", "stock_split", "consolidation", "rights_issue")
-    pr_total = db.scalar(
-        select(func.count()).select_from(CorporateAction).where(CorporateAction.type.in_(price_ratio_types))
-    ) or 0
-    pr_confirmed = db.scalar(
-        select(func.count())
-        .select_from(CorporateAction)
-        .where(CorporateAction.type.in_(price_ratio_types), CorporateAction.confirmed_by.is_not(None))
-    ) or 0
-    pr_pct = (
-        (Decimal(pr_confirmed) / Decimal(pr_total) * 100).quantize(Decimal("0.1")) if pr_total else None
-    )
 
     last_dates = [
         d
@@ -288,8 +364,8 @@ def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
         lines_unknown_instrument_type=unknown_type,
         open_alerts_by_type=open_by_type,
         quarantined_line_count=quarantined_lines,
-        market_cap_identity_pass_pct=mcap_pass_pct,
-        price_ratio_actions_confirmed_pct=pr_pct,
+        market_cap_identity_pass_pct=market_cap_identity_pass_pct,
+        price_ratio_actions_confirmed_pct=price_ratio_actions_confirmed_pct,
         median_price_staleness_days=median_stale,
         suspended_or_delisted_lines=suspended_or_delisted,
         cost_of_equity_available_pct=coe_pct,
@@ -297,6 +373,199 @@ def _universe_integrity_metrics(db: Session) -> UniverseIntegrityMetrics:
             ui.ALERT_NEGATIVE_EARNINGS_TREND, 0
         ),
     )
+
+
+def _pct(numer: int, denom: int) -> Decimal | None:
+    return (Decimal(numer) / Decimal(denom) * 100).quantize(Decimal("0.1")) if denom else None
+
+
+def _check_ledger(db: Session) -> list[CheckLedgerRow]:
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` E0 — every
+    universe-wide check as pass / fail / not-evaluable with reason codes.
+    No data is changed; this only re-expresses what the checks already
+    know."""
+    tickers = [t for (t,) in db.execute(select(Security.ticker))]
+    scope = len(tickers)
+
+    open_by_type: dict[str, int] = {
+        t: c
+        for t, c in db.execute(
+            select(DataAlert.alert_type, func.count())
+            .where(DataAlert.resolved.is_(False))
+            .group_by(DataAlert.alert_type)
+        )
+    }
+
+    # Latest published market cap + share count per ticker (FloatData is
+    # ~one row per ticker per enrichment run — small).
+    mcap: dict[str, Decimal] = {}
+    shares: dict[str, int] = {}
+    for tkr, pmc, sh in db.execute(
+        select(FloatData.ticker, FloatData.published_market_cap, FloatData.shares_issued).order_by(
+            FloatData.ticker, FloatData.as_of.desc()
+        )
+    ):
+        if tkr in mcap or tkr in shares:
+            continue
+        if pmc is not None:
+            mcap[tkr] = pmc
+        if sh is not None:
+            shares[tkr] = sh
+    # `last_close` is only consulted for the market_cap_identity check,
+    # which is not-evaluable without a published market cap anyway — so
+    # only fetch closes for the handful of tickers that have one, rather
+    # than scanning the whole price table.
+    last_close: dict[str, Decimal] = {}
+    if mcap:
+        for tkr, c in db.execute(
+            select(PriceDaily.ticker, PriceDaily.close)
+            .where(PriceDaily.ticker.in_(list(mcap)), PriceDaily.close.is_not(None))
+            .order_by(PriceDaily.ticker, PriceDaily.date.desc())
+        ):
+            last_close.setdefault(tkr, c)
+
+    rows: list[CheckLedgerRow] = []
+
+    # --- market_cap_identity: price × shares vs the exchange's published
+    # figure, within 2%. Not evaluable without all three inputs.
+    passed = failed = 0
+    reasons: dict[str, int] = {}
+    for t in tickers:
+        pmc, sh, px = mcap.get(t), shares.get(t), last_close.get(t)
+        if pmc is None:
+            reasons["no_published_market_cap"] = reasons.get("no_published_market_cap", 0) + 1
+        elif not sh:
+            reasons["no_share_count"] = reasons.get("no_share_count", 0) + 1
+        elif px is None:
+            reasons["no_price_on_file"] = reasons.get("no_price_on_file", 0) + 1
+        else:
+            local = px * Decimal(sh)
+            off = abs(pmc - local) / pmc if pmc else None
+            if off is not None and off <= _MARKET_CAP_IDENTITY_TOLERANCE:
+                passed += 1
+            else:
+                failed += 1
+    ne = sum(reasons.values())
+    rows.append(
+        CheckLedgerRow(
+            check="market_cap_identity",
+            label="Market-cap identity (price × shares vs exchange)",
+            passed=passed, failed=failed, not_evaluable=ne, not_evaluable_reasons=reasons,
+            blocking=True, scope_total=scope,
+            checkable_pct=_pct(passed + failed, scope),
+            pass_pct_of_checkable=_pct(passed, passed + failed),
+        )
+    )
+
+    # --- second_source_price: the reconciliation job (`app.jobs.second_
+    # source_reconciliation`) only writes a row on MISMATCH — it keeps no
+    # record of a line it checked and found fine — so a pass cannot be
+    # counted, only a fail. Every other line is not-evaluable for that
+    # reason, and saying so is the point of E0.
+    ss_fail = open_by_type.get("second_source_mismatch", 0)
+    rows.append(
+        CheckLedgerRow(
+            check="second_source_price",
+            label="Price vs independent second source",
+            passed=0, failed=ss_fail, not_evaluable=scope - ss_fail,
+            not_evaluable_reasons={"check_records_no_passes": scope - ss_fail},
+            blocking=True, scope_total=scope,
+            checkable_pct=_pct(ss_fail, scope),
+            pass_pct_of_checkable=_pct(0, ss_fail),
+        )
+    )
+
+    # --- corporate_action_ratio: confirmed = pass, rejected = fail,
+    # pending = not-evaluable. Replaces the old two-way "confirmed %"
+    # which counted every unreviewed action as a failure.
+    price_ratio_types = ("bonus_issue", "stock_split", "consolidation", "rights_issue")
+    ca_confirmed = db.scalar(
+        select(func.count()).select_from(CorporateAction).where(
+            CorporateAction.type.in_(price_ratio_types), CorporateAction.confirmed_by.is_not(None)
+        )
+    ) or 0
+    ca_rejected = db.scalar(
+        select(func.count()).select_from(CorporateAction).where(
+            CorporateAction.type.in_(price_ratio_types), CorporateAction.rejected_by.is_not(None)
+        )
+    ) or 0
+    ca_total = db.scalar(
+        select(func.count()).select_from(CorporateAction).where(
+            CorporateAction.type.in_(price_ratio_types)
+        )
+    ) or 0
+    ca_pending = ca_total - ca_confirmed - ca_rejected
+    ca_feed_ran = _last_successful_run(db, "capture_corporate_actions") is not None
+    ca_reason = "awaiting_review" if ca_feed_ran else "ca_feed_never_succeeded"
+    rows.append(
+        CheckLedgerRow(
+            check="corporate_action_ratio",
+            label="Corporate action → applied adjustment factor",
+            passed=ca_confirmed, failed=ca_rejected, not_evaluable=ca_pending,
+            not_evaluable_reasons={ca_reason: ca_pending} if ca_pending else {},
+            blocking=False, scope_total=ca_total,
+            checkable_pct=_pct(ca_confirmed + ca_rejected, ca_total),
+            pass_pct_of_checkable=_pct(ca_confirmed, ca_confirmed + ca_rejected),
+        )
+    )
+
+    # --- price_discontinuity: the check reads a corporate-action calendar
+    # to decide whether a >30% one-day move is explained. If that feed
+    # has never populated the table, every "unexplained" flag is
+    # not-evaluable, not a fail (§3).
+    disc_open = open_by_type.get(ui.ALERT_PRICE_DISCONTINUITY, 0)
+    lines_with_history = db.scalar(
+        select(func.count()).select_from(
+            select(PriceDaily.ticker).group_by(PriceDaily.ticker).having(func.count() >= 2).subquery()
+        )
+    ) or 0
+    if ca_feed_ran:
+        disc_pass = max(0, lines_with_history - disc_open)
+        rows.append(
+            CheckLedgerRow(
+                check="price_discontinuity",
+                label="One-day price move vs corporate-action calendar",
+                passed=disc_pass, failed=disc_open,
+                not_evaluable=max(0, scope - lines_with_history),
+                not_evaluable_reasons={"under_two_price_rows": max(0, scope - lines_with_history)},
+                blocking=True, scope_total=scope,
+                checkable_pct=_pct(disc_pass + disc_open, scope),
+                pass_pct_of_checkable=_pct(disc_pass, disc_pass + disc_open),
+            )
+        )
+    else:
+        rows.append(
+            CheckLedgerRow(
+                check="price_discontinuity",
+                label="One-day price move vs corporate-action calendar",
+                passed=0, failed=0, not_evaluable=scope,
+                not_evaluable_reasons={
+                    "corporate_action_table_unpopulated": lines_with_history,
+                    "under_two_price_rows": max(0, scope - lines_with_history),
+                },
+                blocking=True, scope_total=scope,
+                checkable_pct=_pct(0, scope), pass_pct_of_checkable=None,
+            )
+        )
+
+    # --- valuation_sanity: the §sanity gate (bvps>0, roe band, fv within
+    # 5×, units) runs at valuation time, not here. Only its failures are
+    # visible universe-wide as open alerts; the rest of the universe has
+    # not been re-checked by this route, so it is not-evaluable here
+    # rather than assumed to pass.
+    vs_fail = open_by_type.get("valuation_sanity_block", 0)
+    rows.append(
+        CheckLedgerRow(
+            check="valuation_sanity",
+            label="Valuation plausibility gate (bvps, ROE, FV band, units)",
+            passed=0, failed=vs_fail, not_evaluable=scope - vs_fail,
+            not_evaluable_reasons={"only_evaluated_at_valuation_time": scope - vs_fail},
+            blocking=True, scope_total=scope,
+            checkable_pct=_pct(vs_fail, scope), pass_pct_of_checkable=_pct(0, vs_fail),
+        )
+    )
+
+    return rows
 
 
 @router.get("", response_model=DataHealth)
@@ -309,7 +578,29 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
     # "expected" — the UI shows the number and lets a human judge it, per
     # §8's rule that stale data is labelled plainly rather than silently
     # rendered as current.
-    age_days = (dt.date.today() - latest_price_date).days if latest_price_date else None
+    today = dt.date.today()
+    age_days = (today - latest_price_date).days if latest_price_date else None
+
+    # --- Freshness, split (§5 / E8). Trading-day age counts weekdays only,
+    # so a Friday-to-Monday gap over a weekend reads as fresh while a
+    # missed weekday reads as a real gap. `missing_trading_days` lists the
+    # weekday sessions after the newest row that have no price data at all.
+    price_dates: set[dt.date] = set()
+    missing_trading_days: list[dt.date] = []
+    trading_day_age: int | None = None
+    if latest_price_date is not None:
+        price_dates = {
+            d for (d,) in db.execute(
+                select(func.distinct(PriceDaily.date)).where(
+                    PriceDaily.date > latest_price_date - dt.timedelta(days=30)
+                )
+            )
+        }
+        weekdays_since = _weekdays_in(latest_price_date, today)
+        trading_day_age = len(weekdays_since)
+        missing_trading_days = [d for d in weekdays_since if d not in price_dates][:15]
+    capture_last_ok = _last_successful_run(db, "capture_prices")
+    macro_last_ok = _last_successful_run(db, "capture_macro")
 
     tickers_with_price = select(PriceDaily.ticker).distinct().subquery()
     securities_with_no_price = (
@@ -403,6 +694,9 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         .limit(8)
     ).all()
 
+    ledger = _check_ledger(db)
+    _by_check = {r.check: r for r in ledger}
+
     return DataHealth(
         securities_count=securities_count,
         issuer_count=issuer_count,
@@ -413,6 +707,15 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         latest_price_date=latest_price_date,
         price_feed_age_days=age_days,
         securities_with_no_price=securities_with_no_price,
+        price_data_age_trading_days=trading_day_age,
+        missing_trading_days=missing_trading_days,
+        price_capture_last_success_at=capture_last_ok,
+        price_capture_last_success_age_days=(
+            (dt.datetime.now(dt.timezone.utc) - capture_last_ok).days
+            if capture_last_ok is not None
+            else None
+        ),
+        macro_feed_last_success_at=macro_last_ok,
         corporate_actions_total=ca_total,
         corporate_actions_pending=ca_total - ca_confirmed - ca_rejected,
         corporate_actions_confirmed=ca_confirmed,
@@ -431,6 +734,11 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
             )
             for a in alerts
         ],
-        universe_integrity=_universe_integrity_metrics(db),
+        universe_integrity=_universe_integrity_metrics(
+            db,
+            market_cap_identity_pass_pct=_by_check["market_cap_identity"].pass_pct_of_checkable,
+            price_ratio_actions_confirmed_pct=_by_check["corporate_action_ratio"].pass_pct_of_checkable,
+        ),
         universe_status=UniverseStatusCounts(**vars(universe_status_summary(db))),
+        check_ledger=ledger,
     )

@@ -565,7 +565,12 @@ export interface UniverseIntegrityMetrics {
   lines_unknown_instrument_type: number;
   open_alerts_by_type: Record<string, number>;
   quarantined_line_count: number;
+  /** passed / (passed + failed) for the market_cap_identity check —
+   * lines that couldn't be checked are excluded, not counted as fails.
+   * See check_ledger for the three-way split. */
   market_cap_identity_pass_pct: string | null;
+  /** confirmed / (confirmed + rejected) for price-ratio corporate
+   * actions. Pending = not-evaluable, not a failure. */
   price_ratio_actions_confirmed_pct: string | null;
   median_price_staleness_days: number | null;
   /** Part 4 / golden case 6 — lines whose trading_status is suspended or
@@ -579,6 +584,24 @@ export interface UniverseIntegrityMetrics {
   buy_side_verdicts_on_negative_earnings_trend: number;
 }
 
+/** docs/CSE_Data_Health_Diagnosis_And_Protocol.md E0 / §9.1 — one row per
+ * universe-wide check, split so "not checked" is never counted as "passed". */
+export interface CheckLedgerRow {
+  check: string;
+  label: string;
+  passed: number;
+  failed: number;
+  not_evaluable: number;
+  not_evaluable_reasons: Record<string, number>;
+  blocking: boolean;
+  scope_total: number;
+  /** (passed + failed) / scope_total — the share this check has any right
+   * to an opinion on. The number §11 says to watch. */
+  checkable_pct: string | null;
+  /** passed / (passed + failed) — the honest pass rate. */
+  pass_pct_of_checkable: string | null;
+}
+
 export interface DataHealth {
   securities_count: number;
   issuer_count: number;
@@ -589,6 +612,14 @@ export interface DataHealth {
   latest_price_date: string | null;
   price_feed_age_days: number | null;
   securities_with_no_price: number;
+  /** §5 / E8 — freshness split. Weekday sessions since the newest row;
+   * a weekend reads as fresh, a missed weekday reads as a gap. */
+  price_data_age_trading_days: number | null;
+  missing_trading_days: string[];
+  price_capture_last_success_at: string | null;
+  price_capture_last_success_age_days: number | null;
+  /** null → every cost of equity in the system is on the proxy (§4). */
+  macro_feed_last_success_at: string | null;
   corporate_actions_total: number;
   corporate_actions_pending: number;
   corporate_actions_confirmed: number;
@@ -605,6 +636,8 @@ export interface DataHealth {
   /** One row per security, classified by the formal 4-state status —
    * backs the homepage trust bar (§6). */
   universe_status: UniverseStatusCounts;
+  /** E0 — every universe-wide check as pass / fail / not-evaluable. */
+  check_ledger: CheckLedgerRow[];
   /** R1 T4.1.5: top tickers by pending-figure count — real, cheap
    * proxy for where confirming pays off most. See the backend's own
    * `DataHealth.fundamentals_pending_by_ticker` docstring for why this
