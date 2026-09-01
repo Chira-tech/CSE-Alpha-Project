@@ -351,8 +351,18 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 >   wrong. The single-vs-multi cohort split (already shipped) will confirm this once `.X` lines
 >   carry a published market cap.
 >
-> Remaining: run `enrich_securities` once to populate `float_data.published_price` and activate
-> the E3 `share_count_identity` check (currently not-evaluable for all lines).
+> **E3 result — prediction confirmed, residual prediction falsified.** `enrich_securities` was run
+> for the 10 lines that already carry a published market cap (the full ~294-line sweep is a
+> ~10-minute cse.lk job; run `python -m app.cli enrich` in a terminal for universe-wide
+> coverage). With `published_price` captured from the same payload, `share_count_identity` reads
+> **10 / 10 pass at 0.5%** — `off = 0` exactly for every one, because
+> `published_market_cap = published_price × shares_issued` is an identity in the exchange's own
+> data. The old `market_cap_identity` check (our *latest stored close* × shares) still fails 2 of
+> the 10 (ACME, AEL) purely on price drift — e.g. ACME's stored 4.30 vs the payload's 4.40.
+> **AFSL, which the doc predicted would survive as a real share-count problem, passes E3 at
+> `off = 0`** — its 5.95% market-cap gap was also just price drift (stored 92.30 vs payload
+> 89.10), not a defect. So among the checkable lines there are no genuine share-count errors; the
+> market-cap "failures" were the price-timing confound §2 describes, exactly as E3 predicted.
 
 **Instrument first**
 
