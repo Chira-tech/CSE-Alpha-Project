@@ -20,6 +20,15 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://cse_alpha:cse_alpha@localhost:5432/cse_alpha"
 
+    #: When true, `POST /jobs/{job}/run` executes the job in a daemon
+    #: thread inside the API process, so "Run Capture" works with just
+    #: `uvicorn app.main:app` and no separate `python -m app.worker`. The
+    #: worker's own `poll_and_run_one` still handles scheduled runs and
+    #: still picks up a manual run if it wins the atomic claim first.
+    #: Turned off in the test suite (conftest) so triggering a job in a
+    #: test does not spawn a real ingestion thread.
+    execute_manual_jobs_in_process: bool = True
+
     # --- Part O #1: capital base -------------------------------------------------
     capital_base_lkr: Decimal = Decimal("25000000")
 

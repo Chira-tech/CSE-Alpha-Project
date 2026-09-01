@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import logging
+import threading
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -171,7 +173,30 @@ def trigger_job(job: str, db: Session = Depends(get_db)) -> JobRunOut:
                 "retry_after": exc.retry_after_seconds,
             },
         ) from None
+
+    # Run it now, in a daemon thread, so "Run Capture" works for anyone
+    # running just `uvicorn app.main:app` without a separate
+    # `python -m app.worker`. `runner.execute` atomically claims the
+    # queued row, so if a worker IS also up its `poll_and_run_one` just
+    # finds nothing to do — no double execution.
+    from app.config import settings
+
+    if settings.execute_manual_jobs_in_process:
+        run_id = run.id
+        threading.Thread(
+            target=_execute_safely, args=(run_id,), name=f"job-{run_id}-{job}", daemon=True
+        ).start()
+
     return JobRunOut.from_model(run)
+
+
+def _execute_safely(run_id: int) -> None:
+    from app.jobs.runner import execute
+
+    try:
+        execute(run_id)
+    except Exception:  # noqa: BLE001 — a daemon thread must never die noisily
+        logging.getLogger("cse_alpha.api.jobs").exception("in-process job run %s crashed", run_id)
 
 
 @router.post("/{run_id}/cancel", response_model=JobRunOut)

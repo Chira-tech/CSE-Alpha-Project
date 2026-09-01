@@ -203,6 +203,59 @@ def test_execute_runs_a_leaf_job_and_marks_it_successful(db_session, monkeypatch
     assert run.finished_at is not None
 
 
+def test_execute_is_a_no_op_on_a_run_that_is_no_longer_queued(db_session, monkeypatch):
+    """The atomic claim: two callers (the API daemon thread and a
+    worker's poll) can both call execute for the same run now — the one
+    that finds it already taken must do nothing, not re-run it."""
+    calls: list[int] = []
+    monkeypatch.setitem(runner._RUNNERS, "capture_market", lambda db, r: calls.append(r.id) or 1)
+    run = _seed_run(db_session, job="capture_market", status="success", rows_written=5)
+
+    runner.execute(run.id)
+
+    db_session.refresh(run)
+    assert calls == []          # the runner function was never invoked
+    assert run.status == "success" and run.rows_written == 5  # untouched
+
+
+def test_enrich_skips_lines_enriched_within_the_last_week(db_session, monkeypatch):
+    from app.models.float_data import FloatData
+    from app.models.securities import Security
+
+    db_session.add_all([
+        Security(ticker="FRESH.N0000", name="Fresh", issuer_code="FRESH"),
+        Security(ticker="STALE.N0000", name="Stale", issuer_code="STALE"),
+        Security(ticker="NEW.N0000", name="New", issuer_code="NEW"),
+    ])
+    db_session.add(FloatData(ticker="FRESH.N0000", as_of=dt.date.today(),
+                             shares_issued=1, published_price=Decimal("10")))
+    db_session.add(FloatData(ticker="STALE.N0000", as_of=dt.date.today() - dt.timedelta(days=30),
+                             shares_issued=1, published_price=Decimal("10")))
+    db_session.commit()
+
+    seen: list[str] = []
+
+    def fake_enrich(client, db, tickers, *, on_ticker=None):
+        seen.extend(tickers)
+        return {"enriched": len(tickers)}
+
+    monkeypatch.setattr(runner, "enrich_securities", fake_enrich)
+    monkeypatch.setattr(runner, "CseClient", lambda: _NullCtx())
+    run = _seed_run(db_session, job="enrich_securities")
+    runner.execute(run.id)
+
+    assert "FRESH.N0000" not in seen           # skipped — enriched today
+    assert set(seen) == {"STALE.N0000", "NEW.N0000"}
+
+
+class _NullCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_execute_marks_failed_on_an_unhandled_exception(db_session, monkeypatch):
     run = _seed_run(db_session, job="capture_market")
 

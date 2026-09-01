@@ -3,20 +3,21 @@ TASK 1.1: executes a `JobRun` row end to end — the piece that turns a
 "Run Capture" click into a real, paced, cancellable, progress-reporting
 ingestion sweep.
 
-WHY THIS RUNS IN `app.worker`, NEVER THE API REQUEST HANDLER. §5's
-pacing (`CseClient`'s own `min_seconds_between_calls`) and the "manual
-triggers do not bypass rate limits" rule (§1, standing rule 4, and TASK
-1.1's own "Execution rules... not optional") mean a full sweep takes up
-to ~10 real minutes — running that inside a FastAPI request would hold
-the connection open for 10 minutes and block that worker thread from
-serving anything else. `app.api.routes.jobs.trigger_job` only ever
-INSERTS a `queued` `JobRun` row and returns immediately (202); this
-module's `poll_and_run_one` is what the ALWAYS-ON WORKER PROCESS
-(`app.worker`, via a new interval job in `app.jobs.scheduler`) calls
-every few seconds to notice a queued row and actually execute it — the
-same "the scheduler is a separate process from the API, deliberately"
-split `app.worker`'s own module docstring already established for the
-cron jobs, now extended to manual ones too.
+WHERE THIS RUNS. §5's pacing (`CseClient`'s own `min_seconds_between_
+calls`) and the "manual triggers do not bypass rate limits" rule (§1,
+standing rule 4) mean a full sweep takes up to ~10 real minutes, so it
+must never run inside the request/response cycle — `app.api.routes.jobs.
+trigger_job` returns 202 immediately after INSERTing the `queued` row.
+Two things then execute that row, and `execute` atomically claims it so
+only one wins:
+
+  1. `poll_and_run_one`, called every few seconds by the ALWAYS-ON
+     WORKER (`app.worker` → an interval job in `app.jobs.scheduler`) —
+     the path for scheduled runs and for setups that keep the worker up.
+  2. a daemon thread spawned by `trigger_job` itself — so "Run Capture"
+     works for someone running only `uvicorn app.main:app` with no
+     separate worker. It is a background thread, not the request thread,
+     so the 202 is not held for the job's lifetime.
 
 CONCURRENCY GUARD IS APPLICATION-LEVEL, NOT A DB PARTIAL UNIQUE INDEX.
 See `app.models.job_run.JobRun`'s own docstring for why: this project's
@@ -44,7 +45,7 @@ import logging
 import time
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
@@ -298,8 +299,35 @@ def _run_capture_corporate_actions(db: Session, run: JobRun) -> int:
     return total_drafted
 
 
+#: A ticker whose latest `float_data` row (shares / market cap / price)
+#: is newer than this is not re-fetched by a manual enrich or by
+#: `capture_all` — the same "only pick up what's new" discipline
+#: `_run_capture_corporate_actions` already applies with its 20-hour
+#: skip. `companyInfoSummery` changes at most a few times a year for a
+#: given line (a rights issue, a bonus), so a week is comfortably safe.
+ENRICH_SKIP_IF_FRESH_DAYS = 7
+
+
 def _run_enrich_securities(db: Session, run: JobRun) -> int:
-    tickers = _all_tickers(db)
+    from app.models.float_data import FloatData
+
+    cutoff = dt.date.today() - dt.timedelta(days=ENRICH_SKIP_IF_FRESH_DAYS)
+    fresh = {
+        t
+        for (t,) in db.execute(
+            select(FloatData.ticker)
+            .where(FloatData.published_price.is_not(None))
+            .group_by(FloatData.ticker)
+            .having(func.max(FloatData.as_of) >= cutoff)
+        )
+    }
+    tickers = [t for t in _all_tickers(db) if t not in fresh]
+    if not tickers:
+        _set_progress(
+            db, run, 100,
+            f"Every line enriched within the last {ENRICH_SKIP_IF_FRESH_DAYS} days — nothing new to fetch.",
+        )
+        return 0
 
     def on_ticker(i: int, n: int, ticker: str) -> bool:
         # `enrich_securities` itself breaks its own loop on a `False`
@@ -562,15 +590,31 @@ def _execute_capture_all(db: Session, run: JobRun) -> None:
 
 
 def execute(run_id: int) -> None:
-    """Runs one `JobRun` to completion in the CALLING (worker) process —
-    always leaves a terminal `status`, even on an unhandled exception,
-    per TASK 1.1's own "Every run writes a job_runs row whether it
-    succeeds or fails." Opens its own session: the caller
-    (`poll_and_run_one`) may be running on a scheduler thread whose
-    session shouldn't be shared across the job's own, potentially
-    10-minute, lifetime."""
+    """Runs one `JobRun` to completion in the CALLING process — always
+    leaves a terminal `status`, even on an unhandled exception, per
+    TASK 1.1's own "Every run writes a job_runs row whether it succeeds
+    or fails." Opens its own session: the caller may be running on a
+    scheduler thread, or the API's own request thread (see
+    `app.api.routes.jobs.trigger_job` — a manual trigger now runs the
+    job in-process so "Run Capture" works with just `uvicorn app.main`
+    and no separate `python -m app.worker`).
+
+    ATOMICALLY CLAIMS the run first — flips `queued` -> `running` in a
+    single conditional UPDATE and only proceeds if that affected a row.
+    Two things can call this for the same run now (the API thread and,
+    if one is also up, the worker's `poll_and_run_one`); the claim makes
+    the loser a no-op instead of a double execution."""
     db = SessionLocal()
     try:
+        claimed = db.execute(
+            update(JobRun)
+            .where(JobRun.id == run_id, JobRun.status == "queued")
+            .values(status="running", started_at=dt.datetime.now(dt.timezone.utc))
+        )
+        db.commit()
+        if claimed.rowcount == 0:
+            logger.info("execute: job_run %s was not claimable (already taken or gone)", run_id)
+            return
         run = db.get(JobRun, run_id)
         if run is None:
             logger.error("execute: job_run %s not found", run_id)

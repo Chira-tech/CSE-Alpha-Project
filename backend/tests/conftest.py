@@ -18,6 +18,20 @@ from app.db.base import Base
 
 
 @pytest.fixture(autouse=True)
+def _no_in_process_job_execution():
+    """`POST /jobs/{job}/run` normally executes the job in a daemon
+    thread (so "Run Capture" works with just uvicorn) — off in tests, so
+    triggering a job asserts the queued row without spawning a real
+    ingestion sweep against a URL that isn't reachable here anyway."""
+    from app.config import settings
+
+    prev = settings.execute_manual_jobs_in_process
+    settings.execute_manual_jobs_in_process = False
+    yield
+    settings.execute_manual_jobs_in_process = prev
+
+
+@pytest.fixture(autouse=True)
 def _clear_process_level_caches():
     """Several domain views cache a real, expensive, market-wide result in
     a module-level dict shared across the whole process — exactly right for
