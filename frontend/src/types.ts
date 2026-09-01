@@ -611,6 +611,40 @@ export interface CheckLedgerRow {
   cohorts: Record<string, CohortStat> | null;
 }
 
+export interface LedgerTrendPoint {
+  as_of: string;
+  checkable_pct: string | null;
+  pass_pct_of_checkable: string | null;
+}
+
+/** §9.2 — a thing stopping work, its downstream damage, and the one action. */
+export interface Blocker {
+  condition: string;
+  causing: string;
+  action: string;
+  severity: "amber" | "red";
+}
+
+/** §9.3 — the quarantine worklist grouped by cause, never by ticker. */
+export interface WorklistGroup {
+  alert_type: string;
+  label: string;
+  count: number;
+  tickers: string[];
+  suggested_action: string;
+}
+
+/** §9.4 — the experiment log, on the page. */
+export interface ExperimentRecord {
+  id: string;
+  hypothesis: string;
+  variable: string;
+  metric: string;
+  outcome: string;
+  status: string;
+  commit: string;
+}
+
 export interface DataHealth {
   securities_count: number;
   issuer_count: number;
@@ -651,6 +685,13 @@ export interface DataHealth {
   universe_status: UniverseStatusCounts;
   /** E0 — every universe-wide check as pass / fail / not-evaluable. */
   check_ledger: CheckLedgerRow[];
+  /** §9.1 — up to 14 daily points per check for the row sparklines. */
+  check_ledger_trend: Record<string, LedgerTrendPoint[]>;
+  /** §11 — the one number to watch: mean checkable% across blocking checks. */
+  universe_checkable_pct: string | null;
+  blockers: Blocker[];
+  worklist_groups: WorklistGroup[];
+  experiments: ExperimentRecord[];
   /** R1 T4.1.5: top tickers by pending-figure count — real, cheap
    * proxy for where confirming pays off most. See the backend's own
    * `DataHealth.fundamentals_pending_by_ticker` docstring for why this

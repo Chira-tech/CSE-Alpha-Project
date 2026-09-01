@@ -19,3 +19,4 @@ from app.models.decisions import Decision, Outcome  # noqa: F401
 from app.models.corporate_action_scan_log import CorporateActionScanLog  # noqa: F401
 from app.models.job_run import JobRun  # noqa: F401
 from app.models.composite_ranking_snapshot import CompositeRankingSnapshot  # noqa: F401
+from app.models.data_health_snapshot import DataHealthSnapshot  # noqa: F401

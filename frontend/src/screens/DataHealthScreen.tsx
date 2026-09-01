@@ -4,7 +4,7 @@ import { AsOf, EmptyState, ErrorState, SkeletonCard } from "../components/states
 import { downloadBlob } from "../csv";
 import { onDataRefreshed } from "../dataRefresh";
 import { formatInteger, UNAVAILABLE } from "../format";
-import type { CheckLedgerRow, CohortStat, DataHealth } from "../types";
+import type { CheckLedgerRow, CohortStat, DataHealth, LedgerTrendPoint } from "../types";
 
 export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void }) {
   const [data, setData] = useState<DataHealth | null>(null);
@@ -102,10 +102,68 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
       <header className="screen-head">
         <h1>Data health</h1>
         <p className="prose">
-          Freshness, reconciliation and the confirm queue. The spec gives this a real screen rather
-          than an admin afterthought because it is where data quality is actually maintained.
+          Where data quality is actually maintained. Read it top to bottom: what is
+          checkable, what is stopping work, then the checks, the worklist, and what has
+          changed.
         </p>
       </header>
+
+      {/* §11 — the one number to watch: not the pass rate (a statement about
+          the data) but the checkable share (how much of the data we have any
+          right to an opinion on). */}
+      <section aria-labelledby="one-number-heading" className="stack-tight">
+        <h2 id="one-number-heading" className="sr-only">
+          Universe checkable
+        </h2>
+        <div className="card" style={{ display: "flex", alignItems: "baseline", gap: "var(--s4)", flexWrap: "wrap" }}>
+          <div>
+            <span className="t-label">Universe checkable</span>
+            <div
+              className="hero-value"
+              style={{
+                color:
+                  data.universe_checkable_pct !== null && Number(data.universe_checkable_pct) < 50
+                    ? "var(--caution)"
+                    : undefined,
+              }}
+            >
+              {data.universe_checkable_pct !== null ? `${data.universe_checkable_pct}%` : UNAVAILABLE}
+            </div>
+          </div>
+          <p className="t-caption prose" style={{ maxWidth: 460, margin: 0 }}>
+            The mean checkable share across the blocking checks. A high pass rate on a low
+            checkable share knows less than a lower pass rate on a high one — this is the
+            number to move.
+          </p>
+        </div>
+      </section>
+
+      {data.blockers.length > 0 && (
+        <section aria-labelledby="blockers-heading" className="stack-tight">
+          <h2 id="blockers-heading">Blocking work</h2>
+          <ul className="decisions-list" style={{ borderLeft: 0, padding: 0 }}>
+            {data.blockers.map((b, i) => (
+              <li
+                key={i}
+                className="t-body"
+                style={{
+                  paddingLeft: "var(--s4)",
+                  borderLeft: `2px solid ${b.severity === "red" ? "var(--neg)" : "var(--caution)"}`,
+                  lineHeight: "22px",
+                }}
+              >
+                <strong>{b.condition}</strong>
+                <div className="t-caption muted">
+                  causing&nbsp;— {b.causing}
+                </div>
+                <div className="t-caption" style={{ color: "var(--ink-2)" }}>
+                  action&nbsp;— {b.action}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section aria-labelledby="coverage-heading" className="stack-tight">
         <h2 id="coverage-heading">Coverage</h2>
@@ -170,29 +228,21 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             }
           />
         </div>
+        {/* §9.5 — one cell per exchange trading day (weekday), filled
+            where price data exists, hollow where it does not. A weekend
+            is simply absent; a missed weekday is a visible gap. */}
+        <TradingCalendar
+          latestPriceDate={data.latest_price_date}
+          missing={data.missing_trading_days}
+        />
         {data.missing_trading_days.length > 0 && (
-          <div className="notice notice-caution" role="status">
-            <h3>
-              {data.missing_trading_days.length} trading day
-              {data.missing_trading_days.length === 1 ? "" : "s"} with no price data
-            </h3>
-            <p className="prose t-body">
-              {data.missing_trading_days.join(", ")}. These are weekday sessions after the newest
-              stored row — a genuine gap, not a weekend. (Public holidays are not yet on an exchange
-              calendar, so a holiday that falls on a weekday will show here until one is added.) Run
-              the end-of-day capture.
-            </p>
-          </div>
-        )}
-        {data.missing_trading_days.length === 0 && stale && (
-          <div className="notice notice-caution" role="status">
-            <h3>Newest price is {data.price_feed_age_days} calendar days old</h3>
-            <p className="prose t-body">
-              No weekday session is actually missing, so this is most likely a closed market or a
-              long weekend rather than a failed capture. Models still refuse to emit new signals on
-              inputs this old (§8).
-            </p>
-          </div>
+          <p className="t-caption prose" style={{ margin: 0, color: "var(--caution)" }}>
+            {data.missing_trading_days.length} weekday session
+            {data.missing_trading_days.length === 1 ? "" : "s"} after the newest stored row have no
+            price data ({data.missing_trading_days.join(", ")}) — a genuine gap, not a weekend. Run
+            the end-of-day capture. (No exchange holiday calendar yet, so a weekday holiday shows
+            here until one is added.)
+          </p>
         )}
       </section>
 
@@ -214,6 +264,7 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
                 <th scope="col" className="right">Not eval.</th>
                 <th scope="col" className="right">Checkable</th>
                 <th scope="col" className="right">Pass of checkable</th>
+                <th scope="col">14-day</th>
                 <th scope="col">Blocking</th>
               </tr>
             </thead>
@@ -221,7 +272,11 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
               {[...data.check_ledger]
                 .sort((a, b) => b.failed - a.failed || b.not_evaluable - a.not_evaluable)
                 .map((r) => (
-                  <CheckLedgerRowView key={r.check} row={r} />
+                  <CheckLedgerRowView
+                    key={r.check}
+                    row={r}
+                    trend={data.check_ledger_trend[r.check] ?? []}
+                  />
                 ))}
             </tbody>
           </table>
@@ -437,39 +492,42 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
         </div>
       </section>
 
-      <section aria-labelledby="quarantine-heading" className="stack-tight">
-        <h2 id="quarantine-heading">Quarantined tickers</h2>
-        {data.quarantined.length === 0 ? (
-          <EmptyState title="No tickers are quarantined.">
-            <p style={{ margin: 0 }}>
-              Every ticker's stored adjustment factors reconcile against an independent recomputation
-              from its confirmed corporate actions, within the 0.5% threshold (§7). A ticker appears
-              here when that check fails, and is excluded from Opportunities ranking and Portfolio
-              valuation until resolved — see docs/audits/R1_OPEN_ISSUES.md's OI-3 for the real gap
-              this closed (that exclusion wasn't actually wired anywhere until this session, despite
-              this list's own existence implying it was).
-            </p>
+      {/* §9.3 — the worklist grouped by cause, never by ticker, so one
+          action covers the cohort and you can't spend an afternoon on
+          one name. */}
+      <section aria-labelledby="worklist-heading" className="stack-tight">
+        <h2 id="worklist-heading">Worklist by cause</h2>
+        {data.worklist_groups.length === 0 ? (
+          <EmptyState title="Nothing is quarantined.">
+            <p style={{ margin: 0 }}>No open data-quality alert against any line.</p>
           </EmptyState>
         ) : (
           <div className="table-wrap table-scroll">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th scope="col">Ticker</th>
-                  <th scope="col">Alert</th>
-                  <th scope="col">Detail</th>
-                  <th scope="col">Raised</th>
+                  <th scope="col">Cause</th>
+                  <th scope="col" className="right">Lines</th>
+                  <th scope="col">Tickers</th>
+                  <th scope="col">Action for the whole group</th>
                 </tr>
               </thead>
               <tbody>
-                {data.quarantined.map((q) => (
-                  <tr key={`${q.ticker}-${q.raised_at}`}>
-                    <th scope="row" className="mono" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}>
-                      {q.ticker}
+                {data.worklist_groups.map((g) => (
+                  <tr key={g.alert_type}>
+                    <th
+                      scope="row"
+                      style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 500, color: "var(--ink-1)" }}
+                    >
+                      {g.label}
+                      <div className="t-caption muted" style={{ fontWeight: 400 }}>{g.alert_type}</div>
                     </th>
-                    <td>{q.alert_type}</td>
-                    <td className="prose">{q.detail}</td>
-                    <td className="num">{new Date(q.raised_at).toLocaleString()}</td>
+                    <td className="right num">{formatInteger(g.count)}</td>
+                    <td className="t-caption mono">
+                      {g.tickers.slice(0, 12).join(", ")}
+                      {g.count > 12 ? ` … +${g.count - 12}` : ""}
+                    </td>
+                    <td className="t-caption">{g.suggested_action}</td>
                   </tr>
                 ))}
               </tbody>
@@ -478,7 +536,104 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
         )}
       </section>
 
+      {/* §9.4 — the experiment log on the page, so "one variable per
+          deploy" is visible rather than aspirational. */}
+      <section aria-labelledby="experiments-heading" className="stack-tight">
+        <h2 id="experiments-heading">Experiment log</h2>
+        <div className="table-wrap table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">Hypothesis / variable</th>
+                <th scope="col">Outcome</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.experiments.map((e) => (
+                <tr key={e.id}>
+                  <th
+                    scope="row"
+                    className="mono"
+                    style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}
+                  >
+                    {e.id}
+                  </th>
+                  <td className="prose" style={{ maxWidth: 360 }}>
+                    {e.hypothesis}
+                    <div className="t-caption muted">variable: {e.variable}</div>
+                  </td>
+                  <td className="prose t-caption" style={{ maxWidth: 380 }}>{e.outcome}</td>
+                  <td>
+                    <span
+                      className="status-tag"
+                      style={{
+                        color:
+                          e.status === "confirmed" || e.status === "shipped"
+                            ? "var(--pos-strong)"
+                            : e.status === "falsified"
+                              ? "var(--caution)"
+                              : "var(--ink-3)",
+                      }}
+                    >
+                      {e.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <AsOf label={`Read from the local database at ${new Date().toLocaleTimeString()}`} />
+    </div>
+  );
+}
+
+function TradingCalendar({
+  latestPriceDate,
+  missing,
+}: {
+  latestPriceDate: string | null;
+  missing: string[];
+}) {
+  const missingSet = new Set(missing);
+  const latest = latestPriceDate ? new Date(latestPriceDate + "T00:00:00") : null;
+  const cells: { date: string; state: "filled" | "gap" | "future" }[] = [];
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  while (cells.length < 30) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) {
+      const iso = d.toISOString().slice(0, 10);
+      const state = missingSet.has(iso)
+        ? "gap"
+        : latest && d.getTime() <= latest.getTime()
+          ? "filled"
+          : "future";
+      cells.unshift({ date: iso, state });
+    }
+    d.setDate(d.getDate() - 1);
+  }
+  const color = (s: string) =>
+    s === "filled" ? "var(--brand-300)" : s === "gap" ? "var(--caution)" : "var(--surface-sunken)";
+  return (
+    <div style={{ display: "flex", gap: 3, flexWrap: "wrap", alignItems: "center" }} aria-label="Trading-day price coverage, last 30 sessions">
+      {cells.map((c) => (
+        <span
+          key={c.date}
+          title={`${c.date}: ${c.state === "filled" ? "price data" : c.state === "gap" ? "MISSING" : "no session yet"}`}
+          style={{
+            width: 12,
+            height: 12,
+            borderRadius: 2,
+            background: c.state === "filled" ? color("filled") : "transparent",
+            border: c.state === "filled" ? "none" : `1px solid ${color(c.state)}`,
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -494,7 +649,36 @@ function Stat({ label, value, caution }: { label: string; value: string; caution
   );
 }
 
-function CheckLedgerRowView({ row }: { row: CheckLedgerRow }) {
+function Sparkline({ points }: { points: LedgerTrendPoint[] }) {
+  const vals = points
+    .map((p) => (p.checkable_pct === null ? null : Number(p.checkable_pct)))
+    .filter((v): v is number => v !== null);
+  if (vals.length < 2) {
+    return <span className="t-caption muted">{vals.length === 1 ? "1 pt" : "—"}</span>;
+  }
+  const w = 72;
+  const h = 18;
+  const max = 100;
+  const step = w / (vals.length - 1);
+  const d = vals
+    .map((v, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(1)},${(h - (v / max) * h).toFixed(1)}`)
+    .join(" ");
+  const last = vals[vals.length - 1];
+  const first = vals[0];
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ overflow: "visible" }} aria-hidden>
+      <path d={d} fill="none" stroke="var(--ink-3)" strokeWidth="1" />
+      <circle
+        cx={w}
+        cy={h - (last / max) * h}
+        r="1.6"
+        fill={last >= first ? "var(--pos-strong)" : "var(--neg-strong)"}
+      />
+    </svg>
+  );
+}
+
+function CheckLedgerRowView({ row, trend }: { row: CheckLedgerRow; trend: LedgerTrendPoint[] }) {
   const checkable = row.checkable_pct === null ? null : Number(row.checkable_pct);
   const reasons = Object.entries(row.not_evaluable_reasons);
   // Amber, never red: a check that can barely see the universe, or is
@@ -526,6 +710,9 @@ function CheckLedgerRowView({ row }: { row: CheckLedgerRow }) {
       </td>
       <td className="right num">
         {row.pass_pct_of_checkable === null ? UNAVAILABLE : `${row.pass_pct_of_checkable}%`}
+      </td>
+      <td>
+        <Sparkline points={trend} />
       </td>
       <td>
         <span className={`status-tag ${row.blocking ? "status-pending" : ""}`}>

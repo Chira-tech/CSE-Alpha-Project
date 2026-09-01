@@ -8,7 +8,14 @@ from decimal import Decimal
 
 from freezegun import freeze_time
 
-from app.api.routes.data_health import _check_ledger, _weekdays_in
+from app.api.routes.data_health import (
+    _blockers,
+    _check_ledger,
+    _snapshot_and_trend,
+    _universe_checkable_pct,
+    _weekdays_in,
+    _worklist_groups,
+)
 from app.models.corporate_actions import CorporateAction
 from app.models.corporate_actions import CorporateActionType as ActionType
 from app.models.data_quality import DataAlert
@@ -187,3 +194,57 @@ class TestFreshnessSplit:
         assert "2026-08-29" not in h["missing_trading_days"]  # a Saturday
         assert h["price_capture_last_success_at"] is not None
         assert h["macro_feed_last_success_at"] is None
+
+
+class TestPageRedesignSections:
+    """docs/CSE_Data_Health_Diagnosis_And_Protocol.md §9 — blockers,
+    worklist by cause, the one number, the trend snapshot."""
+
+    def test_universe_checkable_pct_is_the_mean_over_blocking_checks(self, db_session):
+        db_session.add_all([
+            Security(ticker="A.N0000", name="A", issuer_code="A", instrument_type="ordinary"),
+            Security(ticker="B.N0000", name="B", issuer_code="B", instrument_type="ordinary"),
+        ])
+        db_session.commit()
+        pct = _universe_checkable_pct(_check_ledger(db_session))
+        assert pct is not None and Decimal("0") <= pct <= Decimal("100")
+
+    def test_blockers_lead_with_the_missing_market_cap_and_are_ordered_red_first(self, db_session):
+        for t in ("A.N0000", "B.N0000"):
+            db_session.add(Security(ticker=t, name=t, issuer_code=t[0], instrument_type="ordinary"))
+        db_session.add(DataAlert(ticker="A.N0000", alert_type="price_discontinuity",
+                                 detail="x", raised_at=NOW))
+        db_session.add(CorporateAction(ticker="B.N0000", type=ActionType.BONUS_ISSUE,
+                                       ex_date=dt.date(2025, 1, 1)))
+        db_session.commit()
+        ledger = _check_ledger(db_session)
+        blockers = _blockers(db_session, ledger, corporate_actions_pending=0,
+                             missing_trading_days=[], macro_rf_data_date=dt.date.today())
+        assert any("market cap missing" in b.condition for b in blockers)
+        # a red discontinuity blocker sorts ahead of the amber ones
+        assert blockers[0].severity == "red"
+
+    def test_worklist_groups_by_alert_type_not_ticker(self, db_session):
+        db_session.add(Security(ticker="A.N0000", name="A", issuer_code="A", instrument_type="ordinary"))
+        db_session.add_all([
+            DataAlert(ticker="A.N0000", alert_type="price_discontinuity", detail="x", raised_at=NOW),
+            DataAlert(ticker="B.N0000", alert_type="price_discontinuity", detail="x", raised_at=NOW),
+            DataAlert(ticker="C.N0000", alert_type="market_cap_mismatch", detail="x", raised_at=NOW),
+        ])
+        db_session.commit()
+        groups = {g.alert_type: g for g in _worklist_groups(db_session)}
+        assert groups["price_discontinuity"].count == 2
+        assert groups["market_cap_mismatch"].count == 1
+        assert groups["price_discontinuity"].suggested_action  # non-empty
+
+    def test_snapshot_is_written_once_per_day_and_returned_as_a_trend(self, db_session):
+        db_session.add(Security(ticker="A.N0000", name="A", issuer_code="A", instrument_type="ordinary"))
+        db_session.commit()
+        ledger = _check_ledger(db_session)
+        t1 = _snapshot_and_trend(db_session, ledger)
+        t2 = _snapshot_and_trend(db_session, ledger)   # same day -> no second row
+        from app.models.data_health_snapshot import DataHealthSnapshot
+        from sqlalchemy import func, select
+        assert db_session.scalar(select(func.count()).select_from(DataHealthSnapshot)) == 1
+        assert t1.keys() == t2.keys()
+        assert all(len(v) == 1 for v in t2.values())

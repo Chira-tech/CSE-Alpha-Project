@@ -28,6 +28,7 @@ from app.models.prices import PriceDaily
 from app.models.registry import IssuerRegistry
 from app.models.securities import Security
 from app.domain import universe_integrity as ui
+from app.domain.data_health_experiments import EXPERIMENTS as _DH_EXPERIMENTS
 from app.domain.security_status_view import universe_status_summary
 
 #: `docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §5 — a "trading day"
@@ -126,6 +127,46 @@ class CheckLedgerRow(BaseModel):
     (§6 / E4), non-voting `.X` lines for the sanity gate (§6 / E7) — the
     same three-way split, one bucket per cohort. `None` when the check
     has no cohort hypothesis."""
+
+
+class LedgerTrendPoint(BaseModel):
+    as_of: dt.date
+    checkable_pct: Decimal | None
+    pass_pct_of_checkable: Decimal | None
+
+
+class Blocker(BaseModel):
+    """`docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §9.2 — a thing
+    stopping work, linked to the damage it causes and the one action that
+    clears it. Ordered worst-first by the route."""
+
+    condition: str
+    causing: str
+    action: str
+    severity: str  # "amber" (unfinished work) | "red" (a real error to chase)
+
+
+class WorklistGroup(BaseModel):
+    """§9.3 — the quarantine worklist grouped by cause, never by ticker,
+    so one action covers the whole cohort."""
+
+    alert_type: str
+    label: str
+    count: int
+    tickers: list[str]
+    suggested_action: str
+
+
+class ExperimentOut(BaseModel):
+    """§9.4 — the experiment log, on the page."""
+
+    id: str
+    hypothesis: str
+    variable: str
+    metric: str
+    outcome: str
+    status: str
+    commit: str
 
 
 class UniverseIntegrityMetrics(BaseModel):
@@ -254,6 +295,16 @@ class DataHealth(BaseModel):
     universe-wide check as pass / fail / not-evaluable, so a metric that
     moved because coverage changed can be told apart from one that moved
     because the data improved."""
+    check_ledger_trend: dict[str, list[LedgerTrendPoint]]
+    """§9.1 — up to 14 daily snapshots per check, oldest first, for the
+    per-row sparkline. One point (today) on a fresh install; it accrues."""
+    universe_checkable_pct: Decimal | None
+    """§11, the one number to watch: the mean `checkable_pct` across the
+    blocking checks. A high pass rate on a low checkable share means the
+    system knows less than a lower pass rate on a high one."""
+    blockers: list[Blocker]
+    worklist_groups: list[WorklistGroup]
+    experiments: list[ExperimentOut]
 
     fundamentals_pending_by_ticker: list[TickerPendingCount]
     """R1 T4.1.5: top tickers by pending-figure count — a real, cheap
@@ -689,6 +740,197 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
     return rows
 
 
+def _universe_checkable_pct(ledger: list[CheckLedgerRow]) -> Decimal | None:
+    blocking = [r for r in ledger if r.blocking and r.checkable_pct is not None]
+    if not blocking:
+        return None
+    return (sum((r.checkable_pct for r in blocking), Decimal(0)) / len(blocking)).quantize(Decimal("0.1"))
+
+
+def _snapshot_and_trend(db: Session, ledger: list[CheckLedgerRow]) -> dict[str, list[LedgerTrendPoint]]:
+    """§9.1 — freeze today's ledger once per calendar day, then hand back
+    the last 14 days as per-check series for the row sparklines."""
+    from app.models.data_health_snapshot import DataHealthSnapshot
+
+    today = dt.date.today()
+    if db.scalar(select(DataHealthSnapshot.id).where(DataHealthSnapshot.as_of == today)) is None:
+        import json
+
+        db.add(
+            DataHealthSnapshot(
+                as_of=today,
+                computed_at=dt.datetime.now(dt.timezone.utc),
+                ledger_json=json.dumps(
+                    [
+                        {
+                            "check": r.check,
+                            "checkable_pct": str(r.checkable_pct) if r.checkable_pct is not None else None,
+                            "pass_pct_of_checkable": (
+                                str(r.pass_pct_of_checkable) if r.pass_pct_of_checkable is not None else None
+                            ),
+                        }
+                        for r in ledger
+                    ]
+                ),
+            )
+        )
+        db.commit()
+
+    import json
+
+    trend: dict[str, list[LedgerTrendPoint]] = {}
+    rows = db.scalars(
+        select(DataHealthSnapshot)
+        .order_by(DataHealthSnapshot.as_of.desc())
+        .limit(14)
+    ).all()
+    for snap in reversed(rows):
+        for entry in json.loads(snap.ledger_json):
+            trend.setdefault(entry["check"], []).append(
+                LedgerTrendPoint(
+                    as_of=snap.as_of,
+                    checkable_pct=Decimal(entry["checkable_pct"]) if entry["checkable_pct"] else None,
+                    pass_pct_of_checkable=(
+                        Decimal(entry["pass_pct_of_checkable"]) if entry["pass_pct_of_checkable"] else None
+                    ),
+                )
+            )
+    return trend
+
+
+def _blockers(
+    db: Session,
+    ledger: list[CheckLedgerRow],
+    *,
+    corporate_actions_pending: int,
+    missing_trading_days: list[dt.date],
+    macro_rf_data_date: dt.date | None,
+) -> list[Blocker]:
+    """§9.2 — a thing stopping work, its downstream damage, and the one
+    action that clears it. Amber = unfinished work, red = a real error."""
+    by_check = {r.check: r for r in ledger}
+    out: list[Blocker] = []
+
+    mci = by_check.get("market_cap_identity")
+    if mci is not None:
+        missing_mcap = mci.not_evaluable_reasons.get("no_published_market_cap", 0)
+        if missing_mcap > 0:
+            out.append(
+                Blocker(
+                    condition=f"Published market cap missing on {missing_mcap} lines",
+                    causing=(
+                        f"market-cap and share-count identity checks not evaluable for "
+                        f"{missing_mcap} of {mci.scope_total} lines "
+                        f"({mci.checkable_pct}% checkable)"
+                    ),
+                    action="Run `python -m app.cli enrich` (a ~10-minute cse.lk sweep)",
+                    severity="amber",
+                )
+            )
+
+    disc = by_check.get("price_discontinuity")
+    if disc is not None and disc.failed > 0:
+        out.append(
+            Blocker(
+                condition=f"{disc.failed} unexplained >30% one-day price moves",
+                causing=f"{disc.failed} lines quarantined with no corporate action near the move",
+                action="Review each against the raw prints — decimal shift / wrong line / real move",
+                severity="red",
+            )
+        )
+
+    ss = by_check.get("second_source_price")
+    if ss is not None and ss.failed > 0:
+        out.append(
+            Blocker(
+                condition=f"{ss.failed} second-source price mismatches, all stored-below-external",
+                causing="a one-sided residual pattern — a systematic capture bias, not noise",
+                action="Compare our EOD capture timing against TradingView's close for these lines",
+                severity="red",
+            )
+        )
+
+    if corporate_actions_pending > 0:
+        car = by_check.get("corporate_action_ratio")
+        pct = f" ({car.checkable_pct}% of price-ratio actions reviewed)" if car else ""
+        out.append(
+            Blocker(
+                condition=f"{corporate_actions_pending} corporate actions awaiting review",
+                causing=f"the corporate-action ratio can only be scored on what's reviewed{pct}",
+                action="Work the corporate-actions confirm queue",
+                severity="amber",
+            )
+        )
+
+    vs = by_check.get("valuation_sanity")
+    if vs is not None and vs.checkable_pct is not None and vs.checkable_pct < Decimal("50"):
+        out.append(
+            Blocker(
+                condition="Valuation sanity gate only runs at valuation time",
+                causing=f"the rest of the universe is unchecked here ({vs.checkable_pct}% checkable)",
+                action="Run the `recompute` job to re-evaluate every line's sanity",
+                severity="amber",
+            )
+        )
+
+    if missing_trading_days:
+        out.append(
+            Blocker(
+                condition=f"Price capture is {len(missing_trading_days)} trading day(s) behind",
+                causing="every same-date check is comparing against a slightly stale close",
+                action="Run the end-of-day price capture",
+                severity="amber",
+            )
+        )
+
+    if macro_rf_data_date is None:
+        out.append(
+            Blocker(
+                condition="No CBSL risk-free observation on file",
+                causing="every cost of equity in the system falls back to a proxy",
+                action="Run `python -m app.cli cbsl` to ingest the CBSL daily indicators",
+                severity="red",
+            )
+        )
+
+    order = {"red": 0, "amber": 1}
+    out.sort(key=lambda b: order.get(b.severity, 2))
+    return out
+
+
+_WORKLIST_LABELS = {
+    "price_discontinuity": ("Unexplained one-day price moves", "Review each raw print"),
+    "second_source_mismatch": ("Second-source price disagreements", "Re-check same-date, then investigate the capture"),
+    "market_cap_mismatch": ("Market-cap identity failures", "Switch to the share-count check; investigate residuals"),
+    "valuation_sanity_block": ("Valuation plausibility blocks", "Split by share class; check the units"),
+    "reconciliation_mismatch": ("Adjustment-factor reconciliation failures", "Re-run the corporate-action adjuster"),
+    "verdict_vs_profitability_trend": ("Verdict capped by a negative earnings trend", "No action — the cap is working as designed"),
+}
+
+
+def _worklist_groups(db: Session) -> list[WorklistGroup]:
+    """§9.3 — open alerts grouped by cause, with one action per group."""
+    rows: dict[str, list[str]] = {}
+    for tkr, atype in db.execute(
+        select(DataAlert.ticker, DataAlert.alert_type)
+        .where(DataAlert.resolved.is_(False))
+        .order_by(DataAlert.ticker)
+    ):
+        rows.setdefault(atype, []).append(tkr)
+    groups = [
+        WorklistGroup(
+            alert_type=atype,
+            label=_WORKLIST_LABELS.get(atype, (atype.replace("_", " ").title(), "Investigate"))[0],
+            count=len(tickers),
+            tickers=sorted(set(tickers))[:40],
+            suggested_action=_WORKLIST_LABELS.get(atype, (atype, "Investigate"))[1],
+        )
+        for atype, tickers in rows.items()
+    ]
+    groups.sort(key=lambda g: g.count, reverse=True)
+    return groups
+
+
 @router.get("", response_model=DataHealth)
 def data_health(db: Session = Depends(get_db)) -> DataHealth:
     securities_count = db.scalar(select(func.count()).select_from(Security)) or 0
@@ -867,4 +1109,21 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         ),
         universe_status=UniverseStatusCounts(**vars(universe_status_summary(db))),
         check_ledger=ledger,
+        check_ledger_trend=_snapshot_and_trend(db, ledger),
+        universe_checkable_pct=_universe_checkable_pct(ledger),
+        blockers=_blockers(
+            db,
+            ledger,
+            corporate_actions_pending=ca_total - ca_confirmed - ca_rejected,
+            missing_trading_days=missing_trading_days,
+            macro_rf_data_date=macro_rf_data_date,
+        ),
+        worklist_groups=_worklist_groups(db),
+        experiments=[
+            ExperimentOut(
+                id=e.id, hypothesis=e.hypothesis, variable=e.variable, metric=e.metric,
+                outcome=e.outcome, status=e.status, commit=e.commit,
+            )
+            for e in _DH_EXPERIMENTS
+        ],
     )

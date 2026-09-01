@@ -382,13 +382,24 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 8. Issuer-level aggregation for multi-line issuers (E4).
 9. Per-class handling for non-voting lines (E7).
 
-**Then the page**
+**Then the page** — *shipped 2026-09-01.*
 
-10. Blocker list with causal links.
-11. Check ledger table with trends.
-12. Worklist grouped by cause with group actions.
-13. Trading-day calendar strip.
-14. Experiment log.
+10. ✅ Blocker list with causal links — `blockers[]` on `/data-health` (condition → causing →
+    action, red-first). Real blockers now: 7 unexplained discontinuities and 4 one-sided
+    second-source mismatches (red); 284 lines with no published market cap, 575 CAs awaiting
+    review, sanity gate only at valuation time, price capture 3 sessions behind (amber).
+11. ✅ Check ledger table with trends — `data_health_snapshots` (migration 0023) freezes the
+    ledger once per calendar day on read; each row gets a `checkable%` sparkline that accrues.
+12. ✅ Worklist grouped by cause — `worklist_groups[]`, one row per `alert_type` with the cohort,
+    the tickers, and one action for the whole group. Replaces the per-ticker quarantine table.
+13. ✅ Trading-day calendar strip — 30 weekday cells, filled where price data exists, hollow
+    (amber-bordered) for a missed session; weekends simply absent.
+14. ✅ Experiment log on the page — `experiments[]`, from
+    `app/domain/data_health_experiments.py` (E0–E8 with hypothesis, single variable, outcome,
+    status). §9.6 visual language: amber for unfinished work, muted grey for not-evaluable.
+
+Headline: **`universe_checkable_pct`** (§11) — the mean checkable share across the blocking
+checks, currently **22.0%** — sits at the top of the page as the one number to move.
 
 ---
 
