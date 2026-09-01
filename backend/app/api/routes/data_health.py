@@ -220,9 +220,15 @@ class DataHealth(BaseModel):
     than 'data is a few days old'."""
     price_capture_last_success_age_days: int | None
     macro_feed_last_success_at: dt.datetime | None
-    """When `capture_macro` (the CBSL risk-free / macro series feed) last
-    succeeded. `null` means every cost of equity in the system is on the
-    proxy (§4)."""
+    """When the scheduled `capture_macro` job last succeeded. `null` is
+    common even when the data is current — the CBSL series are also
+    populated by `bootstrap` and the CLI (§5: job-run history ≠ data
+    freshness). Read `macro_risk_free_data_date` for whether a real
+    risk-free rate is actually available."""
+    macro_risk_free_data_date: dt.date | None
+    """The newest CBSL risk-free (364-day T-bill) observation on file.
+    Present and recent → every cost of equity in the system is built on a
+    real rate, not a proxy (§4), regardless of the job-run history above."""
 
     corporate_actions_total: int
     corporate_actions_pending: int
@@ -587,8 +593,14 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
         )
     ) or 0
     ca_pending = ca_total - ca_confirmed - ca_rejected
-    ca_feed_ran = _last_successful_run(db, "capture_corporate_actions") is not None
-    ca_reason = "awaiting_review" if ca_feed_ran else "ca_feed_never_succeeded"
+    # What matters for the discontinuity check is whether the corporate-
+    # action TABLE has data to consult, not whether the scheduled job
+    # last succeeded — the table can be (and here is) populated by
+    # `bootstrap` / the CLI loader while the cron job shows "never run"
+    # (§5: data-date vs last-successful-run are two different things).
+    ca_actions_on_file = db.scalar(select(func.count()).select_from(CorporateAction)) or 0
+    ca_calendar_populated = ca_actions_on_file > 0
+    ca_reason = "awaiting_review"
     rows.append(
         CheckLedgerRow(
             check="corporate_action_ratio",
@@ -601,17 +613,19 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
         )
     )
 
-    # --- price_discontinuity: the check reads a corporate-action calendar
-    # to decide whether a >30% one-day move is explained. If that feed
-    # has never populated the table, every "unexplained" flag is
-    # not-evaluable, not a fail (§3).
+    # --- price_discontinuity: a >30% one-day move with no corporate
+    # action near the date. Evaluable as long as the corporate-action
+    # calendar has data to consult (§3's "measuring an empty table"
+    # concern — here the table holds 1,800+ actions, so the open alerts
+    # are real "no CA near this move" findings, exactly what the check is
+    # for, not an artefact of a missing feed).
     disc_open = open_by_type.get(ui.ALERT_PRICE_DISCONTINUITY, 0)
     lines_with_history = db.scalar(
         select(func.count()).select_from(
             select(PriceDaily.ticker).group_by(PriceDaily.ticker).having(func.count() >= 2).subquery()
         )
     ) or 0
-    if ca_feed_ran:
+    if ca_calendar_populated:
         disc_pass = max(0, lines_with_history - disc_open)
         rows.append(
             CheckLedgerRow(
@@ -708,6 +722,10 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
         missing_trading_days = [d for d in weekdays_since if d not in price_dates][:15]
     capture_last_ok = _last_successful_run(db, "capture_prices")
     macro_last_ok = _last_successful_run(db, "capture_macro")
+    from app.domain.macro_view import risk_free_observation
+
+    _rf = risk_free_observation(db, today)
+    macro_rf_data_date = _rf.obs_date if _rf is not None else None
 
     tickers_with_price = select(PriceDaily.ticker).distinct().subquery()
     securities_with_no_price = (
@@ -823,6 +841,7 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
             else None
         ),
         macro_feed_last_success_at=macro_last_ok,
+        macro_risk_free_data_date=macro_rf_data_date,
         corporate_actions_total=ca_total,
         corporate_actions_pending=ca_total - ca_confirmed - ca_rejected,
         corporate_actions_confirmed=ca_confirmed,

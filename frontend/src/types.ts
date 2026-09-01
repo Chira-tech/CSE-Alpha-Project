@@ -627,8 +627,12 @@ export interface DataHealth {
   missing_trading_days: string[];
   price_capture_last_success_at: string | null;
   price_capture_last_success_age_days: number | null;
-  /** null → every cost of equity in the system is on the proxy (§4). */
+  /** When the scheduled capture_macro job last succeeded — often null
+   * even when the data is current (§5). */
   macro_feed_last_success_at: string | null;
+  /** Newest CBSL risk-free observation on file. Present + recent → real
+   * cost of equity everywhere, not a proxy (§4). */
+  macro_risk_free_data_date: string | null;
   corporate_actions_total: number;
   corporate_actions_pending: number;
   corporate_actions_confirmed: number;

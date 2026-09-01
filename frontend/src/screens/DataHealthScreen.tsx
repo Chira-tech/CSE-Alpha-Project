@@ -145,7 +145,7 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             }
           />
           <Stat
-            label="Capture job last succeeded"
+            label="Price capture job last succeeded"
             value={
               data.price_capture_last_success_at === null
                 ? "never"
@@ -154,6 +154,19 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             caution={
               data.price_capture_last_success_at === null ||
               (data.price_capture_last_success_age_days ?? 0) > 2
+            }
+          />
+          <Stat
+            label="CBSL risk-free data through"
+            value={data.macro_risk_free_data_date ?? UNAVAILABLE}
+            caution={data.macro_risk_free_data_date === null}
+          />
+          <Stat
+            label="Macro job last succeeded"
+            value={
+              data.macro_feed_last_success_at === null
+                ? "never (data still current — see left)"
+                : new Date(data.macro_feed_last_success_at).toLocaleDateString()
             }
           />
         </div>
@@ -332,23 +345,28 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
             value={formatInteger(ui.suspended_or_delisted_lines)}
             caution={ui.suspended_or_delisted_lines > 0}
           />
-          <Stat
-            label={
-              data.macro_feed_last_success_at === null
-                ? "Cost of equity — PROXY ONLY (CBSL feed never ran)"
-                : "Cost of equity available"
-            }
-            value={
-              ui.cost_of_equity_available_pct !== null
-                ? `${ui.cost_of_equity_available_pct}%`
-                : UNAVAILABLE
-            }
-            caution={
-              data.macro_feed_last_success_at === null ||
-              (ui.cost_of_equity_available_pct !== null &&
-                Number(ui.cost_of_equity_available_pct) < 95)
-            }
-          />
+          {(() => {
+            const rf = data.macro_risk_free_data_date;
+            const rfAgeDays = rf
+              ? Math.round((Date.now() - new Date(rf).getTime()) / 86_400_000)
+              : null;
+            const rfStale = rfAgeDays === null || rfAgeDays > 30;
+            return (
+              <Stat
+                label={rfStale ? "Cost of equity — risk-free rate stale" : "Cost of equity available"}
+                value={
+                  ui.cost_of_equity_available_pct !== null
+                    ? `${ui.cost_of_equity_available_pct}%`
+                    : UNAVAILABLE
+                }
+                caution={
+                  rfStale ||
+                  (ui.cost_of_equity_available_pct !== null &&
+                    Number(ui.cost_of_equity_available_pct) < 95)
+                }
+              />
+            );
+          })()}
           <Stat
             label="Verdicts capped — negative earnings trend"
             value={formatInteger(ui.buy_side_verdicts_on_negative_earnings_trend)}

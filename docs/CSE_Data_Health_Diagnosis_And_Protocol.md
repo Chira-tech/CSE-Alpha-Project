@@ -331,7 +331,28 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 > `valuation_view` fills them. Takes effect on the next `recompute` — the `.X` vs `.N` block-rate
 > cohort split on the check ledger is the falsifier (it should converge).
 >
-> Next: run the feeds (E5, E6, enrichment), then E4.
+>
+> **E5, E6, E4 — premises falsified by the data; corrections shipped instead of feed runs.**
+> The doc worked from the sidebar's job-run history, which conflates "job never succeeded" with
+> "no data" (the §5 point, applied to itself):
+> - **E5**: the `corporate_actions` table holds **1,810 actions** (1,230 confirmed, ex-dates
+>   2019→2026) — populated by `bootstrap`/the CLI, not the cron job. The discontinuity check is
+>   not "measuring an empty table"; the ledger now gates on whether the table has rows, and
+>   `price_discontinuity` jumps from **0% → 99.3% checkable** (285 pass / 7 fail / 2 n/e). Per the
+>   protocol's own falsifier, the 7 remaining flags (TAP +464%, LIOC +75%, …) are **real** "no CA
+>   near this move" findings that need per-ticker eyes.
+> - **E6**: the CBSL risk-free series is **current to 2026-08-25**; `cost_of_equity_for` already
+>   returns a real Ke (COMB: 16.9% on a 9.89% T-bill). No proxy in the engine. `/data-health`
+>   gains `macro_risk_free_data_date`; the CoE tile now cautions on stale *data*, not on the job
+>   never having run.
+> - **E4**: verified against a real payload (`sanity.py`, AEL 16-Aug) — the exchange publishes
+>   `marketCap` **per line**, from that line's own `quantityIssued × lastTradedPrice`, not per
+>   issuer. The per-line identity check is already correct; "aggregate to issuer level" would be
+>   wrong. The single-vs-multi cohort split (already shipped) will confirm this once `.X` lines
+>   carry a published market cap.
+>
+> Remaining: run `enrich_securities` once to populate `float_data.published_price` and activate
+> the E3 `share_count_identity` check (currently not-evaluable for all lines).
 
 **Instrument first**
 

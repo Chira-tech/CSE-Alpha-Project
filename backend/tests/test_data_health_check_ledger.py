@@ -59,25 +59,27 @@ class TestCheckLedgerThreeWaySplit:
         assert mci.checkable_pct == Decimal("66.7")
         assert mci.blocking is True
 
-    def test_price_discontinuity_is_not_evaluable_when_ca_feed_never_ran(self, db_session):
+    def test_price_discontinuity_is_not_evaluable_with_an_empty_corporate_action_table(self, db_session):
         self._seed(db_session)
         db_session.add(DataAlert(ticker="AAA.N0000", alert_type="price_discontinuity",
                                  detail="x", raised_at=NOW))
         db_session.commit()
         disc = {r.check: r for r in _check_ledger(db_session)}["price_discontinuity"]
-        # No successful capture_corporate_actions JobRun -> the check is
-        # reading an empty calendar, so the open alert is not-evaluable,
-        # not a fail.
+        # No CorporateAction rows at all -> the check has no calendar to
+        # consult, so the open alert is not-evaluable, not a fail.
         assert disc.failed == 0
         assert disc.not_evaluable == disc.scope_total
         assert "corporate_action_table_unpopulated" in disc.not_evaluable_reasons
 
-    def test_price_discontinuity_counts_fails_once_the_ca_feed_has_run(self, db_session):
+    def test_price_discontinuity_counts_fails_once_the_calendar_has_any_data(self, db_session):
         self._seed(db_session)
         db_session.add(DataAlert(ticker="AAA.N0000", alert_type="price_discontinuity",
                                  detail="x", raised_at=NOW))
-        db_session.add(JobRun(job="capture_corporate_actions", trigger="scheduled",
-                              status="success", finished_at=NOW, created_at=NOW))
+        # One confirmed action anywhere is enough for the calendar to be
+        # a real thing the check can read — the job-run history is
+        # irrelevant (data-date vs last-successful-run, §5).
+        db_session.add(CorporateAction(ticker="ZZZ.N0000", type=ActionType.BONUS_ISSUE,
+                                       ex_date=dt.date(2025, 1, 1)))
         db_session.commit()
         disc = {r.check: r for r in _check_ledger(db_session)}["price_discontinuity"]
         assert disc.failed == 1
@@ -130,7 +132,7 @@ class TestCheckLedgerThreeWaySplit:
         car = {r.check: r for r in _check_ledger(db_session)}["corporate_action_ratio"]
         assert (car.passed, car.failed, car.not_evaluable) == (1, 1, 1)
         assert car.pass_pct_of_checkable == Decimal("50.0")   # 1 confirmed / 2 reviewed
-        assert "ca_feed_never_succeeded" in car.not_evaluable_reasons
+        assert "awaiting_review" in car.not_evaluable_reasons
 
 
 class TestCohortSplits:
