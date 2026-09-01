@@ -432,7 +432,7 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
             return "voting (.N)"
         if k is InstrumentType.NON_VOTING:
             return "non_voting (.X)"
-        return "other (.P/.R/.U/…)"
+        return "other (.P/.R/.U/.D)"
 
     open_by_type: dict[str, int] = {
         t: c
