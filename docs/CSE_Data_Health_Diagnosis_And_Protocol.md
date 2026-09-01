@@ -277,7 +277,21 @@ Prose moves into tooltips and expandable notes. The explanatory writing on the c
 > `capture_macro` has never succeeded. First real numbers: market-cap identity is **3.4%
 > checkable** (the "50% pass" was 5 of 10 lines), corporate-action ratio is **91.4% of reviewed**
 > (was reported ~15%), price-discontinuity is 0% checkable (`corporate_action_table_unpopulated`).
-> Steps 3+ (run the CA and CBSL feeds, then the per-check redesign) are next.
+>
+> **E3 (step 7) code shipped ahead of its feed run.** `float_data.published_price` (migration
+> 0022) now captures `reqSymbolInfo.lastTradedPrice` from the same payload as `marketCap` and
+> `quantityIssued`; the ledger has a new `share_count_identity` check —
+> `implied_shares = published_market_cap ÷ published_price`, tolerance 0.5%. Until
+> `enrich_securities` re-runs it reports **not-evaluable** for every line
+> (`no_published_price_captured` on the 10 with a market cap, `no_published_market_cap` on the
+> rest) — the honest E0 state, not a pass. **Pre-registered prediction:** after enrichment
+> re-runs, the market-cap fails that cluster at 2.3–3.1% (ABL, ACME, AEL, AFS) mostly clear on
+> `share_count_identity` because both inputs come from one self-consistent payload, while AFSL
+> (5.95%, independently flagged by `share_count_reconciles`) stays a fail. **Falsifier:** if the
+> share-count check still fails at a similar rate and sign, the errors are real share counts, a
+> more serious finding than stale-price noise.
+>
+> Steps 3–4 (run the CA and CBSL feeds — E5, E6) and 5–6, 8–9 (E1, E2, E4, E7) are next.
 
 **Instrument first**
 

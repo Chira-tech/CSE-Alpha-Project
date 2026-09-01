@@ -138,6 +138,13 @@ def enrich_security(db: Session, ticker: str, info: CompanyInfoSummary, as_of: d
                         if symbol_info.marketCap is not None
                         else None
                     ),
+                    # The exchange's own price from this same payload — see
+                    # FloatData.published_price and the E3 note.
+                    published_price=(
+                        Decimal(str(symbol_info.lastTradedPrice))
+                        if symbol_info.lastTradedPrice is not None
+                        else None
+                    ),
                 )
             )
             wrote = True

@@ -92,6 +92,30 @@ class TestCheckLedgerThreeWaySplit:
         assert ss.not_evaluable == 2
         assert "check_records_no_passes" in ss.not_evaluable_reasons
 
+    def test_share_count_identity_is_not_evaluable_without_a_published_price(self, db_session):
+        # _seed gives AAA/BBB a market cap but no published_price.
+        self._seed(db_session)
+        sci = {r.check: r for r in _check_ledger(db_session)}["share_count_identity"]
+        assert sci.passed == 0 and sci.failed == 0
+        assert sci.not_evaluable_reasons.get("no_published_price_captured") == 2
+        assert sci.not_evaluable_reasons.get("no_published_market_cap") == 1
+
+    def test_share_count_identity_passes_and_fails_at_half_a_percent(self, db_session):
+        for t in ("PASS.N0000", "FAIL.N0000"):
+            db_session.add(Security(ticker=t, name=t, issuer_code=t[:4], instrument_type="ordinary"))
+        # implied = 1_000_000_000 / 10 = 100_000_000
+        db_session.add(FloatData(ticker="PASS.N0000", as_of=dt.date(2026, 8, 19),
+                                 published_market_cap=Decimal("1000000000"),
+                                 published_price=Decimal("10"), shares_issued=100_000_000))
+        # implied = 1_000_000_000 / 10 = 100_000_000 vs stored 98_000_000 → 2% off → fail
+        db_session.add(FloatData(ticker="FAIL.N0000", as_of=dt.date(2026, 8, 19),
+                                 published_market_cap=Decimal("1000000000"),
+                                 published_price=Decimal("10"), shares_issued=98_000_000))
+        db_session.commit()
+        sci = {r.check: r for r in _check_ledger(db_session)}["share_count_identity"]
+        assert sci.passed == 1 and sci.failed == 1
+        assert sci.pass_pct_of_checkable == Decimal("50.0")
+
     def test_corporate_action_ratio_treats_pending_as_not_evaluable(self, db_session):
         self._seed(db_session)
         db_session.add_all([

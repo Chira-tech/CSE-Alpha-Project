@@ -28,6 +28,17 @@ class FloatData(Base):
     top20_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     controlling_holder: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
+    published_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4), nullable=True)
+    """`companyInfoSummery.reqSymbolInfo.lastTradedPrice` — the exchange's
+    own price for this symbol, captured in the SAME payload as
+    `published_market_cap` and `shares_issued`. `docs/CSE_Data_Health_
+    Diagnosis_And_Protocol.md` E3: this is what makes the identity check
+    `published_market_cap = published_price × shares_issued` a pure
+    share-count check, with no contamination from our stored close being
+    a few days newer. Nullable — filled on the next `enrich_securities`
+    run; older rows stay NULL and the E3 check treats them as
+    not-evaluable rather than guessing."""
+
     published_market_cap: Mapped[Decimal | None] = mapped_column(Numeric(20, 2), nullable=True)
     """CSE's own independently-published market capitalisation
     (`companyInfoSummery.reqSymbolInfo.marketCap`) — fetched in the SAME

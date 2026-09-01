@@ -97,6 +97,10 @@ def test_enriches_isin_listing_date_and_shares(db_session):
     floats = db_session.query(FloatData).filter_by(ticker="AEL.N0000").all()
     assert len(floats) == 1
     assert floats[0].shares_issued == 1_000_000_000
+    # E3 — the exchange's own price and market cap, from this same
+    # payload, so the identity check can isolate the share count.
+    assert float(floats[0].published_price) == pytest.approx(76.8)
+    assert float(floats[0].published_market_cap) == pytest.approx(7.68e10)
 
     # CSE's own published beta — the module docstring has claimed this
     # was captured since the file was written; it wasn't actually stored

@@ -396,21 +396,30 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
         )
     }
 
-    # Latest published market cap + share count per ticker (FloatData is
-    # ~one row per ticker per enrichment run — small).
+    # Latest FloatData row per ticker (one row per ticker per enrichment
+    # run — small). All three of published market cap, published price and
+    # share count come from the same payload, which is what E3 relies on.
     mcap: dict[str, Decimal] = {}
     shares: dict[str, int] = {}
-    for tkr, pmc, sh in db.execute(
-        select(FloatData.ticker, FloatData.published_market_cap, FloatData.shares_issued).order_by(
-            FloatData.ticker, FloatData.as_of.desc()
-        )
+    pub_price: dict[str, Decimal] = {}
+    _seen_fd: set[str] = set()
+    for tkr, pmc, sh, pp in db.execute(
+        select(
+            FloatData.ticker,
+            FloatData.published_market_cap,
+            FloatData.shares_issued,
+            FloatData.published_price,
+        ).order_by(FloatData.ticker, FloatData.as_of.desc())
     ):
-        if tkr in mcap or tkr in shares:
+        if tkr in _seen_fd:
             continue
+        _seen_fd.add(tkr)
         if pmc is not None:
             mcap[tkr] = pmc
         if sh is not None:
             shares[tkr] = sh
+        if pp is not None and pp > 0:
+            pub_price[tkr] = pp
     # `last_close` is only consulted for the market_cap_identity check,
     # which is not-evaluable without a published market cap anyway — so
     # only fetch closes for the handful of tickers that have one, rather
@@ -449,11 +458,47 @@ def _check_ledger(db: Session) -> list[CheckLedgerRow]:
     rows.append(
         CheckLedgerRow(
             check="market_cap_identity",
-            label="Market-cap identity (price × shares vs exchange)",
+            label="Market-cap identity (latest close × shares vs exchange)",
             passed=passed, failed=failed, not_evaluable=ne, not_evaluable_reasons=reasons,
             blocking=True, scope_total=scope,
             checkable_pct=_pct(passed + failed, scope),
             pass_pct_of_checkable=_pct(passed, passed + failed),
+        )
+    )
+
+    # --- share_count_identity (E3): implied_shares = published_market_cap
+    # ÷ published_price, both from the same enrichment payload, so this
+    # isolates the share count with no price-timing confound. Tighter
+    # tolerance (0.5%) than the market-cap check because a share count
+    # barely moves. Not evaluable until `enrich_securities` has run since
+    # migration 0022 — older FloatData rows carry no published_price.
+    sc_pass = sc_fail = 0
+    sc_reasons: dict[str, int] = {}
+    for t in tickers:
+        pmc, sh, pp = mcap.get(t), shares.get(t), pub_price.get(t)
+        if pmc is None:
+            sc_reasons["no_published_market_cap"] = sc_reasons.get("no_published_market_cap", 0) + 1
+        elif not sh:
+            sc_reasons["no_share_count"] = sc_reasons.get("no_share_count", 0) + 1
+        elif pp is None:
+            sc_reasons["no_published_price_captured"] = (
+                sc_reasons.get("no_published_price_captured", 0) + 1
+            )
+        else:
+            implied = pmc / pp
+            if abs(implied - Decimal(sh)) / Decimal(sh) <= Decimal("0.005"):
+                sc_pass += 1
+            else:
+                sc_fail += 1
+    rows.append(
+        CheckLedgerRow(
+            check="share_count_identity",
+            label="Share-count identity (published market cap ÷ published price)",
+            passed=sc_pass, failed=sc_fail, not_evaluable=sum(sc_reasons.values()),
+            not_evaluable_reasons=sc_reasons,
+            blocking=True, scope_total=scope,
+            checkable_pct=_pct(sc_pass + sc_fail, scope),
+            pass_pct_of_checkable=_pct(sc_pass, sc_pass + sc_fail),
         )
     )
 
