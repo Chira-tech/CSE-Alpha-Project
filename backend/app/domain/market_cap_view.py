@@ -112,6 +112,27 @@ def published_market_cap_for(db: Session, ticker: str, as_of: dt.date) -> Decima
     return row.published_market_cap if row else None
 
 
+def published_price_for(db: Session, ticker: str, as_of: dt.date) -> Decimal | None:
+    """The `lastTradedPrice` CSE published in the SAME `reqSymbolInfo`
+    payload as `published_market_cap` and `shares_issued`
+    (`app.models.float_data.FloatData.published_price`). This is the
+    price that pairs with the published market cap — reconciling the two
+    is a genuine internal-consistency check on the share COUNT / share
+    class, whereas reconciling the published market cap against the EOD
+    `prices_daily.close` (a different feed, often a different session)
+    fails the moment the price has moved since the last EOD capture,
+    which is a staleness artefact, not a data error (user directive,
+    1 Sep 2026: prices flow downstream as available and a closing-vs-
+    last-traded gap is immaterial)."""
+    row = db.scalar(
+        select(FloatData)
+        .where(FloatData.ticker == ticker, FloatData.as_of <= as_of)
+        .order_by(FloatData.as_of.desc())
+        .limit(1)
+    )
+    return row.published_price if row else None
+
+
 def bulk_market_cap_for(
     db: Session, tickers: tuple[str, ...], as_of: dt.date | None = None
 ) -> dict[str, Decimal | None]:

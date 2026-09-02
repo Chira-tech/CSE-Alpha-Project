@@ -146,6 +146,17 @@ class SanityContext:
     no observable ratio (`None` while `is_non_voting`), those rules are
     skipped rather than blocking on a comparison known to be biased."""
 
+    published_price: Decimal | None = None
+    """The `lastTradedPrice` CSE published in the SAME payload as `mcap`
+    and `shares` (`app.models.float_data.FloatData.published_price`). When
+    present, `share_count_reconciles` reconciles `mcap` against
+    `published_price × shares` — an internal-consistency check on the
+    share COUNT / class. Reconciling against `price` (the EOD
+    `prices_daily.close`) instead fails whenever the price has moved
+    since the last EOD capture, which is staleness between two feeds, not
+    a data error (user directive, 1 Sep 2026: a closing-vs-last-traded
+    gap is immaterial). Falls back to `price` only when this is `None`."""
+
 
 @dataclass(frozen=True)
 class SanityRule:
@@ -185,7 +196,9 @@ SANITY_RULES: tuple[SanityRule, ...] = (
     SanityRule(
         "share_count_reconciles",
         ("mcap", "shares"),
-        lambda v, ctx: abs(ctx.mcap / (ctx.price * Decimal(ctx.shares)) - 1) < Decimal("0.02"),
+        lambda v, ctx: abs(
+            ctx.mcap / ((ctx.published_price or ctx.price) * Decimal(ctx.shares)) - 1
+        ) < Decimal("0.02"),
         "block",
         "Market cap does not reconcile against price x shares outstanding, within 2%, "
         "against the exchange's own published figure. Check: voting vs non-voting share "

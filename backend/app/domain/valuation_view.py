@@ -151,7 +151,7 @@ from app.domain.relative_valuation import (
     justified_price_to_sales,
 )
 from app.domain.sanity import SanityCheckResult, SanityContext, run_sanity_checks
-from app.domain.market_cap_view import published_market_cap_for
+from app.domain.market_cap_view import published_market_cap_for, published_price_for
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
 from app.domain.ttm import annualised_flow, trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
@@ -2362,6 +2362,7 @@ def valuation_summary_for(
             # independent lookup (`published_market_cap_for`) the gate
             # specifically requires.
             published_mcap = published_market_cap_for(db, ticker, stamp)
+            published_price = published_price_for(db, ticker, stamp)
             _bvps = jpb.inputs.book_value_per_share
             _pb = current_price / _bvps if _bvps not in (None, 0) else None
             _pe = (
@@ -2404,6 +2405,7 @@ def valuation_summary_for(
                 net_profit=jpb.inputs.net_income,
                 is_non_voting=_is_non_voting,
                 nonvoting_price_ratio=_nonvoting_ratio,
+                published_price=published_price,
             )
             sanity_result = run_sanity_checks(triangulation.blended_fair_value_per_share, sanity_ctx)
             if sanity_result.blocked:

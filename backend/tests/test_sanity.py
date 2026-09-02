@@ -147,6 +147,36 @@ class TestRunSanityChecks:
         assert result.blocked is True
         assert "share_count_reconciles" in result.blocked_by
 
+    def test_reconciliation_uses_published_price_not_the_stale_eod_close(self):
+        """The published market cap pairs with CSE's own `lastTradedPrice`
+        from the same payload. Reconciling it against the EOD
+        `prices_daily.close` — a different feed, often an older session —
+        fails the moment the price has moved since the last capture, which
+        is staleness between two feeds, not a share-count error. When
+        `published_price` is supplied, that is what the rule must use.
+        """
+        result = run_sanity_checks(
+            Decimal("200.00"),
+            _ctx(
+                price=Decimal("230.00"),  # stale EOD close, ~12% adrift
+                published_price=Decimal("205.75"),  # pairs with the published mcap
+                mcap=Decimal("205750000"),
+                shares=1_000_000,
+            ),
+        )
+        assert "share_count_reconciles" not in result.blocked_by
+
+    def test_a_genuine_share_class_mismatch_still_blocks_with_published_price(self):
+        result = run_sanity_checks(
+            Decimal("200.00"),
+            _ctx(
+                published_price=Decimal("205.75"),
+                mcap=Decimal("411500000"),  # implies ~2x the shares used
+                shares=1_000_000,
+            ),
+        )
+        assert "share_count_reconciles" in result.blocked_by
+
     def test_a_rule_with_a_missing_required_input_is_skipped_not_passed(self):
         """mcap and shares are both None by default in `_ctx()` — the
         rule must be recorded as `skipped`, distinct from silently
