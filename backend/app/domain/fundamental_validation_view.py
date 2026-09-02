@@ -66,14 +66,15 @@ def revalidate_all(
     for row in rows:
         by_filing[_filing_key(row)].append(row)
 
+    # Load the whole verdict table (it is 1:1 with fundamentals at most,
+    # same order of magnitude as `rows`) rather than an `IN (...)` over
+    # tens of thousands of ids — SQLite caps bound parameters at 999.
+    ids_wanted = {r.id for r in rows}
     existing = {
         v.fundamental_id: v
-        for v in db.scalars(
-            select(FundamentalValidation).where(
-                FundamentalValidation.fundamental_id.in_([r.id for r in rows])
-            )
-        )
-    } if rows else {}
+        for v in db.scalars(select(FundamentalValidation))
+        if v.fundamental_id in ids_wanted
+    }
 
     now = dt.datetime.now(dt.timezone.utc)
     summary = ValidationSweepSummary(0, 0, 0, 0)
@@ -128,14 +129,30 @@ def failed_fundamental_ids(db: Session, candidate_ids: list[int]) -> set[int]:
     """The subset of `candidate_ids` whose last validation FAILED — the
     set `app.domain.point_in_time.fundamentals_as_of` removes before the
     valuation engine ever sees them. A row with no validation record yet
-    is not in the result (not-yet-swept is treated as not-yet-failed)."""
+    is not in the result (not-yet-swept is treated as not-yet-failed).
+
+    `candidate_ids` is normally a single ticker's rows (tens, not
+    thousands), so an `IN (...)` is fine — but chunk it anyway to stay
+    under SQLite's 999-bound-parameter cap for any larger caller.
+    """
     if not candidate_ids:
         return set()
-    return set(
-        db.scalars(
-            select(FundamentalValidation.fundamental_id).where(
-                FundamentalValidation.fundamental_id.in_(candidate_ids),
-                FundamentalValidation.passed.is_(False),
+    wanted = set(candidate_ids)
+    if len(wanted) <= 900:
+        return set(
+            db.scalars(
+                select(FundamentalValidation.fundamental_id).where(
+                    FundamentalValidation.fundamental_id.in_(wanted),
+                    FundamentalValidation.passed.is_(False),
+                )
             )
         )
-    )
+    return {
+        fid
+        for (fid,) in db.execute(
+            select(FundamentalValidation.fundamental_id).where(
+                FundamentalValidation.passed.is_(False)
+            )
+        )
+        if fid in wanted
+    }
