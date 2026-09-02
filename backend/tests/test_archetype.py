@@ -33,13 +33,12 @@ class TestStraightforwardGroups:
         result = propose_archetype(name, sector)
         assert result.archetype == expected
 
-    def test_a_transportation_company_that_happens_to_be_named_holdings_still_gets_flagged(self):
-        """The real Transportation-group constituent Expolanka Holdings PLC
-        is exactly the case the conglomerate guard is meant to catch even
-        inside an otherwise-safe GICS group: it operates well beyond
-        logistics, and the name says so before the segment data would."""
+    def test_a_transportation_company_named_holdings_routes_as_diversified(self):
+        """Expolanka Holdings PLC operates well beyond logistics — its
+        name says so before the segment data would — so it routes as a
+        diversified_holding (SOTP / NAV), not as its GICS group."""
         result = propose_archetype("EXPOLANKA HOLDINGS PLC", "Transportation")
-        assert result.archetype is None
+        assert result.archetype == "diversified_holding"
 
     def test_every_mapped_archetype_is_a_real_archetype(self):
         """Guards against a typo in the lookup table producing a value
@@ -68,24 +67,25 @@ class TestHotelKeywordGate:
         assert "hotel-dominated" in result.reason
 
 
-class TestConglomerateGuard:
-    def test_john_keells_is_never_auto_proposed(self):
-        """This is the exact case Appendix P2 warns about — GICS files it
-        under Capital Goods, and no single archetype fits a company with
-        hotels, transport, consumer foods, financial services and
-        property. The whole point of this module is refusing to guess
-        here, not picking the least-wrong label."""
+class TestConglomerateRouting:
+    def test_john_keells_routes_as_a_holding_company(self):
+        """GICS files John Keells under Capital Goods, but no single
+        operating archetype fits a group of hotels, transport, consumer
+        foods, financial services and property. The correction for the
+        Appendix P2 mislabel is `diversified_holding` (SOTP / NAV), which
+        a human can still refine — not a blank."""
         result = propose_archetype("JOHN KEELLS HOLDINGS PLC", "Capital Goods")
-        assert result.archetype is None
+        assert result.archetype == "diversified_holding"
         assert "diversified group" in result.reason
 
-    def test_a_holdings_name_is_flagged_even_in_an_otherwise_safe_group(self):
-        result = propose_archetype("HAYLEYS HOLDINGS PLC", "Materials")
-        assert result.archetype is None
+    def test_a_holdings_name_routes_as_diversified_even_in_an_otherwise_safe_group(self):
+        assert propose_archetype("HAYLEYS HOLDINGS PLC", "Materials").archetype == "diversified_holding"
 
-    def test_group_named_company_is_also_flagged(self):
-        result = propose_archetype("VALLIBEL ONE GROUP PLC", "Diversified Financials")
-        assert result.archetype is None
+    def test_group_named_company_routes_as_diversified(self):
+        assert (
+            propose_archetype("VALLIBEL ONE GROUP PLC", "Diversified Financials").archetype
+            == "diversified_holding"
+        )
 
 
 class TestNameOverrides:
@@ -146,13 +146,14 @@ class TestLoaderIntegration:
         comb = db.get(Security, "COMB.N0000")
         assert comb.archetype == "bank"
         assert comb.archetype_source == SOURCE
-        assert summary["proposed"] == 1  # only COMB — JKH and X both need review
+        # COMB -> bank, JKH -> diversified_holding; only X (no sector) needs review.
+        assert summary["proposed"] == 2
 
-    def test_conglomerates_and_unclassified_lines_land_in_needs_review(self, db):
+    def test_only_lines_with_no_sector_land_in_needs_review(self, db):
         summary = apply_archetype_proposals(db)
         tickers_needing_review = {t for t, _ in summary["needs_review"]}
-        assert tickers_needing_review == {"JKH.N0000", "X.N0000"}
-        assert db.get(Security, "JKH.N0000").archetype is None
+        assert tickers_needing_review == {"X.N0000"}
+        assert db.get(Security, "JKH.N0000").archetype == "diversified_holding"
 
     def test_a_hand_set_archetype_survives_a_rerun(self, db):
         jkh = db.get(Security, "JKH.N0000")
@@ -168,4 +169,4 @@ class TestLoaderIntegration:
         apply_archetype_proposals(db)
         second = apply_archetype_proposals(db)
         assert second["proposed"] == 0
-        assert second["unchanged"] == 1
+        assert second["unchanged"] == 2  # COMB + JKH

@@ -89,7 +89,12 @@ _ARCHETYPE_BY_INDUSTRY_GROUP: dict[str, str] = {
 # So this group gets a keyword gate rather than an unconditional mapping:
 # propose "hotel" only when the company's own name says so too.
 _HOTEL_INDUSTRY_GROUP = "Consumer Services"
-_HOTEL_KEYWORDS = ("HOTEL", "RESORT", "LEISURE")
+_HOTEL_KEYWORDS = (
+    "HOTEL", "RESORT", "LEISURE",
+    # Named CSE hospitality lines whose company name carries the brand,
+    # not the word "hotel" — verified against their actual business.
+    "JETWING", "KINGSBURY", "RAMBODA", "SYMPHONY", "CINNAMON", "SERENDIB",
+)
 
 # A name containing one of these, with no clearer single-business keyword
 # below outranking it, is a company that is very likely a diversified
@@ -105,6 +110,24 @@ _NAME_OVERRIDES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bPLANTATIONS?\b"), "plantation"),
     (re.compile(r"\b(TEA|RUBBER|ESTATES?)\b"), "plantation"),
     (re.compile(r"\bCEMENT\b"), "construction_materials"),
+)
+
+# Last resort, applied ONLY when the exchange has no GICS classification
+# for a line at all (`listBySector` omits it) — a keyword read of the
+# company's own name. Lower-confidence than a GICS-derived mapping, so
+# `archetype_source` still marks it as proposed and a human can override,
+# but it routes the line to a real model family instead of leaving it
+# permanently unvalued. Ordered — first match wins.
+_LAST_RESORT_NAME_ARCHETYPE: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(INSURANCE|JANASHAKTHI)\b"), "insurance"),
+    (re.compile(r"\b(FINANCE|CREDIT|TREASURIES|CAPITAL ALLIANCE)\b"), "non_bank_finance"),
+    (re.compile(r"\b(PACKAGING|CARTONS?|PRINTCARE|PRINTERS?|PUBLISH\w*|CABLE|TEXTILE\w*|LUMINEX|GESTETNER|PARAGON)\b"), "manufacturing"),
+    (re.compile(r"\b(EXTERMINATORS?|PEST\s*CONTROL)\b"), "consumer"),
+    (re.compile(r"\b(HOTELS?|RESORTS?|LEISURE|KINGSBURY|JETWING|FALLS)\b"), "hotel"),
+    (re.compile(r"\b(DEVELOPMENTS?|PROPERT\w+|LANDS?|REALT\w+)\b"), "property"),
+    # Asset-light services / software / consulting — routed as a
+    # cash-flow business (DCF + EV/EBITDA), book value not meaningful.
+    (re.compile(r"\b(SOLUTIONS?|CONSULTANTS?|SERVICES?|MOBILITY|DIGITAL|TECHNOLOG\w+|BUSINESS)\b"), "consumer"),
 )
 
 
@@ -128,13 +151,27 @@ def propose_archetype(name: str, cse_sector: str | None) -> ArchetypeProposal:
 
     is_conglomerate_shaped = any(kw in upper_name for kw in _CONGLOMERATE_KEYWORDS)
     if is_conglomerate_shaped:
+        # Appendix P2's own warning is that GICS mislabels a diversified
+        # group as its largest single segment — the correction for that
+        # IS "diversified_holding", not "leave it blank". The router
+        # sends this archetype to sum-of-the-parts / NAV and suppresses
+        # consolidated margins, which is exactly right for a group whose
+        # real mix a human still needs to weight; `archetype_source`
+        # stays the proposed marker so that review can still refine it.
         return ArchetypeProposal(
-            None,
-            "name suggests a diversified group (Appendix P2 conglomerate warning) "
-            "— needs a human to look at the actual segment mix",
+            "diversified_holding",
+            "name signals a diversified group (Appendix P2 conglomerate warning) — "
+            "routed as a holding company; a human can still refine the segment weighting",
         )
 
     if cse_sector is None:
+        for pattern, archetype in _LAST_RESORT_NAME_ARCHETYPE:
+            if pattern.search(upper_name):
+                return ArchetypeProposal(
+                    archetype,
+                    f"no exchange GICS classification — name matches /{pattern.pattern}/, "
+                    "routed there pending a human check",
+                )
         return ArchetypeProposal(None, "no GICS classification stored for this security")
 
     if cse_sector == _HOTEL_INDUSTRY_GROUP:

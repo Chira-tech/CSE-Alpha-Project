@@ -169,13 +169,15 @@ _PROFILES: dict[str, ArchetypeProfile] = {
         "(closest published analogue: manufacturing/industrials) pending an explicit spec entry.",
     ),
     "other": ArchetypeProfile(
-        primary_models=(),
-        meaningless_metrics=(),
+        primary_models=("FCFF DCF", "EV/EBITDA", "P/E vs own history"),
+        meaningless_metrics=("Asset-based valuation",),
         is_financial_firm=False,
         is_cyclical_or_commodity_linked=False,
         in_published_table=False,
-        note="§15 has no archetype-specific guidance for 'other' by definition — "
-        "no model is proposed rather than guessing one.",
+        note="Not a row in §15's table (printing, packaging, diversified professional "
+        "services). Routed as a cash-flow services business — the closest published "
+        "analogue, so a line is valued rather than left blank — pending an explicit "
+        "spec entry or a human archetype.",
     ),
 }
 
