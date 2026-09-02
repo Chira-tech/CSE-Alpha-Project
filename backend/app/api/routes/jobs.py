@@ -42,9 +42,9 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 _SCHEDULE_LOOKUP = build_scheduler()
 
 # Only jobs with a real cron equivalent in app.jobs.scheduler get a next-
-# scheduled time; enrich_securities, recompute, rebuild_factor_series and
-# capture_all have none (see that module's own job list) and correctly
-# report None rather than a guessed time.
+# scheduled time; recompute, rebuild_adjustment_factors,
+# rebuild_factor_series and capture_all have none (see that module's own
+# job list) and correctly report None rather than a guessed time.
 _JOB_TO_SCHEDULER_ID = {
     # The next automatic price capture is the intraday 20-minute tick
     # while the market is open, not the midnight settled-close snapshot —
@@ -55,6 +55,7 @@ _JOB_TO_SCHEDULER_ID = {
     "capture_macro": "cbsl_indicators",
     "capture_filings": "financial_statement_scan",
     "capture_corporate_actions": "corporate_actions_scan",
+    "enrich_securities": "enrich_securities",
     "refresh_stale_fundamentals": "refresh_stale_fundamentals",
     "universe_integrity_checks": "universe_integrity_checks",
     "recompute_composite_ranking": "recompute_composite_ranking",

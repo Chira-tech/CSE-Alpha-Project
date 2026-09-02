@@ -145,14 +145,15 @@ def test_timestamps_are_serialized_as_utc_even_when_sqlite_stripped_tzinfo(clien
 
 
 def test_status_reports_a_real_next_scheduled_time_for_a_cron_backed_job(client):
-    """capture_prices mirrors app.jobs.scheduler's real eod_snapshot cron
-    (15:00 Colombo, Mon-Fri) — this is not a fabricated estimate."""
+    """capture_prices mirrors app.jobs.scheduler's real
+    intraday_price_snapshot cron (every 20 min across the Colombo trading
+    window, Mon-Fri) — this is not a fabricated estimate."""
     body = client.get("/jobs/status").json()
     entry = next(e for e in body["jobs"] if e["job"] == "capture_prices")
     assert entry["next_scheduled_at"] is not None
 
 
-@pytest.mark.parametrize("job", ["enrich_securities", "recompute", "capture_all"])
+@pytest.mark.parametrize("job", ["recompute", "capture_all"])
 def test_status_reports_no_next_scheduled_time_for_jobs_with_no_cron_equivalent(client, job):
     body = client.get("/jobs/status").json()
     entry = next(e for e in body["jobs"] if e["job"] == job)
@@ -167,6 +168,15 @@ def test_status_reports_a_real_next_scheduled_time_for_refresh_stale_fundamental
     correctly does."""
     body = client.get("/jobs/status").json()
     entry = next(e for e in body["jobs"] if e["job"] == "refresh_stale_fundamentals")
+    assert entry["next_scheduled_at"] is not None
+
+
+def test_status_reports_a_real_next_scheduled_time_for_enrich_securities(client):
+    """enrich_securities gained a nightly cron (01:00 Colombo) in the
+    2 Sep 2026 scheduling-model change — it must now report that time, not
+    fall back to None the way it did while it was manual-only."""
+    body = client.get("/jobs/status").json()
+    entry = next(e for e in body["jobs"] if e["job"] == "enrich_securities")
     assert entry["next_scheduled_at"] is not None
 
 
