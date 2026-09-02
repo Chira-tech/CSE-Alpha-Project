@@ -114,10 +114,16 @@ def test_gradual_multi_year_growth_is_not_flagged():
     assert out == {}
 
 
-def test_a_sign_flip_between_material_years_is_flagged():
-    out = check_series_trend(_hist(5_000, 5_200, -5_100))
+def test_a_sign_flip_on_a_never_negative_line_is_flagged():
+    out = check_series_trend(_hist(5_000, 5_200, -5_100), "revenue")
     assert "FY2022" in out
     assert "sign flip" in out["FY2022"][0].check
+
+
+def test_a_sign_flip_on_a_profit_line_is_not_flagged():
+    # A loss year is ordinary — not a data error to resolve.
+    out = check_series_trend(_hist(5_000, 5_200, -5_100), "net_income")
+    assert out == {}
 
 
 def test_fewer_than_three_periods_is_not_checked():

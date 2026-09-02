@@ -39,7 +39,7 @@ from app.domain.financial_statement_parsing import (
 
 #: Bump when the check battery changes so the nightly job re-sweeps every
 #: row instead of trusting a verdict a weaker version produced.
-VALIDATION_METHOD = "identity+magnitude+trend:v2"
+VALIDATION_METHOD = "identity+magnitude+trend+majority:v3"
 
 #: A confirmed value that is this many times its own immediately-prior
 #: confirmed value (same company, same line, consecutive periods) — or a
@@ -62,6 +62,21 @@ _TREND_MATERIAL_FRACTION = Decimal("0.02")
 #: trend check runs at all — two points can't establish what "ordinary"
 #: looks like for the company.
 _TREND_MIN_PERIODS = 3
+
+#: Lines that a solvent going concern never legitimately reports as
+#: negative — a sign flip on one of these between two material years is a
+#: column / period / basis error, not a business event. Profit lines are
+#: deliberately excluded: a loss year is ordinary and is not something a
+#: human needs to "resolve".
+_NEVER_NEGATIVE_LINES = frozenset({
+    "total_assets", "total_equity", "total_liabilities",
+    "total_equity_and_liabilities", "total_current_assets",
+    "total_non_current_assets", "total_current_liabilities",
+    "total_non_current_liabilities", "revenue", "gross_profit",
+    "inventories", "trade_receivables", "trade_payables",
+    "cash_and_cash_equivalents", "property_plant_and_equipment",
+    "total_interest_bearing_debt",
+})
 
 #: Which statement lines each `check_accounting_identities` relationship
 #: involves. When an identity fails, the extraction is wrong SOMEWHERE in
@@ -158,16 +173,20 @@ def validate_filing(values: Mapping[str, Decimal]) -> dict[str, LineValidation]:
 
 def check_series_trend(
     history: list[tuple[str, Decimal]],
+    line: str = "",
 ) -> dict[str, tuple[FailedCheck, ...]]:
     """Spec §5: test one company-line's confirmed annual series
     2020->present for a year-on-year jump no real business produces.
 
     `history` is `[(period_label, value), ...]` sorted oldest first (the
     caller supplies a short human label like "FY2024" and the confirmed
-    value). Returns `{period_label: (failures,)}` for every period whose
-    step from the period before it is outside `_TREND_JUMP_RATIO` while
-    both values are material, or is a sign flip between two material
-    values. A period with no entry in the result passed the trend check.
+    value). `line` is the canonical statement line — used only to decide
+    whether a sign flip is meaningful (a loss year is fine; negative
+    revenue is not). Returns `{period_label: (failures,)}` for every
+    period whose step from the period before it is outside
+    `_TREND_JUMP_RATIO` while both values are material, or is a sign flip
+    on a line that should never be negative. A period with no entry in
+    the result passed the trend check.
     """
     if len(history) < _TREND_MIN_PERIODS:
         return {}
@@ -180,13 +199,13 @@ def check_series_trend(
     for (prev_label, prev), (label, value) in zip(history, history[1:]):
         if abs(prev) < floor or abs(value) < floor:
             continue
-        if (prev > 0) != (value > 0):
+        if line in _NEVER_NEGATIVE_LINES and (prev > 0) != (value > 0):
             out[label] = (
                 FailedCheck(
                     "year-on-year sign flip",
-                    f"{prev_label} = {prev:,} then {label} = {value:,} — the sign flipped "
-                    "between two material years; check the column, the period, or a "
-                    "consolidated-vs-standalone mixup",
+                    f"{prev_label} = {prev:,} then {label} = {value:,} — {line} flipped "
+                    "sign between two material years, which it should never do; check the "
+                    "column, the period, or a consolidated-vs-standalone mixup",
                 ),
             )
             continue
