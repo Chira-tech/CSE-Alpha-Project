@@ -536,6 +536,12 @@ def _run_validate_fundamentals(db: Session, run: JobRun) -> int:
     from app.domain.fundamental_validation_view import revalidate_all
 
     def on_progress(done: int, total: int, ticker: str) -> bool:
+        # `_set_progress` commits, and `revalidate_all` calls this once
+        # per filing (~11,700) — reporting every time would turn one
+        # bulk write into thousands of tiny transactions. Report every
+        # 250 filings; a cancel is still honoured within a few seconds.
+        if done % 250 and done != total:
+            return not run.cancel_requested
         return _set_progress(
             db, run, 100 * done / max(total, 1),
             f"Validating fundamentals · {done} / {total} filings ({ticker})",
