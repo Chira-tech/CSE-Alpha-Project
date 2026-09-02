@@ -110,6 +110,7 @@ coverage), is separate follow-on work, tracked in ROADMAP.md.
 from __future__ import annotations
 
 import datetime as dt
+from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -155,8 +156,10 @@ from app.domain.triangulation import TriangulationResult, ValuationAnchor, trian
 from app.domain.ttm import annualised_flow, trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
 from app.models.corporate_actions import CorporateAction
-from app.models.enums import CorporateActionType
+from app.models.enums import CorporateActionType, ProvenanceTier
+from app.models.fundamentals import Fundamental
 from app.models.prices import PriceDaily
+from app.models.securities import Security
 
 
 #: How far back `_confirmable_line_items` may reach for a line the anchor
@@ -427,6 +430,227 @@ def _steady_state_growth(risk_free_rate: Decimal | None) -> Decimal:
     if risk_free_rate is not None and g >= risk_free_rate:
         return risk_free_rate - Decimal("0.01")
     return g
+
+
+# --------------------------------------------------------------------------
+# §20.1 cross-sectional peer multiples — the "relative" anchor of last resort
+# --------------------------------------------------------------------------
+#: An archetype's own peer group needs at least this many clean names
+#: (a confirmed positive book value or annual revenue of their own AND a
+#: traded price) before its OWN median multiple is trusted. Below it, the
+#: whole-universe median is used instead, so a thin archetype still gets a
+#: real — if broader — comparison rather than no anchor at all.
+_PEER_GROUP_MIN = 5
+
+#: Per-name multiples outside these bands are dropped before the median is
+#: taken: they are almost always a stale share count, a units mismatch, or
+#: a wrong share class in the CONTRIBUTOR, not a real market multiple —
+#: the same failure class the §Check 4 sanity band catches on the way out.
+_PEER_PB_BAND = (Decimal("0.05"), Decimal("20"))
+_PEER_PS_BAND = (Decimal("0.05"), Decimal("30"))
+
+
+def _median(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+@dataclass(frozen=True)
+class PeerMultiples:
+    """Median trailing price-to-book and price-to-sales for each §16
+    archetype, measured across every universe name that already has a
+    confirmed book value (or annual revenue) of its own and a traded
+    price.
+
+    This backs the §24 "relative" anchor of last resort. A company with
+    no confirmed annual ROE history and no computable DCF still has a
+    balance sheet or an income-statement line of its own; the market's
+    own median multiple for its peer group, applied to that line, is a
+    real valuation — wide, low-confidence, and verdict-capped by the
+    decision engine, but far better than withholding a verdict entirely.
+    (User integrity directive, 1 Sep 2026: a standing "Insufficient
+    data" verdict is a defect, not an acceptable end state.)
+
+    Computed once per universe pass and threaded into every per-ticker
+    `valuation_summary_for` call, exactly like `universe_amihud_ratios`
+    — see that function's own docstring for the measured cost of not
+    sharing a universe-wide pass."""
+
+    pb_by_archetype: dict[str, tuple[Decimal, int]]
+    """archetype -> (median P/B, number of contributing names)."""
+    ps_by_archetype: dict[str, tuple[Decimal, int]]
+    pb_overall: tuple[Decimal, int] | None
+    ps_overall: tuple[Decimal, int] | None
+
+    def pb_for(self, archetype: str | None) -> tuple[Decimal | None, str]:
+        entry = self.pb_by_archetype.get(archetype or "")
+        if entry is not None and entry[1] >= _PEER_GROUP_MIN:
+            return entry[0], f"{archetype} peer median, n={entry[1]}"
+        if self.pb_overall is not None:
+            return self.pb_overall[0], f"whole-universe median, n={self.pb_overall[1]} (thin peer group)"
+        return None, "no peer P/B available"
+
+    def ps_for(self, archetype: str | None) -> tuple[Decimal | None, str]:
+        entry = self.ps_by_archetype.get(archetype or "")
+        if entry is not None and entry[1] >= _PEER_GROUP_MIN:
+            return entry[0], f"{archetype} peer median, n={entry[1]}"
+        if self.ps_overall is not None:
+            return self.ps_overall[0], f"whole-universe median, n={self.ps_overall[1]} (thin peer group)"
+        return None, "no peer P/S available"
+
+
+def peer_multiples_for(db: Session, as_of: dt.date) -> PeerMultiples:
+    """One universe-wide pass: for every ticker with confirmable
+    fundamentals, a traded price and a published share count, compute its
+    own trailing market-cap-to-book and market-cap-to-revenue, then take
+    the median within each §16 archetype (and across the whole universe
+    as the thin-group fallback). Point-in-time and §8 provenance are
+    enforced by `_confirmable_line_items` / `_confirmed_annual_history`
+    exactly as everywhere else in this module."""
+    enterable = [t for t in ProvenanceTier if can_enter_valuation(t)]
+    tickers = sorted(
+        t for (t,) in db.execute(
+            select(Fundamental.ticker).where(Fundamental.provenance_tier.in_(enterable)).distinct()
+        ).all()
+    )
+    archetype_by_ticker = dict(db.execute(select(Security.ticker, Security.archetype)).all())
+
+    pb_by_arch: dict[str, list[Decimal]] = defaultdict(list)
+    ps_by_arch: dict[str, list[Decimal]] = defaultdict(list)
+    pb_all: list[Decimal] = []
+    ps_all: list[Decimal] = []
+
+    for ticker in tickers:
+        price = db.scalar(
+            select(PriceDaily.close)
+            .where(
+                PriceDaily.ticker == ticker,
+                PriceDaily.date <= as_of,
+                PriceDaily.close.is_not(None),
+            )
+            .order_by(PriceDaily.date.desc())
+            .limit(1)
+        )
+        if price is None or price <= 0:
+            continue
+        shares = latest_shares_issued_all_classes(db, ticker, as_of)
+        if not shares:
+            continue
+        market_cap = price * Decimal(shares)
+        archetype = archetype_by_ticker.get(ticker)
+
+        _period, items, _excluded = _confirmable_line_items(db, ticker, as_of)
+        equity_item = items.get("total_equity")
+        if equity_item is not None and equity_item.value > 0:
+            pb = market_cap / equity_item.value
+            if _PEER_PB_BAND[0] <= pb <= _PEER_PB_BAND[1]:
+                pb_all.append(pb)
+                if archetype:
+                    pb_by_arch[archetype].append(pb)
+
+        revenue_history = _confirmed_annual_history(db, ticker, "revenue", as_of)
+        if revenue_history and revenue_history[-1][1] > 0:
+            ps = market_cap / revenue_history[-1][1]
+            if _PEER_PS_BAND[0] <= ps <= _PEER_PS_BAND[1]:
+                ps_all.append(ps)
+                if archetype:
+                    ps_by_arch[archetype].append(ps)
+
+    def _pack(buckets: dict[str, list[Decimal]]) -> dict[str, tuple[Decimal, int]]:
+        packed: dict[str, tuple[Decimal, int]] = {}
+        for key, values in buckets.items():
+            median = _median(values)
+            if median is not None:
+                packed[key] = (median, len(values))
+        return packed
+
+    pb_overall_median = _median(pb_all)
+    ps_overall_median = _median(ps_all)
+    return PeerMultiples(
+        pb_by_archetype=_pack(pb_by_arch),
+        ps_by_archetype=_pack(ps_by_arch),
+        pb_overall=(pb_overall_median, len(pb_all)) if pb_overall_median is not None else None,
+        ps_overall=(ps_overall_median, len(ps_all)) if ps_overall_median is not None else None,
+    )
+
+
+@dataclass(frozen=True)
+class SectorRelativeAnchorView:
+    """§20.1 last-resort "relative" anchor for one company — a peer
+    median multiple applied to this company's OWN reported book value
+    and/or revenue. `fair_value_per_share` is `None` (with a named
+    reason in `warnings`) when the company has neither a confirmed
+    positive `total_equity` nor a confirmed annual `revenue` of its own,
+    or when no peer multiple could be formed at all."""
+
+    fair_value_per_share: Decimal | None
+    basis: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def sector_relative_anchor_for(
+    db: Session,
+    ticker: str,
+    archetype: str | None,
+    as_of: dt.date,
+    *,
+    peer_multiples: PeerMultiples,
+) -> SectorRelativeAnchorView:
+    shares = latest_shares_issued_all_classes(db, ticker, as_of)
+    if not shares:
+        return SectorRelativeAnchorView(
+            None, (), ("shares_issued unavailable — no peer-multiple anchor could be built.",)
+        )
+
+    _period, items, _excluded = _confirmable_line_items(db, ticker, as_of)
+    candidates: list[Decimal] = []
+    basis: list[str] = []
+
+    equity_item = items.get("total_equity")
+    if equity_item is not None and equity_item.value > 0:
+        pb, pb_basis = peer_multiples.pb_for(archetype)
+        if pb is not None:
+            bvps = equity_item.value / Decimal(shares)
+            candidates.append(pb * bvps)
+            basis.append(f"peer P/B {pb:.2f}x ({pb_basis}) x own book value {bvps:.2f}/sh")
+
+    revenue_history = _confirmed_annual_history(db, ticker, "revenue", as_of)
+    if revenue_history and revenue_history[-1][1] > 0:
+        ps, ps_basis = peer_multiples.ps_for(archetype)
+        if ps is not None:
+            sps = revenue_history[-1][1] / Decimal(shares)
+            candidates.append(ps * sps)
+            basis.append(f"peer P/S {ps:.2f}x ({ps_basis}) x own revenue {sps:.2f}/sh")
+
+    if not candidates:
+        return SectorRelativeAnchorView(
+            None,
+            (),
+            (
+                "No peer-multiple anchor — this company has neither a confirmed positive "
+                "total_equity nor a confirmed annual revenue of its own to apply a peer "
+                "multiple to, and no universe-wide median was available.",
+            ),
+        )
+
+    fair_value = sum(candidates, Decimal(0)) / len(candidates)
+    return SectorRelativeAnchorView(
+        fair_value,
+        tuple(basis),
+        (
+            "Peer-multiple fallback anchor (§20.1): the market's median multiple for this "
+            "archetype applied to this company's own reported line(s). Low confidence by "
+            "construction — used only because no earnings-based or DCF anchor was "
+            "computable from confirmed data. The decision engine caps the verdict "
+            "accordingly.",
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -1867,6 +2091,14 @@ class CompanyValuationSummary:
     stops the blended fair value going negative when the Gordon-family
     earnings anchors are suppressed for a low-ROE name."""
 
+    sector_relative: SectorRelativeAnchorView
+    """§20.1's peer-multiple anchor of last resort. `fair_value_per_share`
+    is populated (and the anchor entered the blend as a low-confidence
+    "relative" leg) ONLY when neither a FCFF DCF nor a Justified P/B
+    anchor could be computed from confirmed data; otherwise it carries a
+    `None` fair value and a `warnings` entry saying why it was neither
+    needed nor built."""
+
     decision: DecisionResult
     """The final buy-point / sell-point call — verdict, confidence, and
     the three price levels, each with its gap to the current price. This
@@ -1883,6 +2115,7 @@ def valuation_summary_for(
     *,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
     universe_liquidity_percentiles: dict[str, Decimal] | None = None,
+    universe_peer_multiples: PeerMultiples | None = None,
     regime_view: RegimeView | None = None,
 ) -> CompanyValuationSummary:
     """The full, real, end-to-end Phase 3 pipeline for one company: route
@@ -1939,6 +2172,17 @@ def valuation_summary_for(
         universe_liquidity_percentiles
         if universe_liquidity_percentiles is not None
         else percentile_rank(universe_ratios)
+    )
+    # §20.1 peer multiples — same share-once-per-universe-pass discipline
+    # as `universe_ratios` above (a batch caller computes it once and
+    # threads it in; a single-company call pays for one universe pass
+    # here). Only actually consulted when the earnings/DCF anchors below
+    # come up empty, but computed unconditionally so the cost is uniform
+    # and the batch callers can always supply it.
+    peer_multiples = (
+        universe_peer_multiples
+        if universe_peer_multiples is not None
+        else peer_multiples_for(db, stamp)
     )
     routing = route_valuation(archetype)
 
@@ -2035,6 +2279,46 @@ def valuation_summary_for(
                 "Conservative book (NAV floor)", "asset_sotp", conservative_book_view.value_per_share
             )
         )
+
+    # §20.1's relative anchor of last resort. Added only when the
+    # earnings/DCF path produced NOTHING — no FCFF DCF (intrinsic) and no
+    # Justified P/B (the one kept Gordon-family "relative" anchor). In
+    # that state the blend was previously either empty ("Insufficient
+    # data") or a lone book-NAV figure with no price-anchored companion
+    # to keep it plausible. A peer median multiple applied to this
+    # company's OWN reported book value / revenue is a real, if wide,
+    # valuation and — crucially — is anchored to what the market actually
+    # pays for comparable names, so it both unblocks a verdict and gives
+    # the NAV leg a second opinion. It is always low confidence (a single
+    # extra anchor, single-period basis), so the decision engine caps the
+    # verdict at Accumulate / Trim. Directive of 1 Sep 2026: a standing
+    # "Insufficient data" verdict is a defect to drive to zero.
+    # NOT for a distressed / loss-making name: if the mid-cycle ROE is
+    # negative the conservative book anchor was already suppressed just
+    # above for the same reason (§27) — a company currently destroying
+    # equity has no going-concern fair value, and a peer multiple on its
+    # book or revenue would read a loss-maker as investable exactly the
+    # way the book anchor would. That "Insufficient data" verdict is a
+    # real §27 distress signal, not a coverage gap to paper over.
+    have_intrinsic_anchor = any(a.category == "intrinsic" for a in anchors)
+    have_relative_anchor = any(a.category == "relative" for a in anchors)
+    sector_relative_view = SectorRelativeAnchorView(None, (), ())
+    if (
+        not have_intrinsic_anchor
+        and not have_relative_anchor
+        and not book_anchor_suppressed_for_losses
+    ):
+        sector_relative_view = sector_relative_anchor_for(
+            db, ticker, routing.archetype, stamp, peer_multiples=peer_multiples
+        )
+        if sector_relative_view.fair_value_per_share is not None:
+            anchors.append(
+                ValuationAnchor(
+                    "Peer multiple (sector median)",
+                    "relative",
+                    sector_relative_view.fair_value_per_share,
+                )
+            )
 
     triangulation = triangulate(routing, tuple(anchors))
 
@@ -2144,6 +2428,13 @@ def valuation_summary_for(
         "Gordon-family anchor. SOTP is the one §18-26 model still blocked on a real missing "
         "data source rather than a wiring gap (see this module's own docstring)."
     )
+    if sector_relative_view.fair_value_per_share is not None:
+        note += (
+            " No FCFF DCF or Justified P/B anchor was computable from confirmed data, so "
+            "§20.1's peer-multiple fallback anchor was used instead — "
+            f"{'; '.join(sector_relative_view.basis)}. It is low confidence by construction "
+            "and the verdict is capped accordingly."
+        )
     if sanity_result is not None and sanity_result.blocked:
         note += (
             " TASK 0.1's plausibility gate withheld the fair value and price ladder "
@@ -2178,5 +2469,6 @@ def valuation_summary_for(
         residual_income=ri, current_period_fcff=fcff_view, wacc=wacc_view, dcf=dcf_view,
         gordon_growth_ddm=ddm_view, hard_book=hard_book_view, relative_valuation=rel_view,
         regime=regime_view, triangulation=triangulation, margin_of_safety=mos, sanity=sanity_result,
-        price_ladder=ladder, conservative_book=conservative_book_view, decision=decision, note=note,
+        price_ladder=ladder, conservative_book=conservative_book_view,
+        sector_relative=sector_relative_view, decision=decision, note=note,
     )

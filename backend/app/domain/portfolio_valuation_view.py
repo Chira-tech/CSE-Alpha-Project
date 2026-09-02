@@ -41,6 +41,8 @@ from app.domain.macro_engine_view import RegimeView, regime_for
 from app.domain.valuation_view import (
     _confirmed_dividends_as_of,
     _trailing_dividend_per_share,
+    PeerMultiples,
+    peer_multiples_for,
     valuation_summary_for,
 )
 from app.jobs.reconciliation import is_quarantined
@@ -318,6 +320,7 @@ def value_position(
     *,
     universe_liquidity_ratios: dict[str, Decimal] | None = None,
     universe_liquidity_percentiles: dict[str, Decimal] | None = None,
+    universe_peer_multiples: PeerMultiples | None = None,
     regime_view: RegimeView | None = None,
 ) -> ValuedPosition:
     warnings: list[str] = []
@@ -355,6 +358,7 @@ def value_position(
         db, position.ticker, archetype, live_price, as_of,
         universe_liquidity_ratios=universe_liquidity_ratios,
         universe_liquidity_percentiles=universe_liquidity_percentiles,
+        universe_peer_multiples=universe_peer_multiples,
         regime_view=regime_view,
     )
 
@@ -461,11 +465,15 @@ def value_portfolio(
     # then); each position was still re-running the Markov MLE fit for
     # an identical, market-wide, `as_of`-only answer until now.
     regime_view = regime_for(db, stamp)
+    # §20.1 peer multiples — one universe pass, shared into every
+    # position's valuation, same discipline as `universe_ratios` above.
+    peer_multiples = peer_multiples_for(db, stamp)
     valued = [
         value_position(
             db, p, stamp,
             universe_liquidity_ratios=universe_ratios,
             universe_liquidity_percentiles=universe_percentiles,
+            universe_peer_multiples=peer_multiples,
             regime_view=regime_view,
         )
         for p in snapshot.positions

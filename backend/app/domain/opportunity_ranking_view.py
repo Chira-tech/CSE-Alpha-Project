@@ -62,7 +62,7 @@ from app.domain.liquidity import percentile_rank
 from app.domain.liquidity_view import liquidity_snapshot_for, universe_amihud_ratios
 from app.domain.macro_engine_view import regime_for
 from app.domain.provenance import can_enter_valuation
-from app.domain.valuation_view import valuation_summary_for
+from app.domain.valuation_view import peer_multiples_for, valuation_summary_for
 from app.jobs.reconciliation import is_quarantined
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
@@ -275,6 +275,9 @@ def _opportunity_ranking_for_uncached(db: Session, stamp: dt.date) -> Opportunit
     # re-fit made this endpoint take 60+ real seconds and effectively
     # unusable — reproduced live, not assumed, before this fix.
     regime_view = regime_for(db, stamp)
+    # §20.1 peer multiples — one universe pass, shared into every
+    # per-ticker call, same discipline as `universe_ratios` above.
+    peer_multiples = peer_multiples_for(db, stamp)
 
     ranked: list[OpportunityCandidate] = []
     excluded: list[OpportunityCandidate] = []
@@ -311,6 +314,7 @@ def _opportunity_ranking_for_uncached(db: Session, stamp: dt.date) -> Opportunit
             db, ticker, archetype, price, stamp,
             universe_liquidity_ratios=universe_ratios,
             universe_liquidity_percentiles=universe_percentiles,
+            universe_peer_multiples=peer_multiples,
             regime_view=regime_view,
         )
         ladder = summary.price_ladder

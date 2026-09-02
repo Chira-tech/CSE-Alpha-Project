@@ -84,7 +84,7 @@ from app.domain.sector_percentiles import (
 from app.domain.sector_percentiles_view import all_sector_percentiles
 from app.domain.sector_sensitivity_view import sector_sensitivity_matrix_for
 from app.domain.timing_battery_view import timing_battery_for
-from app.domain.valuation_view import valuation_summary_for
+from app.domain.valuation_view import peer_multiples_for, valuation_summary_for
 from app.jobs.reconciliation import is_quarantined
 from app.models.securities import Security
 
@@ -268,6 +268,7 @@ def _composite_ranking_for_uncached(db: Session, stamp: dt.date) -> CompositeRan
     # per ticker).
     universe_ratios = universe_amihud_ratios(db, stamp)
     universe_percentiles = percentile_rank(universe_ratios)
+    peer_multiples = peer_multiples_for(db, stamp)
     regime_view = regime_for(db, stamp)
     regime_label = regime_view.result.label if regime_view.result is not None else None
     sector_sensitivity_view = sector_sensitivity_matrix_for(db, stamp)
@@ -326,6 +327,7 @@ def _composite_ranking_for_uncached(db: Session, stamp: dt.date) -> CompositeRan
             db, ticker, archetype, price, stamp,
             universe_liquidity_ratios=universe_ratios,
             universe_liquidity_percentiles=universe_percentiles,
+            universe_peer_multiples=peer_multiples,
             regime_view=regime_view,
         )
         bfv = summary.triangulation.blended_fair_value_per_share
