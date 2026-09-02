@@ -167,4 +167,4 @@ def test_endpoint_builds_week_over_week_insights_and_score_series_from_two_snaps
     body = client.get("/composite-ranking").json()
 
     assert any("AAA.N0000" in s and "Hold→Buy" in s for s in body["insights"])
-    assert [p["total_score"] for p in body["ranked"][0]["score_series"]] == ["60", "80"]
+    assert [p["total_score"] for p in body["ranked"][0]["score_series"]] == ["60.0", "80.0"]

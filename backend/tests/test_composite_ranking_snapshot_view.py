@@ -82,7 +82,7 @@ def test_serialize_ranking_round_trips_through_json_and_the_response_model():
     row = reloaded["ranked"][0]
     assert row["verdict"] == "Buy"
     assert row["cse_sector"] == "Banks"
-    assert row["total_score"] == "88"
+    assert row["total_score"] == "88.0"  # serialised to a fixed 1 dp
     assert {p["key"] for p in row["pillars"]} == {s.key for s in PILLAR_SPECS}
 
     # The API's own response model must accept this dict unchanged (plus
@@ -103,7 +103,7 @@ def test_write_and_latest_snapshot(db_session):
     newest = latest_snapshot(db_session)
     assert newest.as_of == dt.date(2026, 8, 30)
     assert newest.ranked_count == 1
-    assert json.loads(newest.payload)["ranked"][0]["total_score"] == "60"
+    assert json.loads(newest.payload)["ranked"][0]["total_score"] == "60.0"
     assert len(recent_snapshots(db_session)) == 2
 
 
@@ -208,5 +208,5 @@ def test_score_series_by_ticker_is_oldest_first_and_skips_unranked_runs(db_sessi
     )
     series = score_series_by_ticker(recent_snapshots(db_session))
 
-    assert [p["total_score"] for p in series["AAA.N0000"]] == ["55"]  # the None run contributes no point
-    assert series["BBB.N0000"] == [{"as_of": "2026-08-30", "total_score": "90"}]
+    assert [p["total_score"] for p in series["AAA.N0000"]] == ["55.0"]  # the None run contributes no point
+    assert series["BBB.N0000"] == [{"as_of": "2026-08-30", "total_score": "90.0"}]

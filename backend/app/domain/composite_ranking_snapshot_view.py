@@ -25,7 +25,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections import defaultdict
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -60,16 +60,26 @@ INSIGHT_MAX_VERDICT_NAMES = 10
 # --------------------------------------------------------------------------
 # Canonical serialization: CompositeRankingView -> plain JSON-able dict
 # --------------------------------------------------------------------------
-def _dec(value: Decimal | None) -> str | None:
-    return None if value is None else str(value)
+def _dec(value: Decimal | None, places: str = "0.0001") -> str | None:
+    """Serialise a Decimal, quantised to `places` — the internal maths
+    stays full-precision, but a payload figure carries only as many
+    digits as the quantity is actually known to. `ROUND_HALF_UP` so a
+    displayed number rounds the way a reader expects, not banker's-
+    rounding. A whole-number `places` string keeps it an integer."""
+    if value is None:
+        return None
+    try:
+        return str(value.quantize(Decimal(places), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError):
+        return str(value)
 
 
 def _pillar_dict(p: PillarScore) -> dict:
     return {
         "key": p.key,
         "label": p.label,
-        "weight_pct": _dec(p.weight_pct),
-        "score": _dec(p.score),
+        "weight_pct": _dec(p.weight_pct, "0.001"),
+        "score": _dec(p.score, "0.1"),
         "included": p.included,
         "reason": p.reason,
     }
@@ -83,20 +93,20 @@ def _row_dict(r: RankedComposite) -> dict:
         "cse_sector": r.cse_sector,
         "verdict": r.verdict,
         "decision_confidence": r.decision_confidence,
-        "total_score": _dec(r.total_score),
+        "total_score": _dec(r.total_score, "0.1"),
         "pillars": [_pillar_dict(p) for p in r.pillars],
         "pillars_included": r.pillars_included,
-        "weight_covered_pct": _dec(r.weight_covered_pct),
-        "weight_used_pct": {k: _dec(v) for k, v in r.weight_used_pct.items()},
+        "weight_covered_pct": _dec(r.weight_covered_pct, "0.001"),
+        "weight_used_pct": {k: _dec(v, "0.001") for k, v in r.weight_used_pct.items()},
         "integrity": {
             "evaluable": r.integrity.evaluable,
             "vetoed": r.integrity.vetoed,
             "reason": r.integrity.reason,
         },
-        "blended_fair_value_per_share": _dec(r.blended_fair_value_per_share),
-        "current_price": _dec(r.current_price),
-        "discount_to_fair_value_pct": _dec(r.discount_to_fair_value_pct),
-        "valuation_pillar_percentile": _dec(r.valuation_pillar_percentile),
+        "blended_fair_value_per_share": _dec(r.blended_fair_value_per_share, "0.01"),
+        "current_price": _dec(r.current_price, "0.01"),
+        "discount_to_fair_value_pct": _dec(r.discount_to_fair_value_pct, "0.0001"),
+        "valuation_pillar_percentile": _dec(r.valuation_pillar_percentile, "0.001"),
         "warnings": list(r.warnings),
     }
 
