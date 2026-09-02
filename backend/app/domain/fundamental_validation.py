@@ -39,7 +39,29 @@ from app.domain.financial_statement_parsing import (
 
 #: Bump when the check battery changes so the nightly job re-sweeps every
 #: row instead of trusting a verdict a weaker version produced.
-VALIDATION_METHOD = "identity+magnitude:v1"
+VALIDATION_METHOD = "identity+magnitude+trend:v2"
+
+#: A confirmed value that is this many times its own immediately-prior
+#: confirmed value (same company, same line, consecutive periods) — or a
+#: prior value this many times it — is almost never a real year: it is a
+#: dropped digit (10x), a thousands/millions unit confusion (1000x), the
+#: wrong statement column, or a consolidated-vs-standalone mixup. Spec
+#: §5's own example (10,100M then 101,000M) is a 10x change. Only applied
+#: when BOTH values are material relative to the series (see
+#: `_TREND_MATERIAL_FRACTION`), so a loss-to-profit swing off a near-zero
+#: base is never flagged on ratio alone.
+_TREND_JUMP_RATIO = Decimal(10)
+
+#: Below this fraction of the line's own historical peak, a value is too
+#: small for a year-on-year ratio to mean anything (a genuinely thin
+#: year, a near-break-even result) — the identity and magnitude checks
+#: cover a corrupted small value, not this one.
+_TREND_MATERIAL_FRACTION = Decimal("0.02")
+
+#: A line needs at least this many confirmed annual periods before the
+#: trend check runs at all — two points can't establish what "ordinary"
+#: looks like for the company.
+_TREND_MIN_PERIODS = 3
 
 #: Which statement lines each `check_accounting_identities` relationship
 #: involves. When an identity fails, the extraction is wrong SOMEWHERE in
@@ -132,3 +154,51 @@ def validate_filing(values: Mapping[str, Decimal]) -> dict[str, LineValidation]:
         )
         for line in values
     }
+
+
+def check_series_trend(
+    history: list[tuple[str, Decimal]],
+) -> dict[str, tuple[FailedCheck, ...]]:
+    """Spec §5: test one company-line's confirmed annual series
+    2020->present for a year-on-year jump no real business produces.
+
+    `history` is `[(period_label, value), ...]` sorted oldest first (the
+    caller supplies a short human label like "FY2024" and the confirmed
+    value). Returns `{period_label: (failures,)}` for every period whose
+    step from the period before it is outside `_TREND_JUMP_RATIO` while
+    both values are material, or is a sign flip between two material
+    values. A period with no entry in the result passed the trend check.
+    """
+    if len(history) < _TREND_MIN_PERIODS:
+        return {}
+    peak = max((abs(v) for _, v in history), default=Decimal(0))
+    if peak == 0:
+        return {}
+    floor = peak * _TREND_MATERIAL_FRACTION
+
+    out: dict[str, tuple[FailedCheck, ...]] = {}
+    for (prev_label, prev), (label, value) in zip(history, history[1:]):
+        if abs(prev) < floor or abs(value) < floor:
+            continue
+        if (prev > 0) != (value > 0):
+            out[label] = (
+                FailedCheck(
+                    "year-on-year sign flip",
+                    f"{prev_label} = {prev:,} then {label} = {value:,} — the sign flipped "
+                    "between two material years; check the column, the period, or a "
+                    "consolidated-vs-standalone mixup",
+                ),
+            )
+            continue
+        hi, lo = max(abs(prev), abs(value)), min(abs(prev), abs(value))
+        if lo > 0 and hi / lo >= _TREND_JUMP_RATIO:
+            out[label] = (
+                FailedCheck(
+                    "year-on-year jump outside the ordinary range",
+                    f"{prev_label} = {prev:,} then {label} = {value:,} — a "
+                    f"{(hi / lo):.0f}x change; check units (thousands vs millions), a "
+                    "dropped digit, the wrong column, the wrong period, or consolidated "
+                    "vs standalone",
+                ),
+            )
+    return out

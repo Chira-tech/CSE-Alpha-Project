@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.domain.fundamental_validation import VALIDATION_METHOD, validate_filing
+from app.domain.fundamental_validation import (
+    VALIDATION_METHOD,
+    check_series_trend,
+    validate_filing,
+)
 from app.domain.provenance import can_enter_valuation
 from app.models.fundamental_validation import FundamentalValidation
 from app.models.fundamentals import Fundamental
@@ -46,6 +50,37 @@ def _filing_key(row: Fundamental) -> tuple[str, dt.date, str]:
     return (row.ticker, row.period_end, row.period_type)
 
 
+def _trend_failures_by_row(
+    rows: list[Fundamental],
+) -> dict[tuple[str, str, dt.date], tuple]:
+    """Run `check_series_trend` for every (ticker, line) and return its
+    failures re-keyed by (ticker, line, period_end). Only the confirmed
+    ANNUAL series feeds the check — a quarter-on-quarter jump is ordinary
+    seasonality, not a data error."""
+    from app.domain.fundamental_validation import FailedCheck  # noqa: F401 (type only)
+
+    series: dict[tuple[str, str], dict[dt.date, Fundamental]] = defaultdict(dict)
+    for row in rows:
+        if row.period_type != "annual" or not can_enter_valuation(row.provenance_tier):
+            continue
+        key = (row.ticker, row.statement_line)
+        current = series[key].get(row.period_end)
+        if current is None or row.version > current.version:
+            series[key][row.period_end] = row
+
+    out: dict[tuple[str, str, dt.date], tuple] = {}
+    for (ticker, line), by_period in series.items():
+        ordered = sorted(by_period.items())  # (period_end, Fundamental)
+        history = [(f"FY{p.year}", r.value) for p, r in ordered]
+        failures_by_label = check_series_trend(history)
+        if not failures_by_label:
+            continue
+        for (period_end, _row), (label, _v) in zip(ordered, history):
+            if label in failures_by_label:
+                out[(ticker, line, period_end)] = failures_by_label[label]
+    return out
+
+
 def revalidate_all(
     db: Session, *, tickers: set[str] | None = None, on_progress=None
 ) -> ValidationSweepSummary:
@@ -65,6 +100,12 @@ def revalidate_all(
     by_filing: dict[tuple[str, dt.date, str], list[Fundamental]] = defaultdict(list)
     for row in rows:
         by_filing[_filing_key(row)].append(row)
+
+    # Spec §5 trend check: the confirmed ANNUAL series for each
+    # (ticker, line), highest version per period, oldest first — computed
+    # once here and merged into the per-row verdicts below. Keyed by
+    # (ticker, line, period_end) so a jump fails the specific year.
+    trend_failures = _trend_failures_by_row(rows)
 
     # Load the whole verdict table (it is 1:1 with fundamentals at most,
     # same order of magnitude as `rows`) rather than an `IN (...)` over
@@ -99,8 +140,11 @@ def revalidate_all(
 
         for line, row in best.items():
             verdict = line_verdicts[line]
+            failures = list(verdict.failures)
+            failures.extend(trend_failures.get((row.ticker, line, row.period_end), ()))
+            passed = not failures
             failures_payload = json.dumps(
-                [{"check": f.check, "detail": f.detail} for f in verdict.failures]
+                [{"check": f.check, "detail": f.detail} for f in failures]
             )
             record = existing.get(row.id)
             if record is None:
@@ -108,12 +152,12 @@ def revalidate_all(
                 db.add(record)
                 existing[row.id] = record
             record.checked_at = now
-            record.passed = verdict.passed
+            record.passed = passed
             record.method = VALIDATION_METHOD
             record.failures_json = failures_payload
 
             summary.rows_checked += 1
-            if verdict.passed:
+            if passed:
                 summary.rows_passed += 1
             else:
                 summary.rows_failed += 1

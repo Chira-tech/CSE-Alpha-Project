@@ -87,3 +87,45 @@ def test_a_material_balance_sheet_gap_still_fails():
     }
     result = validate_filing(values)
     assert not result["total_assets"].passed
+
+
+# --- Phase 2: year-over-year trend check (spec §5) ---------------------
+from app.domain.fundamental_validation import check_series_trend  # noqa: E402
+
+
+def _hist(*values):
+    return [(f"FY{2020 + i}", Decimal(str(v))) for i, v in enumerate(values)]
+
+
+def test_a_steady_series_passes():
+    out = check_series_trend(_hist(8_200, 8_700, 9_100, 9_600, 10_100, 10_400))
+    assert out == {}
+
+
+def test_a_ten_x_jump_is_flagged_on_the_jump_year():
+    out = check_series_trend(_hist(9_600, 10_100, 101_000))
+    assert set(out) == {"FY2022"}
+    assert "jump" in out["FY2022"][0].check
+
+
+def test_gradual_multi_year_growth_is_not_flagged():
+    # 10x over five years, but never >10x in one step.
+    out = check_series_trend(_hist(1_000, 1_800, 3_200, 5_600, 10_000))
+    assert out == {}
+
+
+def test_a_sign_flip_between_material_years_is_flagged():
+    out = check_series_trend(_hist(5_000, 5_200, -5_100))
+    assert "FY2022" in out
+    assert "sign flip" in out["FY2022"][0].check
+
+
+def test_fewer_than_three_periods_is_not_checked():
+    assert check_series_trend(_hist(1_000, 50_000)) == {}
+
+
+def test_a_swing_off_a_near_zero_base_is_not_flagged_on_ratio_alone():
+    # Break-even year then a normal year — ratio is huge but the small
+    # value is immaterial vs the series peak.
+    out = check_series_trend(_hist(10_000, 10, 11_000, 12_000))
+    assert out == {}
