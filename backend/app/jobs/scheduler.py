@@ -137,6 +137,23 @@ def _job_intraday_price_snapshot() -> None:
         db.close()
 
 
+def _job_validate_fundamentals() -> None:
+    """The data-integrity gate (framework spec, 3 Sep 2026). Enqueued as a
+    `JobRun` so it shares the one-at-a-time worker slot and run history,
+    like `_job_recompute_composite_ranking`. Runs after the night's
+    filing scan and the corroborated auto-confirm, before the scoreboard
+    recompute — so a value that fails a check is out of the engine the
+    same night it arrived, and in the fundamentals queue instead.
+    """
+    db = SessionLocal()
+    try:
+        enqueue(db, "validate_fundamentals", trigger="scheduled")
+    except JobConflict:
+        logger.info("validate_fundamentals already queued/running — skipping this tick")
+    finally:
+        db.close()
+
+
 def _job_enrich_securities_nightly() -> None:
     """§ nightly: refresh share counts / published market cap / published
     last-traded price for every line whose `FloatData` snapshot has gone
@@ -707,6 +724,15 @@ def build_scheduler() -> BackgroundScheduler:
         _job_auto_confirm_corroborated,
         _colombo_daily_cron(1, 10),
         id="auto_confirm_corroborated_fundamentals",
+        replace_existing=True,
+    )
+    # The data-integrity gate: after the confirm pass above, before the
+    # recompute below — a value that fails a check is out of the engine
+    # and in the fundamentals queue the same night.
+    scheduler.add_job(
+        _job_validate_fundamentals,
+        _colombo_daily_cron(1, 20),
+        id="validate_fundamentals",
         replace_existing=True,
     )
     # Last: the §38 scoreboard snapshot, so it reflects everything the

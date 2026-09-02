@@ -525,6 +525,30 @@ def _run_auto_confirm_corroborated(db: Session, run: JobRun) -> int:
     return confirmed
 
 
+def _run_validate_fundamentals(db: Session, run: JobRun) -> int:
+    """Re-run the data-integrity gate (`app.domain.fundamental_validation`)
+    over every filing and rewrite its `fundamental_validations` rows. A
+    value that fails a check drops out of the valuation engine (via
+    `app.domain.point_in_time.fundamentals_as_of`) and shows in the
+    fundamentals queue instead — the framework spec's binary model
+    (3 Sep 2026). Idempotent; returns the number of rows that failed.
+    """
+    from app.domain.fundamental_validation_view import revalidate_all
+
+    def on_progress(done: int, total: int, ticker: str) -> bool:
+        return _set_progress(
+            db, run, 100 * done / max(total, 1),
+            f"Validating fundamentals · {done} / {total} filings ({ticker})",
+        )
+
+    summary = revalidate_all(db, on_progress=on_progress)
+    logger.info(
+        "validate_fundamentals: %d filings, %d rows checked, %d failed",
+        summary.filings, summary.rows_checked, summary.rows_failed,
+    )
+    return summary.rows_failed
+
+
 _RUNNERS = {
     "capture_prices": _run_capture_prices,
     "capture_market": _run_capture_market,
@@ -536,6 +560,7 @@ _RUNNERS = {
     "rebuild_adjustment_factors": _run_rebuild_adjustment_factors,
     "rebuild_factor_series": _run_rebuild_factor_series,
     "refresh_stale_fundamentals": _run_refresh_stale_fundamentals,
+    "validate_fundamentals": _run_validate_fundamentals,
     "universe_integrity_checks": _run_universe_integrity_checks,
     "recompute_composite_ranking": _run_recompute_composite_ranking,
     "auto_confirm_corroborated_fundamentals": _run_auto_confirm_corroborated,

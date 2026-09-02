@@ -15,13 +15,26 @@ from app.models.fundamentals import Fundamental
 
 
 def fundamentals_as_of(
-    db: Session, ticker: str, as_of: dt.date, statement_line: str | None = None
+    db: Session,
+    ticker: str,
+    as_of: dt.date,
+    statement_line: str | None = None,
+    *,
+    exclude_validation_failed: bool = True,
 ) -> list[Fundamental]:
     """Return the latest known *version* of each (period_end, statement_line)
     as it would have been visible to the market on `as_of` — i.e. only rows
     whose first_available_date <= as_of, and for rows with multiple
     versions (restatements), only the highest version number available by
     that date.
+
+    `exclude_validation_failed` (default on): a row whose last run through
+    the data-integrity gate FAILED (`fundamental_validations.passed` is
+    false) is dropped here, so the valuation engine never silently
+    computes on a value that failed a check — it goes to the fundamentals
+    queue instead (the framework spec, 3 Sep 2026). A row not yet swept is
+    kept. Display callers that need to SHOW a failed value pass
+    `exclude_validation_failed=False`.
     """
     stmt = select(Fundamental).where(
         Fundamental.ticker == ticker,
@@ -31,6 +44,15 @@ def fundamentals_as_of(
         stmt = stmt.where(Fundamental.statement_line == statement_line)
 
     rows = list(db.scalars(stmt))
+
+    if exclude_validation_failed and rows:
+        # Imported here, not at module top, so this §6 chokepoint keeps
+        # depending only on the model layer for everything else.
+        from app.domain.fundamental_validation_view import failed_fundamental_ids
+
+        failed = failed_fundamental_ids(db, [r.id for r in rows])
+        if failed:
+            rows = [r for r in rows if r.id not in failed]
 
     # Keep only the highest version, per (period_end, statement_line), among
     # rows that were actually available by `as_of` — a restatement filed

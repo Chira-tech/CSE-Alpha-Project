@@ -74,6 +74,13 @@ JOBS: dict[str, JobDefinition] = {
     "refresh_stale_fundamentals": JobDefinition(
         "refresh_stale_fundamentals", "Repair stale fundamentals (re-check math)", 1800
     ),
+    # The data-integrity gate (framework spec, 3 Sep 2026). Pure DB + CPU
+    # over already-stored values — no network — so the estimate is real
+    # per-filing check time. A value that fails drops out of the
+    # valuation engine and shows in the fundamentals queue.
+    "validate_fundamentals": JobDefinition(
+        "validate_fundamentals", "Validate fundamentals (data-integrity gate)", 120
+    ),
     # docs/CSE_Universe_Integrity_Rollout.md Phase 2 — the universe-wide
     # detectors with no nightly job yet (rights-price coherence, nil-paid
     # fingerprint, price discontinuity, rights-line reaping). Pure DB +

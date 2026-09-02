@@ -34,6 +34,7 @@ NIGHTLY_JOBS = {
     "cbsl_indicators": (0, 50),
     "enrich_securities": (1, 0),
     "auto_confirm_corroborated_fundamentals": (1, 10),
+    "validate_fundamentals": (1, 20),
     "recompute_composite_ranking": (1, 30),
 }
 
