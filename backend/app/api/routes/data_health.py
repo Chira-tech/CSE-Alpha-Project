@@ -29,6 +29,7 @@ from app.models.registry import IssuerRegistry
 from app.models.securities import Security
 from app.domain import universe_integrity as ui
 from app.domain.data_health_experiments import EXPERIMENTS as _DH_EXPERIMENTS
+from app.domain.fundamental_validation_grid import validation_grid as _validation_grid
 from app.domain.security_status_view import universe_status_summary
 
 #: `docs/CSE_Data_Health_Diagnosis_And_Protocol.md` §5 — a "trading day"
@@ -1126,4 +1127,70 @@ def data_health(db: Session = Depends(get_db)) -> DataHealth:
             )
             for e in _DH_EXPERIMENTS
         ],
+    )
+
+
+# --- Spec §17: the company-wide data-integrity grid ----------------------
+class ValidationYearCell(BaseModel):
+    year: int
+    annual_rows: int
+    failed_rows: int
+    status: str  # "ok" | "failed" | "none"
+
+
+class ValidationSecurityRow(BaseModel):
+    ticker: str
+    name: str
+    years: list[ValidationYearCell]
+    failed_total: int
+
+
+class ValidationGridOut(BaseModel):
+    years: list[int]
+    securities: list[ValidationSecurityRow]
+    total_securities: int
+    securities_with_fundamentals: int
+    securities_fully_validated: int
+    securities_with_failures: int
+    total_rows_checked: int
+    total_rows_failed: int
+    pct_rows_validated: Decimal | None
+    unswept_rows: int
+    last_swept_at: dt.datetime | None
+
+
+@router.get("/validation", response_model=ValidationGridOut)
+def data_health_validation(db: Session = Depends(get_db)) -> ValidationGridOut:
+    """Per-security, per-financial-year pass/fail from the data-integrity
+    gate (`app.domain.fundamental_validation_grid`), plus the universe
+    counters — spec §17's company-wide data-quality dashboard."""
+    grid = _validation_grid(db)
+    return ValidationGridOut(
+        years=grid.years,
+        securities=[
+            ValidationSecurityRow(
+                ticker=s.ticker,
+                name=s.name,
+                failed_total=s.failed_total,
+                years=[
+                    ValidationYearCell(
+                        year=c.year,
+                        annual_rows=c.annual_rows,
+                        failed_rows=c.failed_rows,
+                        status=c.status,
+                    )
+                    for c in s.years
+                ],
+            )
+            for s in grid.securities
+        ],
+        total_securities=grid.total_securities,
+        securities_with_fundamentals=grid.securities_with_fundamentals,
+        securities_fully_validated=grid.securities_fully_validated,
+        securities_with_failures=grid.securities_with_failures,
+        total_rows_checked=grid.total_rows_checked,
+        total_rows_failed=grid.total_rows_failed,
+        pct_rows_validated=grid.pct_rows_validated,
+        unswept_rows=grid.unswept_rows,
+        last_swept_at=grid.last_swept_at,
     )

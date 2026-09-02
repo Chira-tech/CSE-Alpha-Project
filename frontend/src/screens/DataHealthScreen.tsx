@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { ApiRequestError, downloadBackup, downloadWorkbook, getDataHealth } from "../api";
+import { ApiRequestError, downloadBackup, downloadWorkbook, getDataHealth, getValidationGrid } from "../api";
 import { AsOf, EmptyState, ErrorState, SkeletonCard } from "../components/states";
 import { downloadBlob } from "../csv";
 import { onDataRefreshed } from "../dataRefresh";
 import { formatInteger, UNAVAILABLE } from "../format";
-import type { CheckLedgerRow, CohortStat, DataHealth, LedgerTrendPoint } from "../types";
+import type { CheckLedgerRow, CohortStat, DataHealth, LedgerTrendPoint, ValidationGrid } from "../types";
 
 export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void }) {
   const [data, setData] = useState<DataHealth | null>(null);
+  const [grid, setGrid] = useState<ValidationGrid | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [workbookBusy, setWorkbookBusy] = useState(false);
   const [workbookError, setWorkbookError] = useState<string | null>(null);
@@ -51,6 +52,11 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
       getDataHealth()
         .then(setData)
         .catch((e) => setError(e instanceof ApiRequestError ? e.message : String(e)));
+      // Spec §17 grid — its own fetch so a slow full-universe scan never
+      // holds up the rest of the page.
+      getValidationGrid()
+        .then(setGrid)
+        .catch(() => setGrid(null));
     }
     load();
     // P1.1: a completed "Run Capture" job just wrote real rows this
@@ -282,6 +288,8 @@ export function DataHealthScreen({ onOpenReview }: { onOpenReview: () => void })
           </table>
         </div>
       </section>
+
+      {grid && <ValidationGridSection grid={grid} />}
 
       <section aria-labelledby="survivorship-heading" className="stack-tight">
         <h2 id="survivorship-heading">Survivorship</h2>
@@ -745,5 +753,105 @@ function CohortSplit({ cohorts }: { cohorts: Record<string, CohortStat> }) {
         );
       })}
     </div>
+  );
+}
+
+function ValidationGridSection({ grid }: { grid: ValidationGrid }) {
+  const [showAll, setShowAll] = useState(false);
+  // Worst first: securities with the most failed years, then most failed rows.
+  const ordered = [...grid.securities].sort(
+    (a, b) =>
+      b.years.filter((y) => y.status === "failed").length -
+        a.years.filter((y) => y.status === "failed").length ||
+      b.failed_total - a.failed_total ||
+      a.ticker.localeCompare(b.ticker),
+  );
+  const shown = showAll ? ordered : ordered.slice(0, 40);
+  const cell = (s: "ok" | "failed" | "none") =>
+    s === "ok" ? "var(--pos-strong)" : s === "failed" ? "var(--caution)" : "var(--ink-4)";
+
+  return (
+    <section aria-labelledby="validation-heading" className="stack-tight">
+      <h2 id="validation-heading">Data-integrity validation</h2>
+      <p className="prose">
+        Every fundamental value is checked before the valuation engine may use it — accounting
+        identities, a 2020→now trend test, and independent-source agreement. A value that fails goes
+        to the fundamentals queue for review; it is not used until fixed.
+      </p>
+      <div className="stat-grid">
+        <Stat label="Securities with fundamentals" value={formatInteger(grid.securities_with_fundamentals)} />
+        <Stat label="Fully validated" value={formatInteger(grid.securities_fully_validated)} />
+        <Stat
+          label="With failed values"
+          value={formatInteger(grid.securities_with_failures)}
+          caution={grid.securities_with_failures > 0}
+        />
+        <Stat
+          label="Rows validated"
+          value={grid.pct_rows_validated ? `${grid.pct_rows_validated}%` : UNAVAILABLE}
+        />
+        <Stat label="Values checked" value={formatInteger(grid.total_rows_checked)} />
+        <Stat
+          label="Values in the queue"
+          value={formatInteger(grid.total_rows_failed)}
+          caution={grid.total_rows_failed > 0}
+        />
+      </div>
+      <div className="table-wrap table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Security</th>
+              {grid.years.map((y) => (
+                <th key={y} scope="col" className="right">
+                  {y === new Date().getFullYear() ? `${y} YTD` : y}
+                </th>
+              ))}
+              <th scope="col" className="right">Failed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((s) => (
+              <tr key={s.ticker}>
+                <th scope="row" className="mono" style={{ background: "none", textTransform: "none", letterSpacing: 0, fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}>
+                  {s.ticker}
+                  <div className="t-caption muted" style={{ fontWeight: 400 }}>{s.name}</div>
+                </th>
+                {s.years.map((c) => (
+                  <td key={c.year} className="right" title={
+                    c.status === "none" ? "no annual data" : `${c.annual_rows} rows, ${c.failed_rows} failed`
+                  }>
+                    <span
+                      aria-label={c.status}
+                      style={{
+                        display: "inline-block",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 2,
+                        background: cell(c.status),
+                      }}
+                    />
+                  </td>
+                ))}
+                <td className="right mono">{s.failed_total || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {ordered.length > 40 && (
+        <button type="button" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? "Show fewer" : `Show all ${ordered.length}`}
+        </button>
+      )}
+      {grid.unswept_rows > 0 && (
+        <p className="t-caption muted">
+          {formatInteger(grid.unswept_rows)} row(s) not yet swept — run “Validate fundamentals”.
+        </p>
+      )}
+      {grid.last_swept_at && (
+        <p className="t-caption muted">Last swept {new Date(grid.last_swept_at).toLocaleString()}.</p>
+      )}
+    </section>
   );
 }

@@ -27,6 +27,7 @@ import type {
   SecurityListItem,
   Tornado,
   ValuedPortfolio,
+  ValidationGrid,
   RegimeGauge,
 } from "./types";
 
@@ -97,6 +98,10 @@ export function getSecurityPrices(ticker: string, limit: number, offset: number)
 
 export function getDataHealth() {
   return request<DataHealth>("/data-health");
+}
+
+export function getValidationGrid() {
+  return request<ValidationGrid>("/data-health/validation");
 }
 
 export function getValuation(ticker: string) {

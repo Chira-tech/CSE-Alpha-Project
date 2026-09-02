@@ -701,6 +701,36 @@ export interface DataHealth {
   fundamentals_pending_by_ticker: { ticker: string; count: number }[];
 }
 
+/** Spec §17 — the company-wide data-integrity grid. `GET
+ * /data-health/validation`. */
+export interface ValidationYearCell {
+  year: number;
+  annual_rows: number;
+  failed_rows: number;
+  status: "ok" | "failed" | "none";
+}
+
+export interface ValidationSecurityRow {
+  ticker: string;
+  name: string;
+  years: ValidationYearCell[];
+  failed_total: number;
+}
+
+export interface ValidationGrid {
+  years: number[];
+  securities: ValidationSecurityRow[];
+  total_securities: number;
+  securities_with_fundamentals: number;
+  securities_fully_validated: number;
+  securities_with_failures: number;
+  total_rows_checked: number;
+  total_rows_failed: number;
+  pct_rows_validated: string | null;
+  unswept_rows: number;
+  last_swept_at: string | null;
+}
+
 export interface QueueBucket {
   key: string;
   count: number;
