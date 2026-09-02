@@ -17,6 +17,8 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -41,6 +43,46 @@ from app.config import settings
 
 logging.basicConfig(level=settings.log_level)
 
+logger = logging.getLogger("cse_alpha.main")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Optionally run `app.jobs.scheduler` inside the API process.
+
+    Off by default (`settings.run_scheduler_in_process`): a production
+    deployment keeps the API and the always-on `python -m app.worker`
+    separate, for the reasons `app/worker.py`'s own docstring gives (the
+    API must be restartable at will; the scheduler must not be, and
+    `--reload` would double-fire every cron job). Turned on for a
+    single-process box where nothing else runs the schedule — the intended
+    use is one long-lived `uvicorn app.main:app` (NO `--reload`).
+    """
+    scheduler = None
+    if settings.run_scheduler_in_process:
+        from app.db.session import SessionLocal
+        from app.jobs.runner import recover_orphaned_runs
+        from app.jobs.scheduler import build_scheduler
+
+        with SessionLocal() as _db:
+            recovered = recover_orphaned_runs(_db)
+        if recovered:
+            logger.warning("recovered %d job run(s) orphaned by a previous exit", recovered)
+
+        scheduler = build_scheduler()
+        scheduler.start()
+        logger.info(
+            "in-process scheduler started with %d job(s) (Asia/Colombo)",
+            len(scheduler.get_jobs()),
+        )
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=True)
+            logger.info("in-process scheduler stopped")
+
+
 app = FastAPI(
     title="CSE Alpha Engine",
     description=(
@@ -50,6 +92,7 @@ app = FastAPI(
         "Spec §4."
     ),
     version="0.1.0-phase1",
+    lifespan=lifespan,
 )
 
 # Confirm-queue frontend (frontend/) runs on the Vite dev server during

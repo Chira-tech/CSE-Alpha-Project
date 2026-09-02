@@ -95,6 +95,66 @@ def _job_eod_snapshot() -> None:
         db.close()
 
 
+def _job_intraday_price_snapshot() -> None:
+    """Keep today's `prices_daily` row current WHILE the session is
+    running, so the scoreboard and every live valuation price off the
+    day's real movement instead of the last settled close.
+
+    Runs every 20 minutes across the Colombo trading window. `tradeSummary`
+    returns the LIVE session once the market is open (`row.price` is the
+    real last-traded figure; `closingPrice` is a literal 0.0 until the
+    session settles — `upsert_eod_prices` / `_settled_close` already
+    handle that correctly), so each tick upserts today's row with the
+    latest price. Deliberately lean: no `bootstrap_securities` call (a
+    brand-new listing waits for the 00:00 `eod_snapshot`, which does
+    register it) and no adjustment-factor work.
+
+    GUARDED so a tick fired before the 09:30 open, on a holiday, or on an
+    unscheduled closure is a clean no-op: `tradeSummary` then returns the
+    PREVIOUS completed session, whose `infer_session_date` is not today in
+    Colombo, and rewriting an already-settled past session under its own
+    date would only churn `fetched_at`. Only a feed whose own timestamps
+    say "today" is written.
+    """
+    db = SessionLocal()
+    try:
+        today = dt.datetime.now(MARKET_TZ).date()
+        with CseClient() as client:
+            rows = fetch_eod_prices(client)
+        session_date = infer_session_date(rows)
+        if session_date != today:
+            logger.debug(
+                "intraday price snapshot: feed session %s is not today (%s) — market "
+                "not open yet, or a non-trading day; nothing written",
+                session_date, today,
+            )
+            return
+        written = upsert_eod_prices(db, session_date, rows)
+        logger.info("intraday price snapshot: refreshed %d live price(s) for %s", written, session_date)
+    except Exception:
+        logger.exception("intraday price snapshot failed")
+    finally:
+        db.close()
+
+
+def _job_enrich_securities_nightly() -> None:
+    """§ nightly: refresh share counts / published market cap / published
+    last-traded price for every line whose `FloatData` snapshot has gone
+    stale (`app.jobs.runner._run_enrich_securities` is incremental — it
+    skips any line enriched within the last week). Enqueued as a `JobRun`
+    (trigger="scheduled") so it shares the one-at-a-time worker slot and
+    the run history the Data Health screen reads, exactly like
+    `_job_recompute_composite_ranking`.
+    """
+    db = SessionLocal()
+    try:
+        enqueue(db, "enrich_securities", trigger="scheduled")
+    except JobConflict:
+        logger.info("enrich_securities already queued/running — skipping this tick")
+    finally:
+        db.close()
+
+
 def _job_capture_market_internals() -> None:
     """§29's variable set under "Market internals": market-wide earnings
     yield, turnover, foreign net flow. Runs with the EOD snapshot because
@@ -492,28 +552,62 @@ def _colombo_cron(hour: int, minute: int) -> CronTrigger:
     return CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri", timezone=MARKET_TZ)
 
 
+def _colombo_daily_cron(hour: int, minute: int) -> CronTrigger:
+    """Like `_colombo_cron` but every calendar day, not just weekdays —
+    for the 00:00 Colombo nightly batch, which runs seven days a week so a
+    filing, corporate-action announcement or CBSL edition published over a
+    weekend is picked up that night rather than waiting for Monday. Every
+    step it drives is idempotent, so a run on a day with no new session is
+    a cheap no-op rather than a duplicate write.
+    """
+    return CronTrigger(hour=hour, minute=minute, timezone=MARKET_TZ)
+
+
 def build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone=MARKET_TZ)
 
-    # §52: "EOD snapshot + adjustment  15:00 daily" — 30 minutes after the
-    # 14:30 Colombo close.
+    # --- Intraday price capture ----------------------------------------
+    # Every 20 minutes across the Colombo trading window (open 09:30,
+    # close 14:30), weekdays only. Keeps today's `prices_daily` row live
+    # so the scoreboard and every valuation price off the day's real
+    # movement, not the last settled close. The 09:00/09:20 ticks (before
+    # the open) and the 14:40 tick (just after close, during settlement)
+    # are harmless: the job writes only when the feed's own timestamps say
+    # the session is today (see `_job_intraday_price_snapshot`).
+    scheduler.add_job(
+        _job_intraday_price_snapshot,
+        CronTrigger(
+            minute="0,20,40", hour="9-14", day_of_week="mon-fri", timezone=MARKET_TZ
+        ),
+        id="intraday_price_snapshot",
+        max_instances=1,
+        replace_existing=True,
+    )
+
+    # --- 00:00 Colombo nightly batch ---------------------------------------
+    # Everything that is NOT price capture, run seven days a week starting
+    # at local midnight and staggered so a failure in one step is isolated
+    # (each is its own cron entry, not a single meta-job). The definitive
+    # settled close is captured here too — nine-plus hours after the close
+    # it is fully settled, and `_job_eod_snapshot`'s upsert simply
+    # overwrites whatever the last intraday tick left for that date.
     scheduler.add_job(
         _job_eod_snapshot,
-        _colombo_cron(15, 0),
+        _colombo_daily_cron(0, 0),
         id="eod_snapshot",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_capture_market_internals,
-        _colombo_cron(15, 2),
+        _colombo_daily_cron(0, 3),
         id="capture_market_internals",
         replace_existing=True,
     )
-    # After the CSE close, and late enough that CBSL's same-day edition
-    # (published the following morning) has had time to appear.
+    # After the batch's market data, and by 00:50 CBSL's edition for the
+    # previous cover date has reliably appeared.
     scheduler.add_job(
         _job_cbsl_indicators,
-        _colombo_cron(16, 45),
+        _colombo_daily_cron(0, 50),
         id="cbsl_indicators",
         replace_existing=True,
     )
@@ -559,47 +653,59 @@ def build_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         _job_nightly_reconciliation,
-        _colombo_cron(15, 5),
+        _colombo_daily_cron(0, 6),
         id="nightly_reconciliation",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_second_source_check,
-        _colombo_cron(15, 7),
+        _colombo_daily_cron(0, 9),
         id="second_source_check",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_market_cap_reconciliation,
-        _colombo_cron(15, 9),
+        _colombo_daily_cron(0, 12),
         id="market_cap_reconciliation",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_universe_integrity_checks,
-        _colombo_cron(15, 11),
+        _colombo_daily_cron(0, 15),
         id="universe_integrity_checks",
         replace_existing=True,
     )
-    # §5: announcements are "event-driven" in principle; polled daily here
-    # as the closest Phase-1-achievable approximation (see docstring above).
+    # §5: announcements are "event-driven" in principle; polled nightly
+    # here as the closest Phase-1-achievable approximation. This is the
+    # step that picks up a filing published a few hours earlier (the
+    # "Hayleys released H1 2026 today" case) without a human waiting — and
+    # `_run_capture_filings` / `_already_ingested` only fetches the ones
+    # not already stored, so it never re-parses the rest of the feed.
     scheduler.add_job(
         _job_corporate_actions_scan,
-        _colombo_cron(16, 0),
+        _colombo_daily_cron(0, 20),
         id="corporate_actions_scan",
         replace_existing=True,
     )
     scheduler.add_job(
         _job_financial_statement_scan,
-        _colombo_cron(16, 30),
+        _colombo_daily_cron(0, 35),
         id="financial_statement_scan",
+        replace_existing=True,
+    )
+    # Incremental share-count / market-cap refresh (skips any line
+    # enriched within the last week) — enqueued as a JobRun.
+    scheduler.add_job(
+        _job_enrich_securities_nightly,
+        _colombo_daily_cron(1, 0),
+        id="enrich_securities",
         replace_existing=True,
     )
     # After the day's filings + corporate actions have landed, so a
     # newly-arrived corroborated figure clears the same night.
     scheduler.add_job(
         _job_auto_confirm_corroborated,
-        _colombo_cron(16, 40),
+        _colombo_daily_cron(1, 10),
         id="auto_confirm_corroborated_fundamentals",
         replace_existing=True,
     )
@@ -607,7 +713,7 @@ def build_scheduler() -> BackgroundScheduler:
     # jobs above just confirmed. Pure CPU, no API contention.
     scheduler.add_job(
         _job_recompute_composite_ranking,
-        _colombo_cron(16, 50),
+        _colombo_daily_cron(1, 30),
         id="recompute_composite_ranking",
         replace_existing=True,
     )

@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     #: test does not spawn a real ingestion thread.
     execute_manual_jobs_in_process: bool = True
 
+    #: Start `app.jobs.scheduler.build_scheduler()` inside the API process
+    #: (a FastAPI lifespan hook) instead of relying on a separate
+    #: always-on `python -m app.worker`. Off by default so a production
+    #: deployment keeps the worker/API split the worker module's own
+    #: docstring argues for; turn it on (env `RUN_SCHEDULER_IN_PROCESS=1`)
+    #: for a single-process box where nothing else runs the schedule.
+    #: MUST NOT be combined with `uvicorn --reload` — every code reload
+    #: would start a second scheduler and double-fire every cron job.
+    run_scheduler_in_process: bool = False
+
     # --- Part O #1: capital base -------------------------------------------------
     capital_base_lkr: Decimal = Decimal("25000000")
 

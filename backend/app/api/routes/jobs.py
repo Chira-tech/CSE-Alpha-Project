@@ -46,7 +46,11 @@ _SCHEDULE_LOOKUP = build_scheduler()
 # capture_all have none (see that module's own job list) and correctly
 # report None rather than a guessed time.
 _JOB_TO_SCHEDULER_ID = {
-    "capture_prices": "eod_snapshot",
+    # The next automatic price capture is the intraday 20-minute tick
+    # while the market is open, not the midnight settled-close snapshot —
+    # that is the time a human deciding whether to hit "Run Capture"
+    # actually wants to see.
+    "capture_prices": "intraday_price_snapshot",
     "capture_market": "capture_market_internals",
     "capture_macro": "cbsl_indicators",
     "capture_filings": "financial_statement_scan",

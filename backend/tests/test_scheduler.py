@@ -19,19 +19,26 @@ import pytest
 
 from app.jobs.scheduler import MARKET_TZ, build_scheduler
 
-EXPECTED_JOBS = {
-    "eod_snapshot": (15, 0),
-    "nightly_reconciliation": (15, 5),
-    "second_source_check": (15, 7),
-    "market_cap_reconciliation": (15, 9),
-    "universe_integrity_checks": (15, 11),
-    "capture_market_internals": (15, 2),
-    "corporate_actions_scan": (16, 0),
-    "financial_statement_scan": (16, 30),
-    "auto_confirm_corroborated_fundamentals": (16, 40),
-    "cbsl_indicators": (16, 45),
-    "recompute_composite_ranking": (16, 50),
+# The 00:00 Colombo nightly batch — everything that is NOT price capture,
+# staggered so a failure in one step is isolated, run every calendar day
+# (a weekend-published filing / CBSL edition is picked up that night).
+NIGHTLY_JOBS = {
+    "eod_snapshot": (0, 0),
+    "capture_market_internals": (0, 3),
+    "nightly_reconciliation": (0, 6),
+    "second_source_check": (0, 9),
+    "market_cap_reconciliation": (0, 12),
+    "universe_integrity_checks": (0, 15),
+    "corporate_actions_scan": (0, 20),
+    "financial_statement_scan": (0, 35),
+    "cbsl_indicators": (0, 50),
+    "enrich_securities": (1, 0),
+    "auto_confirm_corroborated_fundamentals": (1, 10),
+    "recompute_composite_ranking": (1, 30),
 }
+
+# Kept as the name the rest of the file references.
+EXPECTED_JOBS = NIGHTLY_JOBS
 
 # Deliberately NOT weekday-scheduled: it repairs gaps in a series that
 # stays reconstructable for a year, so it wants a quiet slot rather than
@@ -52,6 +59,11 @@ INTERVAL_JOBS = {
     "manual_job_queue_poll": 5,
 }
 
+# Intraday price capture: every 20 minutes across the Colombo trading
+# window, weekdays only. Its own category — a cron with a minute LIST and
+# an hour RANGE, unlike the single-fire nightly jobs.
+INTRADAY_PRICE_JOB = "intraday_price_snapshot"
+
 
 @pytest.fixture()
 def scheduler():
@@ -67,7 +79,7 @@ def test_market_tz_is_colombo_not_the_host_zone():
 
 def test_all_expected_jobs_are_registered(scheduler):
     assert {job.id for job in scheduler.get_jobs()} == (
-        set(EXPECTED_JOBS) | set(WEEKLY_JOBS) | set(INTERVAL_JOBS)
+        set(NIGHTLY_JOBS) | set(WEEKLY_JOBS) | set(INTERVAL_JOBS) | {INTRADAY_PRICE_JOB}
     )
 
 
@@ -115,14 +127,31 @@ def test_trigger_fires_at_the_intended_colombo_hour(scheduler, job_id, expected)
     assert fields["minute"] == str(minute)
 
 
-@pytest.mark.parametrize("job_id", list(EXPECTED_JOBS))
-def test_jobs_only_run_on_weekdays(scheduler, job_id):
-    """The CSE trades Monday to Friday (§52). A weekend run would fetch
-    the previous session again — harmless now that the session date is
-    derived from the feed, but still a pointless hit on an unofficial
-    endpoint we're meant to treat gently (§5)."""
+@pytest.mark.parametrize("job_id", list(NIGHTLY_JOBS))
+def test_nightly_batch_runs_every_calendar_day(scheduler, job_id):
+    """The 00:00 batch runs seven days a week (user directive, 2 Sep
+    2026: "every calendar day at 00:00"). Every step it drives is
+    idempotent, so a run on a day with no new session is a cheap no-op
+    rather than a duplicate write, and a filing / CBSL edition / corporate
+    action published over a weekend is picked up that night instead of
+    waiting for Monday."""
     fields = {f.name: str(f) for f in scheduler.get_job(job_id).trigger.fields}
+    assert fields["day_of_week"] == "*"
+
+
+def test_intraday_price_job_fires_every_20_min_in_the_trading_window(scheduler):
+    """Open 09:30, close 14:30 Colombo, weekdays. The cron is minute
+    list 0,20,40 over hours 9-14 — the 09:00/09:20 pre-open ticks and the
+    14:40 post-close tick are guarded no-ops in the job itself (it writes
+    only when the feed's own timestamps say the session is today)."""
+    job = scheduler.get_job(INTRADAY_PRICE_JOB)
+    assert job is not None
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["minute"] == "0,20,40"
+    assert fields["hour"] == "9-14"
     assert fields["day_of_week"] == "mon-fri"
+    assert job.trigger.timezone == ZoneInfo("Asia/Colombo")
+    assert job.max_instances == 1
 
 
 @pytest.mark.parametrize(("job_id", "expected"), WEEKLY_JOBS.items())
@@ -139,11 +168,13 @@ def test_weekly_jobs_run_on_their_named_day_in_colombo_time(scheduler, job_id, e
     assert job.trigger.timezone.key == MARKET_TZ.key
 
 
-def test_eod_snapshot_runs_after_the_market_closes(scheduler):
-    """CSE trades ~09:30-14:30 Colombo. Snapshotting before 14:30 would
-    record an intraday price as the close."""
+def test_eod_snapshot_is_the_midnight_batchs_first_step(scheduler):
+    """The definitive settled close is captured at 00:00 Colombo — nine-
+    plus hours after the 14:30 close, so it is fully settled — and
+    overwrites whatever the last intraday tick left for that date. The
+    live in-session price is the `intraday_price_snapshot` job's job."""
     fields = {f.name: str(f) for f in scheduler.get_job("eod_snapshot").trigger.fields}
-    assert int(fields["hour"]) >= 15
+    assert (int(fields["hour"]), int(fields["minute"])) == (0, 0)
 
 
 def test_reconciliation_runs_after_the_snapshot(scheduler):

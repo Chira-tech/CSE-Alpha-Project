@@ -8,11 +8,19 @@ the scheduler, the monitor and the overnight batch, not a firehose of
 redundant polling."
 
 So this process does almost nothing most of the time, and that is correct.
-Its one job that matters today is being alive at 15:00 Colombo time on a
-trading day so the EOD snapshot lands — because with no historical price
-source available on the CSE API (see README_ENDPOINTS.md), forward
-capture is the only way price history accumulates, and a day missed is a
-day that cannot be recovered.
+What matters is that it is alive across the Colombo trading window so the
+`intraday_price_snapshot` job keeps today's prices current every 20
+minutes, and at 00:00 Colombo so the nightly batch (the settled-close
+snapshot, filings, corporate actions, reconciliations, the scoreboard
+recompute) lands — because with no historical price source on the CSE API
+(see README_ENDPOINTS.md), forward capture is the only way price history
+accumulates, and a day missed is a day that cannot be recovered.
+
+Alternative for a single-process deployment: set
+`RUN_SCHEDULER_IN_PROCESS=1` and run only `uvicorn app.main:app` (no
+`--reload`) — the API process then starts this same scheduler in a
+FastAPI lifespan hook. This module stays the production path where the
+API and the schedule are kept separate.
 
 Deliberately separate from the API process. `uvicorn app.main:app` serves
 requests and must be restartable at will; this holds a schedule and must
