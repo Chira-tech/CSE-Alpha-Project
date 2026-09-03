@@ -2310,6 +2310,26 @@ def valuation_summary_for(
                 "Conservative book (NAV floor)", "asset_sotp", conservative_book_view.value_per_share
             )
         )
+    elif (
+        conservative_book_view.value_per_share is None
+        and not book_anchor_suppressed_for_losses
+        and jpb.inputs.book_value_per_share is not None
+        and jpb.inputs.book_value_per_share > 0
+    ):
+        # `conservative_book_anchor_for` returned nothing because
+        # `hard_book_for` doesn't apply the equity = assets - liabilities
+        # derivation `_gather_inputs` does — so a name whose recent filing
+        # carries both balance-sheet totals but not the equity subtotal
+        # had book value available for the ratio anchors yet no asset
+        # anchor at all. Fall back to the same blanket-haircut NAV the
+        # unmatched-revaluation branch uses, off the derived book value.
+        anchors.append(
+            ValuationAnchor(
+                "Conservative book (NAV floor, derived equity)",
+                "asset_sotp",
+                jpb.inputs.book_value_per_share * UNVERIFIED_BOOK_HAIRCUT,
+            )
+        )
 
     # §20.1's relative anchor of last resort. Added only when the
     # earnings/DCF path produced NOTHING — no FCFF DCF (intrinsic) and no
