@@ -257,6 +257,43 @@ def _scale_extracted_line(line: ExtractedLine, scale: Decimal) -> ExtractedLine:
     )
 
 
+#: How many pages either side of a declaration-less statement page may be
+#: consulted for the unit scale. A financial-statements section runs the
+#: primary statements back to back (income statement, balance sheet,
+#: cash flow, changes in equity), so ±3 covers "the declaration is on the
+#: section's first page" without reaching a different section.
+_UNIT_INHERIT_WINDOW = 3
+
+
+def _inherited_unit_scale(
+    pages: list[tuple[int, str, bool, "Decimal | None"]], idx: int
+) -> "Decimal | None":
+    """The unit scale for `pages[idx]` — a primary statement page with no
+    declaration of its own — taken from a nearby statement page.
+
+    Deliberately narrow, to keep the "refuse rather than guess" contract
+    `detect_unit_scale` establishes:
+      - only pages that are THEMSELVES primary statement pages and carry
+        their OWN detected scale are consulted (a narrative or notes page
+        that merely says "Rs." is not);
+      - only within `_UNIT_INHERIT_WINDOW` pages;
+      - the scales found must be UNANIMOUS. If two nearby statement pages
+        disagree (one "Rs.'000", one "Rs."), that is the genuinely
+        ambiguous case the original page-at-a-time skip exists for, and
+        `None` is returned so the page is still skipped.
+    """
+    found: set[Decimal] = set()
+    lo = max(0, idx - _UNIT_INHERIT_WINDOW)
+    hi = min(len(pages), idx + _UNIT_INHERIT_WINDOW + 1)
+    for j in range(lo, hi):
+        if j == idx:
+            continue
+        _pn, _text, is_stmt, own_scale = pages[j]
+        if is_stmt and own_scale is not None:
+            found.add(own_scale)
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def extract_financial_statement_candidates(
     pdf_bytes: bytes,
 ) -> list[tuple[int, ExtractedLine]]:
@@ -275,40 +312,55 @@ def extract_financial_statement_candidates(
     for human-readable page numbers — see the confirm-queue UI, not yet
     built (ROADMAP.md).
     """
-    results: list[tuple[int, ExtractedLine]] = []
+    # Read every page once first, so a statement page that carries no
+    # unit declaration of its own can inherit one from a NEARBY statement
+    # page. Sri Lankan annual reports routinely print "Amounts in
+    # Rs. '000" once at the head of the financial-statements section and
+    # every page after it — the balance sheet, the cash-flow statement,
+    # the statement of changes in equity — relies on that single
+    # declaration. The old page-at-a-time scan skipped all of those,
+    # which is why AAIC / AGST / TYRE's balance sheets never extracted
+    # (3 Sep 2026). See `_inherited_unit_scale` for the deliberately
+    # narrow rules that keep this from guessing.
+    pages: list[tuple[int, str, bool, Decimal | None]] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page_number, page in enumerate(pdf.pages):
-            text = page.extract_text() or ""
             # A real, narrowly-scoped repair for NTB.N0000's real bold-
             # text character-doubling artifact — see app.domain.
             # financial_statement_parsing.repair_character_doubling's own
             # docstring for the full finding. A no-op on every page that
             # doesn't show strong evidence of the bug (i.e. every page of
             # every other real filing checked so far).
-            text = repair_character_doubling(text)
-            if not _is_primary_statement_page(text):
-                continue
-            scale = detect_unit_scale(text)
-            if scale is None:
-                logger.warning(
-                    "page %d looks like a primary statement page but no unit declaration "
-                    "(e.g. \"Rs.'000\" or \"Rs.\") could be found on it — skipping rather "
-                    "than guessing the scale every value on it should be multiplied by",
-                    page_number,
-                )
-                continue
-            # This page's OWN real column count, read from its own header
-            # — see `detect_expected_value_columns`'s own docstring for
-            # the real, live bug this closes (a company whose statement
-            # isn't the assumed 4-column Group/Company comparative used
-            # to silently get the wrong expected count). Falls back to
-            # the same default every page used before this existed.
-            expected_columns = (
-                detect_expected_value_columns(text) or DEFAULT_EXPECTED_VALUE_COLUMNS
+            text = repair_character_doubling(page.extract_text() or "")
+            is_stmt = _is_primary_statement_page(text)
+            pages.append((page_number, text, is_stmt, detect_unit_scale(text) if is_stmt else None))
+
+    results: list[tuple[int, ExtractedLine]] = []
+    for idx, (page_number, text, is_stmt, own_scale) in enumerate(pages):
+        if not is_stmt:
+            continue
+        scale = own_scale if own_scale is not None else _inherited_unit_scale(pages, idx)
+        if scale is None:
+            logger.warning(
+                "page %d looks like a primary statement page but no unit declaration "
+                "(e.g. \"Rs.'000\" or \"Rs.\") could be found on it or on any adjacent "
+                "statement page — skipping rather than guessing the scale every value "
+                "on it should be multiplied by",
+                page_number,
             )
-            for line in extract_candidate_lines(text, expected_columns):
-                if line.statement_line is not None and line.primary_value is not None:
-                    results.append((page_number, _scale_extracted_line(line, scale)))
+            continue
+        # This page's OWN real column count, read from its own header
+        # — see `detect_expected_value_columns`'s own docstring for
+        # the real, live bug this closes (a company whose statement
+        # isn't the assumed 4-column Group/Company comparative used
+        # to silently get the wrong expected count). Falls back to
+        # the same default every page used before this existed.
+        expected_columns = (
+            detect_expected_value_columns(text) or DEFAULT_EXPECTED_VALUE_COLUMNS
+        )
+        for line in extract_candidate_lines(text, expected_columns):
+            if line.statement_line is not None and line.primary_value is not None:
+                results.append((page_number, _scale_extracted_line(line, scale)))
 
     _apply_identity_reconciled_corrections(results)
     return results
