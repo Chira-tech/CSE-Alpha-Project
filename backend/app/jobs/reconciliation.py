@@ -106,8 +106,25 @@ def reconcile_ticker(db: Session, ticker: str) -> DataAlert | None:
     if len(price_rows) < 2:
         return None  # nothing to reconcile yet
 
-    events = _load_confirmed_events(db, ticker)
     dates = [r.date for r in price_rows]
+    # Use the SAME event set the stored-factor builder uses
+    # (`app.jobs.adjustment_factors.rebuild_adjustment_factors_for_ticker`)
+    # — `usable_events` drops an event that predates the price history
+    # (it affects no stored date) and one whose ratio can't be computed
+    # (a dividend with no close on the day before its ex-date). Calling
+    # `build_adjustment_factor_series` on the raw list instead let a
+    # single unpriceable dividend raise a ValueError that aborted the
+    # WHOLE nightly reconciliation for every ticker (found live 3 Sep
+    # 2026, first night the in-process scheduler actually ran this job).
+    from app.jobs.adjustment_factors import usable_events
+
+    events, skipped = usable_events(_load_confirmed_events(db, ticker), dates[0])
+    if skipped:
+        logger.warning(
+            "reconciliation for %s: %d confirmed event(s) not priceable, excluded from "
+            "the recomputation: %s",
+            ticker, len(skipped), "; ".join(skipped),
+        )
     recomputed_factors = build_adjustment_factor_series(dates, events)
 
     max_mismatch = Decimal(0)
@@ -165,5 +182,10 @@ def run_nightly_reconciliation(db: Session, tickers: list[str]) -> dict[str, Dat
     test." Call this once per ticker after the day's snapshot lands."""
     results: dict[str, DataAlert | None] = {}
     for ticker in tickers:
-        results[ticker] = reconcile_ticker(db, ticker)
+        try:
+            results[ticker] = reconcile_ticker(db, ticker)
+        except Exception:  # noqa: BLE001 — one bad ticker must not abort the sweep
+            logger.exception("reconciliation errored for %s — skipped this run", ticker)
+            db.rollback()
+            results[ticker] = None
     return results

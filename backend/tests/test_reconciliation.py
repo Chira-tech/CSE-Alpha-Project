@@ -129,3 +129,38 @@ def test_unconfirmed_corporate_action_is_ignored_by_reconciliation(db_session):
     # against an action nobody has signed off on.
     alert = reconcile_ticker(db_session, ticker)
     assert alert is None
+
+
+def test_a_confirmed_dividend_with_no_close_before_ex_does_not_abort_the_sweep(db_session):
+    """Regression, 3 Sep 2026: a confirmed cash dividend whose ex-date
+    predates our price history (so there is no close on the day before
+    it) made `price_ratio_for_event` raise `ValueError`, which propagated
+    out of `run_nightly_reconciliation`'s loop and killed the reconciliation
+    for EVERY ticker. The recomputation must use the same `usable_events`
+    filter the stored-factor builder uses and simply exclude that event."""
+    from app.jobs.reconciliation import run_nightly_reconciliation
+
+    ticker = "DIV.N0000"
+    _seed_security(db_session, ticker)
+    now = dt.datetime.now(dt.timezone.utc)
+
+    # Price history starts 2024; the dividend's ex-date is 2019.
+    db_session.add_all(
+        [
+            PriceDaily(ticker=ticker, date=dt.date(2024, 1, 2), close=Decimal("80.00"),
+                       adj_factor=Decimal("1.0"), fetched_at=now),
+            PriceDaily(ticker=ticker, date=dt.date(2024, 1, 3), close=Decimal("81.00"),
+                       adj_factor=Decimal("1.0"), fetched_at=now),
+            CorporateAction(
+                ticker=ticker, ex_date=dt.date(2019, 5, 10),
+                type=DbActionType.DIVIDEND_CASH, cash_amount=Decimal("2.50"),
+                confirmed_by="analyst", confirmed_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    # Neither call raises; the pre-history dividend affects no stored date.
+    assert reconcile_ticker(db_session, ticker) is None
+    results = run_nightly_reconciliation(db_session, [ticker])
+    assert results == {ticker: None}
