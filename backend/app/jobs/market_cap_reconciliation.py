@@ -31,7 +31,11 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.domain.market_cap_view import latest_shares_issued, published_market_cap_for
+from app.domain.market_cap_view import (
+    latest_shares_issued,
+    published_market_cap_for,
+    published_price_for,
+)
 from app.models.data_quality import DataAlert
 from app.models.prices import PriceDaily
 
@@ -59,7 +63,14 @@ def check_ticker(db: Session, ticker: str, as_of: dt.date) -> DataAlert | None:
     alert")."""
     published = published_market_cap_for(db, ticker, as_of)
     shares = latest_shares_issued(db, ticker, as_of)
-    price = _latest_close(db, ticker, as_of)
+    # Prefer the last-traded price CSE published in the SAME reqSymbolInfo
+    # payload as `published` — reconciling those two is a genuine
+    # share-count / share-class check. Falling back to the EOD
+    # `prices_daily.close` (a different feed, often an older session)
+    # makes this fire whenever the price has simply moved since the last
+    # capture — a staleness artefact, not a data error (same fix as
+    # `app.domain.sanity.share_count_reconciles`, 2 Sep 2026).
+    price = published_price_for(db, ticker, as_of) or _latest_close(db, ticker, as_of)
 
     existing = db.scalar(
         select(DataAlert)

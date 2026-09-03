@@ -151,7 +151,11 @@ from app.domain.relative_valuation import (
     justified_price_to_sales,
 )
 from app.domain.sanity import SanityCheckResult, SanityContext, run_sanity_checks
-from app.domain.market_cap_view import published_market_cap_for, published_price_for
+from app.domain.market_cap_view import (
+    latest_shares_issued,
+    published_market_cap_for,
+    published_price_for,
+)
 from app.domain.triangulation import TriangulationResult, ValuationAnchor, triangulate
 from app.domain.ttm import annualised_flow, trailing_twelve_months
 from app.domain.valuation_router import RoutingDecision, route_valuation
@@ -2363,6 +2367,16 @@ def valuation_summary_for(
             # specifically requires.
             published_mcap = published_market_cap_for(db, ticker, stamp)
             published_price = published_price_for(db, ticker, stamp)
+            # `share_count_reconciles` compares the exchange's PER-LINE
+            # published market cap against price x shares, so it needs
+            # THIS line's own share count — not `jpb.inputs.shares_issued`,
+            # which is the all-classes total (right for a per-share fair
+            # value on issuer-wide equity, wrong here). Using the total
+            # made every dual-listed `.N`/`.X` line fail the check by its
+            # class-to-total ratio and get withheld (see
+            # `latest_shares_issued_all_classes`'s own docstring, which
+            # says this caller must keep the per-class count).
+            _per_line_shares = latest_shares_issued(db, ticker, stamp)
             _bvps = jpb.inputs.book_value_per_share
             _pb = current_price / _bvps if _bvps not in (None, 0) else None
             _pe = (
@@ -2397,7 +2411,7 @@ def valuation_summary_for(
                 bvps=_bvps,
                 roe=jpb.inputs.roe,
                 mcap=published_mcap,
-                shares=jpb.inputs.shares_issued,
+                shares=_per_line_shares,
                 equity=jpb.inputs.total_equity,
                 total_assets=jpb.inputs.total_assets,
                 pb=_pb,

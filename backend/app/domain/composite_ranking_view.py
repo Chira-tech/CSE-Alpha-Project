@@ -76,6 +76,7 @@ from app.domain.macro_sector_fit_view import macro_sector_fit_for
 from app.domain.national_projects_view import (
     confirmed_base_case_revenue_growth_adjustment_for,
 )
+from app.domain.instrument_type import is_common_equity
 from app.domain.opportunity_ranking_view import _confirmed_tickers, _latest_price
 from app.domain.sector_percentiles import (
     _percentile_rank_ascending,
@@ -259,7 +260,12 @@ def _ratio_pillar(
 
 
 def _composite_ranking_for_uncached(db: Session, stamp: dt.date) -> CompositeRankingView:
-    tickers = _confirmed_tickers(db)
+    # Only common equity is valued (`app.domain.instrument_type`): `.U`
+    # closed-end fund units, `.P` preference lines, `.D` debentures, `.R`
+    # rights and `.W` warrants are not operating businesses and were only
+    # ever landing in the scoreboard as "Insufficient data" rows. Their
+    # exclusion is a property of the instrument, not a data gap.
+    tickers = [t for t in _confirmed_tickers(db) if is_common_equity(t)]
 
     # --- Shared universe-wide passes, each computed ONCE and threaded
     # into every per-ticker call — the exact sharing `app.domain.
