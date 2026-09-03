@@ -794,13 +794,40 @@ def _gather_inputs(
     book_value_per_share = None
     total_equity_item = items.get("total_equity")
     total_assets_item = items.get("total_assets")
+    total_liabilities_item = items.get("total_liabilities")
     shares = latest_shares_issued_all_classes(db, ticker, as_of)
-    if total_equity_item is None:
+
+    # The balance sheet's defining identity — equity = assets - liabilities
+    # — recovered here when a filing carries both totals but not the
+    # equity subtotal itself. Common on bank / finance-company interims.
+    # Only when the two components come from the SAME period (so a
+    # fallback-paired assets line from one year and liabilities from
+    # another can't be silently subtracted), and never overriding a
+    # directly-extracted `total_equity`.
+    derived_total_equity: Decimal | None = None
+    if (
+        total_equity_item is None
+        and total_assets_item is not None
+        and total_liabilities_item is not None
+        and total_assets_item.period_end == total_liabilities_item.period_end
+    ):
+        derived_total_equity = total_assets_item.value - total_liabilities_item.value
+        warnings.append(
+            f"total_equity derived as total_assets - total_liabilities "
+            f"({total_assets_item.value:,} - {total_liabilities_item.value:,} = "
+            f"{derived_total_equity:,}) for {total_assets_item.period_end} — the filing "
+            "carried both totals but not the equity subtotal."
+        )
+
+    total_equity_value = (
+        total_equity_item.value if total_equity_item is not None else derived_total_equity
+    )
+    if total_equity_value is None:
         warnings.append("total_equity not available from confirmed fundamentals.")
     if shares is None:
         warnings.append("shares_issued not available (no FloatData row on or before this date).")
-    if total_equity_item is not None and shares:
-        book_value_per_share = total_equity_item.value / Decimal(shares)
+    if total_equity_value is not None and shares:
+        book_value_per_share = total_equity_value / Decimal(shares)
 
     return LiveValuationInputs(
         period_end=period_end,
@@ -813,7 +840,7 @@ def _gather_inputs(
         growth_rate=growth_rate,
         book_value_per_share=book_value_per_share,
         shares_issued=shares,
-        total_equity=total_equity_item.value if total_equity_item is not None else None,
+        total_equity=total_equity_value,
         total_assets=total_assets_item.value if total_assets_item is not None else None,
         net_income=items["net_income"].value if items.get("net_income") is not None else None,
         excluded_unconfirmed_lines=excluded,

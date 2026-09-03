@@ -1991,6 +1991,15 @@ DERIVED_DIFFERENCES: dict[str, tuple[str, str]] = {
         "operating_profit_before_working_capital_changes",
         "cash_generated_from_operations",
     ),
+    # The balance sheet's defining identity: shareholders' equity is
+    # total assets minus total liabilities. Derived only when a filing
+    # prints the two totals but not the equity line itself (common on
+    # bank / finance-company interims, which lead with assets and
+    # liabilities) — never when `total_equity` was read directly. This is
+    # the single most reliable identity in the whole statement, and it
+    # recovers book value per share for names whose recent filings carry
+    # a balance sheet but stopped naming the equity subtotal.
+    "total_equity": ("total_assets", "total_liabilities"),
 }
 
 
