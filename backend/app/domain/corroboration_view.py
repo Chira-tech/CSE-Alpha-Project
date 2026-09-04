@@ -33,6 +33,19 @@ from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 
 
+def _identity_tolerance(name: str, balance_sheet_size: Decimal) -> Decimal:
+    """The gap an accounting identity may carry and still be considered
+    to foot: the flat Rs 1,000 publication-rounding tolerance, widened to
+    the non-controlling-interest band for the two balance-sheet
+    composition identities where the extracted `total_equity` is
+    legitimately owners'-equity-only (mirrors
+    `fundamental_validation.validate_filing`)."""
+    tol = _IDENTITY_ROUNDING_TOLERANCE
+    if name in _NCI_TOLERANT_IDENTITIES and balance_sheet_size > 0:
+        tol = max(tol, balance_sheet_size * _NCI_RELATIVE_TOLERANCE)
+    return tol
+
+
 def corroborated_ids(db: Session, rows: list[Fundamental]) -> set[int]:
     """One bulk query for every REPORTED row matching ANY of these rows'
     (ticker, period_end, statement_line) keys — not N queries per row,
@@ -141,16 +154,11 @@ def identity_pinned_ids(db: Session, rows: list[Fundamental]) -> set[int]:
         )
 
         diffs = _identity_diffs(values)
-
-        def _tol(name: str) -> Decimal:
-            t = _IDENTITY_ROUNDING_TOLERANCE
-            if name in _NCI_TOLERANT_IDENTITIES and balance_sheet_size > 0:
-                t = max(t, balance_sheet_size * _NCI_RELATIVE_TOLERANCE)
-            return t
+        tol = {name: _identity_tolerance(name, balance_sheet_size) for name in diffs}
 
         # Filing-level integrity gate — one broken footing disqualifies
         # every value on the filing.
-        if any(diff > _tol(name) for name, diff in diffs.items()):
+        if any(diff > tol[name] for name, diff in diffs.items()):
             continue
 
         for name, diff in diffs.items():
@@ -158,7 +166,7 @@ def identity_pinned_ids(db: Session, rows: list[Fundamental]) -> set[int]:
             present = [ln for ln in lines if ln in values]
             if not any(ln in confirmed_lines for ln in present):
                 continue
-            if diff > _tol(name):
+            if diff > tol[name]:
                 continue
             for ln in present:
                 row = best[ln]
