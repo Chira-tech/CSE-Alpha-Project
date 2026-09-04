@@ -54,7 +54,10 @@ from app.domain.composite_ranking_view import (
     clear_cache as clear_composite_ranking_cache,
     composite_ranking_for,
 )
-from app.domain.corroboration_view import all_corroborated_pending_ids
+from app.domain.corroboration_view import (
+    all_corroborated_pending_ids,
+    all_identity_pinned_pending_ids,
+)
 from app.domain.factor_series_view import rebuild_factor_series
 from app.domain.valuation_quarantine_view import record_sanity_result
 from app.domain.valuation_view import valuation_summary_for
@@ -497,31 +500,48 @@ def _run_auto_confirm_corroborated(db: Session, run: JobRun) -> int:
     searchable marker, mirroring the existing `"{actor} (corroborated
     bulk confirm)"` convention — so an audit never mistakes an unattended
     promotion for a genuine per-row human review.
+
+    A second, independent signal runs in the same job: a row whose value
+    is arithmetically pinned by an accounting identity that already
+    balances against a human-confirmed line on the same filing
+    (`all_identity_pinned_pending_ids`). Those are stamped
+    `"auto (identity-pinned)"`.
     """
-    _set_progress(db, run, 10, "Scanning the pending queue for corroborated figures…")
-    ids = all_corroborated_pending_ids(db)
-    if not ids:
-        _set_progress(db, run, 100, "Nothing corroborated in the pending queue.")
+    _set_progress(db, run, 5, "Scanning the pending queue for corroborated figures…")
+    corroborated = list(all_corroborated_pending_ids(db))
+    _set_progress(db, run, 15, "Scanning the pending queue for identity-pinned figures…")
+    pinned = [i for i in all_identity_pinned_pending_ids(db) if i not in set(corroborated)]
+
+    plan: list[tuple[int, str]] = (
+        [(i, "auto (corroborated)") for i in corroborated]
+        + [(i, "auto (identity-pinned)") for i in pinned]
+    )
+    if not plan:
+        _set_progress(db, run, 100, "Nothing corroborated or identity-pinned in the pending queue.")
         return 0
 
     now = dt.datetime.now(dt.timezone.utc)
     confirmed = 0
-    for i, fundamental_id in enumerate(ids, start=1):
+    for i, (fundamental_id, marker) in enumerate(plan, start=1):
         row = db.get(Fundamental, fundamental_id)
         # Re-check under the row we're about to write — a human may have
         # confirmed it between the scan above and here.
         if row is None or row.confirmed_by is not None or row.provenance_tier != ProvenanceTier.AI_ASSISTED:
             continue
         row.provenance_tier = ProvenanceTier.REPORTED
-        row.confirmed_by = "auto (corroborated)"
+        row.confirmed_by = marker
         row.confirmed_at = now
         confirmed += 1
         if i % 100 == 0:
             db.commit()
-            if not _set_progress(db, run, 100 * i / len(ids), f"Auto-confirmed {confirmed} / {len(ids)}…"):
+            if not _set_progress(db, run, 100 * i / len(plan), f"Auto-confirmed {confirmed} / {len(plan)}…"):
                 break
     db.commit()
-    logger.info("auto_confirm_corroborated_fundamentals: promoted %d corroborated figure(s)", confirmed)
+    logger.info(
+        "auto_confirm_corroborated_fundamentals: promoted %d figure(s) "
+        "(%d corroborated, %d identity-pinned)",
+        confirmed, len(corroborated), len(pinned),
+    )
     return confirmed
 
 

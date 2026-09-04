@@ -12,9 +12,23 @@ from here; its behaviour is unchanged.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+from decimal import Decimal
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.fundamental_validation import (
+    _IDENTITY_LINES,
+    _NCI_RELATIVE_TOLERANCE,
+    _NCI_TOLERANT_IDENTITIES,
+)
+from app.domain.financial_statement_parsing import (
+    _IDENTITY_ROUNDING_TOLERANCE,
+    _identity_diffs,
+    _magnitude_implausible_keys,
+)
+from app.domain.provenance import can_enter_valuation
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
 
@@ -64,6 +78,111 @@ def corroborated_ids(db: Session, rows: list[Fundamental]) -> set[int]:
                 corroborated.add(r.id)
                 break
     return corroborated
+
+
+def identity_pinned_ids(db: Session, rows: list[Fundamental]) -> set[int]:
+    """AI-assisted rows whose value is ARITHMETICALLY PINNED by an
+    accounting identity that already balances against at least one
+    confirmed line on the same filing.
+
+    This is a second, independent "safe to confirm without a human"
+    signal alongside `corroborated_ids` (an independently-sourced
+    REPORTED row carrying the same figure). It is strictly stronger than
+    a name-match: a corrupted value cannot make
+    `owners_equity + NCI = total_equity` (or `assets = equity +
+    liabilities`, etc.) foot to the rupee against a figure a human
+    already confirmed. Found necessary 4 Sep 2026: LOLC's re-extracted
+    "equity attributable to owners" and "non-controlling interest" both
+    foot exactly to its confirmed `total_equity` and match
+    stockanalysis.com, yet the multi-signal cross-check would not promote
+    them.
+
+    An AI-assisted row is pinned when, for some identity it participates
+    in: every other line of that identity is present, at least one of
+    them is already confirmed, the identity balances within tolerance
+    (the NCI band for the two balance-sheet composition identities, the
+    flat Rs 1,000 rounding tolerance otherwise), and the row itself
+    carries no magnitude-plausibility flag.
+
+    Filing-level integrity gate: NOTHING on a filing is promoted if ANY
+    accounting identity computable on that filing is broken beyond
+    tolerance. A filing whose `assets = current + non-current` is off by
+    a hundred billion, or whose `assets = equity + liabilities` is off by
+    a dropped leading digit (RHL.X0000's corrupted `total_equity`, found
+    4 Sep 2026), is an unreliable extraction as a whole — a single
+    identity that happens to foot on it is not enough to auto-confirm a
+    value a human has not seen.
+    """
+    if not rows:
+        return set()
+
+    by_filing: dict[tuple, list[Fundamental]] = defaultdict(list)
+    wanted_ids = {r.id for r in rows}
+    tickers = {r.ticker for r in rows}
+    # Load every row (any tier) for the affected filings, once.
+    for r in db.scalars(select(Fundamental).where(Fundamental.ticker.in_(tickers))):
+        by_filing[(r.ticker, r.period_end, r.period_type)].append(r)
+
+    pinned: set[int] = set()
+    for filing_rows in by_filing.values():
+        best: dict[str, Fundamental] = {}
+        for r in filing_rows:
+            cur = best.get(r.statement_line)
+            if cur is None or r.version > cur.version:
+                best[r.statement_line] = r
+        values = {ln: r.value for ln, r in best.items()}
+        confirmed_lines = {
+            ln for ln, r in best.items() if can_enter_valuation(r.provenance_tier)
+        }
+        flagged = _magnitude_implausible_keys(values)
+        balance_sheet_size = max(
+            (abs(values[k]) for k in ("total_assets", "total_equity_and_liabilities") if k in values),
+            default=Decimal(0),
+        )
+
+        diffs = _identity_diffs(values)
+
+        def _tol(name: str) -> Decimal:
+            t = _IDENTITY_ROUNDING_TOLERANCE
+            if name in _NCI_TOLERANT_IDENTITIES and balance_sheet_size > 0:
+                t = max(t, balance_sheet_size * _NCI_RELATIVE_TOLERANCE)
+            return t
+
+        # Filing-level integrity gate — one broken footing disqualifies
+        # every value on the filing.
+        if any(diff > _tol(name) for name, diff in diffs.items()):
+            continue
+
+        for name, diff in diffs.items():
+            lines = _IDENTITY_LINES.get(name, ())
+            present = [ln for ln in lines if ln in values]
+            if not any(ln in confirmed_lines for ln in present):
+                continue
+            if diff > _tol(name):
+                continue
+            for ln in present:
+                row = best[ln]
+                if (
+                    row.id in wanted_ids
+                    and not can_enter_valuation(row.provenance_tier)
+                    and ln not in flagged
+                ):
+                    pinned.add(row.id)
+    return pinned
+
+
+def all_identity_pinned_pending_ids(db: Session) -> list[int]:
+    """Every pending AI-assisted row `identity_pinned_ids` would promote,
+    across the whole queue — mirrors `all_corroborated_pending_ids`."""
+    pending = list(
+        db.scalars(
+            select(Fundamental).where(
+                Fundamental.provenance_tier == ProvenanceTier.AI_ASSISTED,
+                Fundamental.confirmed_by.is_(None),
+            )
+        ).all()
+    )
+    return sorted(identity_pinned_ids(db, pending))
 
 
 def _pending_ai_assisted(db: Session, *, limit: int, offset: int) -> list[Fundamental]:
