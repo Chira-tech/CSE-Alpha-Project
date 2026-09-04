@@ -51,6 +51,23 @@ table th,
   font-variant-numeric: tabular-nums;
 }
 
+/* Standard "sr-only" pattern — content read by assistive tech (a table
+   caption, a redundant heading a sighted user already sees restated as
+   a visible label inside the card below it) without taking any layout
+   space. Was referenced by several components with no definition
+   anywhere in the stylesheet before this — a real, pre-existing gap. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* §4: all motion respects prefers-reduced-motion and drops to zero. */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -931,6 +948,15 @@ pre.code-block {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: var(--s4);
+}
+
+/* Two cards side by side above the fold (Macro's regime + hero-spread
+   pair) — stacks to one column once neither card has room to breathe. */
+.split-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--s4);
+  align-items: start;
 }
 
 .stat-value {

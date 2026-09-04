@@ -135,7 +135,7 @@ export function SpreadHero({ spread }: { spread: Spread }) {
         </p>
       )}
 
-      {spread.history.length > 1 && <Sparkline history={spread.history} />}
+      {spread.history.length > 1 && <SpreadAreaChart history={spread.history} />}
 
       <CoreTierNote spread={spread} />
     </div>
@@ -169,26 +169,43 @@ function CoreTierNote({ spread }: { spread: Spread }) {
   );
 }
 
-function Sparkline({ history }: { history: Spread["history"] }) {
+/**
+ * Macro page redesign spec §4 chart #2 — a diverging AREA chart around a
+ * real zero baseline, not a bare sparkline under the headline number.
+ * Zero is the meaningful threshold here (the point equities stop
+ * out-yielding T-bills), so the fill — not just the line — carries which
+ * side of it the spread sits on: warm (`--pos`) above zero (stocks
+ * paying more), cool (`--neg`) below it (bonds paying more), at low
+ * opacity so 2-3 years of daily crossings stay legible rather than
+ * turning into a solid block of colour. Built with two clip-paths over
+ * one shared area path rather than segmenting the series at every zero
+ * crossing — the data has one shape, not N separate ones.
+ */
+function SpreadAreaChart({ history }: { history: Spread["history"] }) {
   const values = history.map((h) => Number(h.spread) * 100);
   const min = Math.min(...values, 0);
   const max = Math.max(...values, 0);
   const range = max - min || 1;
   const width = 320;
-  const height = 48;
+  const height = 56;
+  const clipId = "spread-area-clip";
 
-  const points = values
-    .map((v, i) => {
-      const x = (i / Math.max(values.length - 1, 1)) * width;
-      const y = height - ((v - min) / range) * height;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+  const coords = values.map((v, i) => ({
+    x: (i / Math.max(values.length - 1, 1)) * width,
+    y: height - ((v - min) / range) * height,
+  }));
+  const points = coords.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
 
   // §17 forbids "charts without a zero baseline where one is meaningful".
   // A spread crossing zero is exactly such a case — zero is the point at
   // which equities stop out-yielding the risk-free alternative.
   const zeroY = height - ((0 - min) / range) * height;
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  const linePath = coords.map((c) => `L${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
+  const areaPath =
+    `M${first.x.toFixed(1)},${zeroY.toFixed(1)} ${linePath} ` +
+    `L${last.x.toFixed(1)},${zeroY.toFixed(1)} Z`;
 
   return (
     <figure style={{ margin: "var(--s4) 0 0" }}>
@@ -197,27 +214,25 @@ function Sparkline({ history }: { history: Spread["history"] }) {
         height={height}
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`Spread over the last ${values.length} observations`}
+        aria-label={`Spread over the last ${values.length} observations, shaded above zero when stocks pay more, below when bonds pay more`}
         style={{ maxWidth: "100%" }}
       >
-        <line
-          x1="0"
-          y1={zeroY}
-          x2={width}
-          y2={zeroY}
-          stroke="var(--border-strong)"
-          strokeDasharray="3 3"
-        />
-        <polyline
-          points={points}
-          fill="none"
-          stroke="var(--brand-500)"
-          strokeWidth="2"
-          strokeLinejoin="round"
-        />
+        <defs>
+          <clipPath id={`${clipId}-above`}>
+            <rect x="0" y="0" width={width} height={zeroY} />
+          </clipPath>
+          <clipPath id={`${clipId}-below`}>
+            <rect x="0" y={zeroY} width={width} height={height - zeroY} />
+          </clipPath>
+        </defs>
+        <path d={areaPath} fill="var(--pos-bg)" clipPath={`url(#${clipId}-above)`} />
+        <path d={areaPath} fill="var(--neg-bg)" clipPath={`url(#${clipId}-below)`} />
+        <line x1="0" y1={zeroY} x2={width} y2={zeroY} stroke="var(--border-strong)" strokeDasharray="3 3" />
+        <polyline points={points} fill="none" stroke="var(--brand-500)" strokeWidth="2" strokeLinejoin="round" />
       </svg>
       <figcaption className="t-caption">
-        Dashed line is zero — the point at which equities stop out-yielding Treasury bills.{" "}
+        Dashed line is zero — the point at which equities stop out-yielding Treasury bills. Warm
+        shading above it means stocks are paying more, cool shading below means bonds are.{" "}
         {values.length} observation{values.length === 1 ? "" : "s"} so far; this series accumulates
         forward, one trading day at a time.
       </figcaption>

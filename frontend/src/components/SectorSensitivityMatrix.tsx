@@ -44,19 +44,28 @@ export function SectorSensitivityMatrix({
     <div className="stack-tight">
       <div className="notice notice-neutral">
         <h3>{cellCount === 0 ? "No cell has enough real history to estimate from yet" : "Read this matrix carefully"}</h3>
-        <p className="prose t-body">
-          Each cell is a real regression of a sector's own daily return series on a real macro shock
-          series — coefficient, p-value and observation count all computed live, never illustrative.
-          A cell needs at least 20 real overlapping trading-day observations to produce an estimate
-          at all; below that it shows "—", not a guessed number. Only "significant" cells (p &lt;
-          0.05) carry a direction — the rest are shown as not significant rather than silently
-          omitted, so a thin real history doesn't masquerade as "no relationship".
+        <p className="prose t-caption" style={{ margin: 0 }}>
+          Colored = significant (p&lt;0.05). Filled dot = tested, not significant. Outline-only dot =
+          not yet enough history to test. A row muted below is excluded — too few real constituents.
         </p>
-        {data.warnings.map((w) => (
-          <p key={w} className="prose t-caption" style={{ marginTop: "var(--s2)" }}>
-            {w}
+        <details style={{ marginTop: "var(--s2)" }}>
+          <summary className="t-caption" style={{ cursor: "pointer" }}>
+            Full explanation
+          </summary>
+          <p className="prose t-body" style={{ marginTop: "var(--s2)" }}>
+            Each cell is a real regression of a sector's own daily return series on a real macro shock
+            series — coefficient, p-value and observation count all computed live, never illustrative.
+            A cell needs at least 20 real overlapping trading-day observations to produce an estimate
+            at all; below that it shows a hollow dot, not a guessed number. Only "significant" cells (p
+            &lt; 0.05) carry a direction — the rest are shown as not significant rather than silently
+            omitted, so a thin real history doesn't masquerade as "no relationship".
           </p>
-        ))}
+          {data.warnings.map((w) => (
+            <p key={w} className="prose t-caption" style={{ marginTop: "var(--s2)" }}>
+              {w}
+            </p>
+          ))}
+        </details>
       </div>
 
       <div className="table-wrap table-scroll">
@@ -158,22 +167,34 @@ function SensitivityRow({
  * never masquerades as a strong relationship via colour alone. */
 function SensitivityCell({ estimate, maxAbsCoeff }: { estimate: SensitivityEstimate | undefined; maxAbsCoeff: number }) {
   if (!estimate) {
+    // Not yet enough real history to test at all — a different fact
+    // from "tested, not significant" below, so it gets a visually
+    // distinct hollow mark rather than the same dash/label.
     return (
-      <div style={{ padding: "var(--s2)" }}>
-        <span className="muted" title="Fewer than 20 real overlapping observations — not estimated">
-          —
-        </span>
+      <div style={{ padding: "var(--s2)", textAlign: "center" }}>
+        <span
+          aria-hidden
+          title="Fewer than 20 real overlapping observations — not yet tested"
+          style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", border: "1px solid var(--ink-4)" }}
+        />
+        <span className="visually-hidden">Not yet tested — too few real observations</span>
       </div>
     );
   }
   const coeff = Number(estimate.coefficient);
   const title = `p = ${Number(estimate.p_value).toFixed(3)}, R² = ${Number(estimate.r_squared).toFixed(3)}, n = ${estimate.observation_count}`;
   if (!estimate.significant) {
+    // Tested, real data, coefficient not distinguishable from zero —
+    // a filled hollow dot (vs. the outline-only "not yet tested" mark
+    // above) so the two never read as the same fact.
     return (
-      <div style={{ padding: "var(--s2)" }}>
-        <span className="muted num" title={title}>
-          n.s.
-        </span>
+      <div style={{ padding: "var(--s2)", textAlign: "center" }}>
+        <span
+          aria-hidden
+          title={title}
+          style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--ink-4)" }}
+        />
+        <span className="visually-hidden">Tested, not significant. {title}</span>
       </div>
     );
   }
