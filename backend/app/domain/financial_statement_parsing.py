@@ -1493,6 +1493,22 @@ def check_accounting_identities(values: dict[str, Decimal]) -> list[IdentityChec
         ok = lhs == rhs
         checks.append(IdentityCheck("assets = equity and liabilities", ok, f"{lhs:,} vs {rhs:,}"))
 
+    # Owners' equity + non-controlling interest = total equity. Catches a
+    # corrupted read of the "attributable to owners" line — found live
+    # (RHL.N0000, 4 Sep 2026: extracted as 785m against a real ~21bn,
+    # while `total_equity` and NCI were both fine).
+    if have("equity_attributable_to_owners", "non_controlling_interest", "total_equity"):
+        lhs = values["equity_attributable_to_owners"] + values["non_controlling_interest"]
+        rhs = values["total_equity"]
+        ok = lhs == rhs
+        checks.append(
+            IdentityCheck(
+                "owners equity + NCI = total equity",
+                ok,
+                f"{lhs:,} vs {rhs:,}" + ("" if ok else f" — differs by {abs(lhs - rhs):,}"),
+            )
+        )
+
     # Current + non-current = total, both sides of the balance sheet.
     # PLUS assets/liabilities "held for sale" (IFRS 5), WHEN a company's
     # own real filing reports them — a real, genuine third bucket, found
@@ -1843,6 +1859,11 @@ def _identity_diffs(values: dict[str, Decimal]) -> dict[str, Decimal]:
     if have("total_assets", "total_equity_and_liabilities"):
         diffs["assets = equity and liabilities"] = abs(
             values["total_assets"] - values["total_equity_and_liabilities"]
+        )
+    if have("equity_attributable_to_owners", "non_controlling_interest", "total_equity"):
+        diffs["owners equity + NCI = total equity"] = abs(
+            (values["equity_attributable_to_owners"] + values["non_controlling_interest"])
+            - values["total_equity"]
         )
     if have("total_assets", "total_current_assets", "total_non_current_assets"):
         held = values.get("assets_held_for_sale", Decimal(0))

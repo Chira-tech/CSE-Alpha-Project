@@ -39,7 +39,7 @@ from app.domain.financial_statement_parsing import (
 
 #: Bump when the check battery changes so the nightly job re-sweeps every
 #: row instead of trusting a verdict a weaker version produced.
-VALIDATION_METHOD = "identity+magnitude+trend+majority:v4"
+VALIDATION_METHOD = "identity+magnitude+trend+majority+owners:v5"
 
 #: The two balance-sheet composition identities where the extracted
 #: `total_equity` line is legitimately the "equity attributable to
@@ -111,6 +111,9 @@ _IDENTITY_LINES: dict[str, tuple[str, ...]] = {
     ),
     "assets = equity and liabilities": (
         "total_assets", "total_equity_and_liabilities",
+    ),
+    "owners equity + NCI = total equity": (
+        "equity_attributable_to_owners", "non_controlling_interest", "total_equity",
     ),
     "assets = current + non-current": (
         "total_assets", "total_current_assets", "total_non_current_assets",
