@@ -142,6 +142,22 @@ class MarkovRegimeRead:
     """`argmax(current_probabilities)` — the single most likely regime
     right now."""
 
+    history: tuple[RegimeLabel, ...]
+    """`argmax` regime label for EVERY observation in the fit, oldest
+    first, same length and order as the `returns` this was fit on — the
+    smoothed marginal probabilities `current_label` reads only the last
+    row of.
+
+    This was sitting unused in `result.smoothed_marginal_probabilities`
+    from the start — the fit computes a probability for every day in the
+    window regardless, `.iloc[-1]` was only ever taking the last one.
+    Extracting the rest costs nothing extra: no new model, no new data
+    source, no persistence. This is ONLY the statistical (Markov) half's
+    own path — the composite rule-based half has no historical series to
+    walk (it reads the LATEST macro_series values only), so a caller
+    shading a chart with this must say "statistical read only," not
+    "the regime," which is the 50/50 blend of both."""
+
 
 def fit_markov_regime_read(
     returns: list[Decimal], *, k_regimes: int = 2
@@ -219,12 +235,20 @@ def fit_markov_regime_read(
     ordered_means = tuple(Decimal(str(round(means[i], 8))) for i in order)
     ordered_vols = tuple(Decimal(str(round(variances[i] ** 0.5, 8))) for i in order)
 
-    last_row = result.smoothed_marginal_probabilities.iloc[-1]
+    probs = result.smoothed_marginal_probabilities
+    last_row = probs.iloc[-1]
     current_probabilities: dict[RegimeLabel, Decimal] = {
         ordered_labels[rank]: Decimal(str(round(float(last_row[stat_index]), 6)))
         for rank, stat_index in enumerate(order)
     }
     current_label = max(current_probabilities, key=lambda label: current_probabilities[label])
+
+    # Every row's own argmax, oldest first — see `MarkovRegimeRead.
+    # history`'s own docstring for why this was free to add.
+    history = tuple(
+        ordered_labels[max(range(k_regimes), key=lambda rank: row[order[rank]])]
+        for row in (probs.iloc[i] for i in range(len(probs)))
+    )
 
     return MarkovRegimeRead(
         k_regimes=k_regimes,
@@ -234,6 +258,7 @@ def fit_markov_regime_read(
         regime_labels=ordered_labels,
         current_probabilities=current_probabilities,
         current_label=current_label,
+        history=history,
     )
 
 

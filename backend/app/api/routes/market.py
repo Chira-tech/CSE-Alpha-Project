@@ -1109,6 +1109,11 @@ class SectorTiltOut(BaseModel):
     constituent_count: int
 
 
+class RegimeHistoryPointOut(BaseModel):
+    date: dt.date
+    label: str
+
+
 class RegimeGaugeOut(BaseModel):
     as_of: dt.date
     label: str | None
@@ -1121,6 +1126,8 @@ class RegimeGaugeOut(BaseModel):
     sector_tilts: list[SectorTiltOut]
     sector_tilt_note: str
     not_built: list[str]
+    history: list[RegimeHistoryPointOut]
+    history_note: str
 
 
 @router.get("/regime", response_model=RegimeGaugeOut)
@@ -1229,6 +1236,19 @@ def regime_gauge(db: Session = Depends(get_db)) -> RegimeGaugeOut:
     except Exception as exc:  # noqa: BLE001
         tilt_note = f"Sector tilts unavailable: {type(exc).__name__}"
 
+    history = [
+        RegimeHistoryPointOut(date=d, label=lbl) for d, lbl in view.regime_history
+    ]
+    if history:
+        history_note = (
+            f"The statistical (Markov-switching) half of the blend only — {len(history)} real "
+            "ASPI trading days. The composite rule-based half has no historical series of its "
+            "own (it reads the LATEST macro_series values, not a path), so this is not the same "
+            "50/50 blend as the current read above it."
+        )
+    else:
+        history_note = "No historical regime path — no statistical Markov-switching read (see above)."
+
     return RegimeGaugeOut(
         as_of=stamp,
         label=label,
@@ -1241,6 +1261,8 @@ def regime_gauge(db: Session = Depends(get_db)) -> RegimeGaugeOut:
         half_life_note=half_life_note,
         sector_tilts=tilts[:12],
         sector_tilt_note=tilt_note,
+        history=history,
+        history_note=history_note,
         not_built=[
             "Recommended gross exposure — §31 names exposure-capping as a regime consequence "
             "but gives no number for it, and this system has no portfolio-construction or "

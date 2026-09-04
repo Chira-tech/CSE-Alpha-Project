@@ -1187,6 +1187,11 @@ export interface SectorTilt {
   constituent_count: number;
 }
 
+export interface RegimeHistoryPoint {
+  date: string;
+  label: string;
+}
+
 export interface RegimeGauge {
   as_of: string;
   label: string | null;
@@ -1199,4 +1204,9 @@ export interface RegimeGauge {
   sector_tilts: SectorTilt[];
   sector_tilt_note: string;
   not_built: string[];
+  /** The Markov-switching half's own per-day regime path — NOT the same
+   * 50/50 blend `label`/`probabilities` are; see `history_note`. Empty
+   * when no statistical read exists. */
+  history: RegimeHistoryPoint[];
+  history_note: string;
 }

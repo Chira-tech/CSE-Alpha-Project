@@ -129,4 +129,14 @@ class TestRegimeFor:
         # actually has real observations behind it.
         if view.statistical is not None:
             assert view.statistical.observation_count >= 60
+            # `regime_history` re-zips the fit's own per-day labels back
+            # onto real calendar dates — same length as the fit, oldest
+            # first, and every date genuinely inside the seeded ASPI
+            # window (never a fabricated or misaligned date).
+            assert len(view.regime_history) == view.statistical.observation_count
+            dates = [d for d, _ in view.regime_history]
+            assert dates == sorted(dates)
+            assert all(base <= d <= obs_date for d in dates)
+        else:
+            assert view.regime_history == ()
             assert view.result.composite is not None

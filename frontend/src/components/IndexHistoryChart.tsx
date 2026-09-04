@@ -1,4 +1,15 @@
-import type { IndexHistory } from "../types";
+import type { IndexHistory, RegimeHistoryPoint } from "../types";
+
+const REGIME_TOKEN: Record<string, string> = {
+  risk_on: "var(--regime-risk-on)",
+  transition: "var(--regime-transition)",
+  risk_off: "var(--regime-risk-off)",
+};
+const REGIME_LABEL_TEXT: Record<string, string> = {
+  risk_on: "Risk-On",
+  transition: "Transition",
+  risk_off: "Risk-Off",
+};
 
 /**
  * A year of ASPI closes.
@@ -19,8 +30,27 @@ import type { IndexHistory } from "../types";
  * into a flat line. The axis is therefore labelled with its actual
  * minimum and maximum so the scale is stated rather than implied, which
  * is what the anti-pattern is protecting against.
+ *
+ * Macro page redesign spec §4 chart #5 — `regimeHistory`, when supplied,
+ * shades a low-opacity background band per classified day behind the
+ * price line, using the same `--regime-*` tokens `RegimeProbabilityBar`
+ * does — the price chart and the regime call above it become one
+ * connected story instead of two unrelated widgets. Joined onto the
+ * price points by real calendar date (a `Map` lookup, never assumed
+ * aligned by position — the two series come from different code paths
+ * over the same underlying data and are not guaranteed to share every
+ * date); an ASPI date the regime fit's own window doesn't cover is
+ * simply left unshaded rather than guessed. This is the Markov-only
+ * statistical path, not the 50/50 blend the current-day label is — see
+ * `RegimeGauge.history_note`, surfaced in the caption below when present.
  */
-export function IndexHistoryChart({ history }: { history: IndexHistory }) {
+export function IndexHistoryChart({
+  history,
+  regimeHistory,
+}: {
+  history: IndexHistory;
+  regimeHistory?: RegimeHistoryPoint[];
+}) {
   const points = history.points;
   if (points.length < 2) return null;
 
@@ -30,6 +60,35 @@ export function IndexHistoryChart({ history }: { history: IndexHistory }) {
   const range = max - min || 1;
   const width = 720;
   const height = 180;
+
+  const regimeByDate = new Map((regimeHistory ?? []).map((r) => [r.date, r.label]));
+  const hasShading = regimeByDate.size > 0;
+
+  // One band per contiguous run of the same label, spanning from this
+  // point's own x through the NEXT point's x (so adjacent bands meet
+  // with no gap) — built once, rendered behind the line and axis.
+  const bands: { x0: number; x1: number; label: string }[] = [];
+  if (hasShading) {
+    let current: { x0: number; label: string } | null = null;
+    points.forEach((p, i) => {
+      const x = (i / Math.max(points.length - 1, 1)) * width;
+      const label = regimeByDate.get(p.obs_date);
+      if (label === undefined) {
+        if (current) {
+          bands.push({ x0: current.x0, x1: x, label: current.label });
+          current = null;
+        }
+        return;
+      }
+      if (!current || current.label !== label) {
+        if (current) bands.push({ x0: current.x0, x1: x, label: current.label });
+        current = { x0: x, label };
+      }
+      if (i === points.length - 1) {
+        bands.push({ x0: current.x0, x1: width, label: current.label });
+      }
+    });
+  }
 
   const path = values
     .map((v, i) => {
@@ -48,11 +107,39 @@ export function IndexHistoryChart({ history }: { history: IndexHistory }) {
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`ASPI closing level from ${first.obs_date} to ${last.obs_date}, ranging between ${min.toFixed(2)} and ${max.toFixed(2)}`}
+        aria-label={
+          `ASPI closing level from ${first.obs_date} to ${last.obs_date}, ranging between ` +
+          `${min.toFixed(2)} and ${max.toFixed(2)}` +
+          (hasShading ? ", shaded by the statistical regime read on each trading day" : "")
+        }
         style={{ width: "100%", height: "auto", display: "block" }}
       >
+        {bands.map((b, i) => (
+          <rect
+            key={i}
+            x={b.x0}
+            y={0}
+            width={Math.max(b.x1 - b.x0, 0)}
+            height={height}
+            fill={REGIME_TOKEN[b.label] ?? "var(--ink-4)"}
+            opacity={0.12}
+          />
+        ))}
         <path d={path} fill="none" stroke="var(--brand-500)" strokeWidth="1.5" strokeLinejoin="round" />
       </svg>
+
+      {hasShading && (
+        <ul
+          style={{ listStyle: "none", margin: "var(--s2) 0 0", padding: 0, display: "flex", gap: "var(--s4)", fontSize: 12 }}
+        >
+          {["risk_on", "transition", "risk_off"].map((label) => (
+            <li key={label} style={{ display: "flex", alignItems: "center", gap: "var(--s2)" }}>
+              <span aria-hidden style={{ width: 10, height: 10, background: REGIME_TOKEN[label], borderRadius: 2 }} />
+              <span style={{ color: "var(--ink-2)" }}>{REGIME_LABEL_TEXT[label]}</span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div
         className="t-caption"
@@ -70,6 +157,10 @@ export function IndexHistoryChart({ history }: { history: IndexHistory }) {
         {changePct.toFixed(1)}% over the period. The vertical axis spans {min.toFixed(2)} to{" "}
         {max.toFixed(2)} and is not zero-based — an index level has no meaningful zero, so the
         range is stated here rather than implied by the shape.
+        {hasShading &&
+          " Background shading is the statistical (Markov-switching) regime read for each day — " +
+            "not the full 50/50 blend the current-day call above uses, which also weighs the " +
+            "macro composite; that half has no historical path of its own."}
       </figcaption>
 
       {history.recovered > 0 && (

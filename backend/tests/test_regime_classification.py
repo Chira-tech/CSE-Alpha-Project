@@ -182,6 +182,29 @@ class TestFitMarkovRegimeRead:
         assert result.current_label == "risk_off"
         assert result.current_probabilities["risk_off"] > Decimal("0.8")
 
+    def test_history_is_the_whole_fit_not_just_the_last_row(self):
+        """Found live 4 Sep 2026: `result.smoothed_marginal_probabilities`
+        carries a regime read for EVERY observation in the fit, but only
+        the last row was ever extracted — `history` was sitting there
+        unused. Same synthetic bull/bear series as the test above: the
+        early bull days should mostly read risk_on, the late bear days
+        mostly risk_off, and the very last entry must agree with
+        `current_label` (both come from the same last row)."""
+        rng = random.Random(42)
+        bull = [Decimal(str(rng.gauss(0.0015, 0.008))) for _ in range(150)]
+        bear = [Decimal(str(rng.gauss(-0.0025, 0.020))) for _ in range(100)]
+        returns = bull + bear
+
+        result = fit_markov_regime_read(returns, k_regimes=2)
+        assert result is not None
+        assert len(result.history) == len(returns) == 250
+        assert result.history[-1] == result.current_label
+
+        early_bull = result.history[:30]
+        late_bear = result.history[-30:]
+        assert early_bull.count("risk_on") > early_bull.count("risk_off")
+        assert late_bear.count("risk_off") > late_bear.count("risk_on")
+
     def test_three_regime_fit_labels_middle_as_transition(self):
         rng = random.Random(7)
         bull = [Decimal(str(rng.gauss(0.0018, 0.007))) for _ in range(120)]

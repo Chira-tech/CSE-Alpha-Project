@@ -50,6 +50,7 @@ from app.domain.macro_view import current_spread, series_history
 from app.domain.regime_classification import (
     MacroSignal,
     MarkovRegimeRead,
+    RegimeLabel,
     RegimeRead,
     classify_composite_regime,
     classify_regime,
@@ -154,20 +155,27 @@ def regime_signals_for(db: Session, as_of: dt.date) -> tuple[list[MacroSignal], 
     return signals, missing
 
 
-def _aspi_log_returns(db: Session, as_of: dt.date, limit: int = 400) -> list[Decimal]:
+def _aspi_log_returns(db: Session, as_of: dt.date, limit: int = 400) -> list[tuple[dt.date, Decimal]]:
     """Log returns from consecutive real ASPI closes — see module
     docstring for why log returns specifically. `limit` caps how far back
     to look; 400 comfortably covers the ~1 year `index_history_loader`
     backfills, with headroom rather than cutting it exactly at the
-    boundary."""
+    boundary.
+
+    Each return is paired with `curr`'s own `obs_date` — a bad row can be
+    skipped below, so a caller that wants to re-align a per-return result
+    (`MarkovRegimeRead.history`) back onto real calendar dates needs the
+    dates carried alongside the values, not re-derived by zipping against
+    `rows` afterward, which would silently misalign the moment any row is
+    skipped."""
     rows = series_history(db, SERIES_ASPI, as_of, limit=limit)
     if len(rows) < 2:
         return []
-    returns: list[Decimal] = []
+    returns: list[tuple[dt.date, Decimal]] = []
     for prev, curr in zip(rows, rows[1:]):
         if prev.value <= 0 or curr.value <= 0:
             continue  # a non-positive index level is a data error, not a real return
-        returns.append(Decimal(str(math.log(float(curr.value) / float(prev.value)))))
+        returns.append((curr.obs_date, Decimal(str(math.log(float(curr.value) / float(prev.value))))))
     return returns
 
 
@@ -179,6 +187,13 @@ class RegimeView:
     statistical: MarkovRegimeRead | None
     missing_signals: tuple[str, ...]
     warnings: tuple[str, ...]
+
+    regime_history: tuple[tuple[dt.date, RegimeLabel], ...] = ()
+    """`statistical.history` re-aligned onto real calendar dates — one
+    (date, label) pair per real ASPI trading day the Markov fit ran over.
+    Empty when `statistical` is None. Statistical-read-only, same caveat
+    as `MarkovRegimeRead.history` — not the 50/50 blend `result.label`
+    is."""
 
 
 # --- Disclosed-TTL cache -------------------------------------------------
@@ -240,7 +255,8 @@ def _regime_for_uncached(db: Session, stamp: dt.date, k_regimes: int) -> RegimeV
     signals, missing = regime_signals_for(db, stamp)
     composite = classify_composite_regime(signals)
 
-    returns = _aspi_log_returns(db, stamp)
+    dated_returns = _aspi_log_returns(db, stamp)
+    returns = [v for _, v in dated_returns]
     statistical = fit_markov_regime_read(returns, k_regimes=k_regimes)
 
     warnings: list[str] = []
@@ -257,6 +273,16 @@ def _regime_for_uncached(db: Session, stamp: dt.date, k_regimes: int) -> RegimeV
     if result is None:
         warnings.append("No regime read at all — see the two reasons above.")
 
+    # `fit_markov_regime_read` returns one history entry per input
+    # `returns` value, same order — so it re-zips cleanly onto the dates
+    # `_aspi_log_returns` kept alongside those same values.
+    regime_history: tuple[tuple[dt.date, RegimeLabel], ...] = ()
+    if statistical is not None:
+        regime_history = tuple(
+            (date, label)
+            for (date, _), label in zip(dated_returns, statistical.history)
+        )
+
     return RegimeView(
         as_of=stamp,
         result=result,
@@ -264,4 +290,5 @@ def _regime_for_uncached(db: Session, stamp: dt.date, k_regimes: int) -> RegimeV
         statistical=statistical,
         missing_signals=tuple(missing),
         warnings=tuple(warnings),
+        regime_history=regime_history,
     )

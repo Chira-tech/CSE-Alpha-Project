@@ -40,14 +40,19 @@ import type {
  * Toda-Yamamoto causality, an event study around CBSL policy-rate
  * changes, and the §33 sector sensitivity matrix.
  *
+ * The ASPI chart is regime-shaded (spec §8 build item 8) using
+ * `RegimeGauge.history` — the Markov fit's own per-day path, which was
+ * already computed every call and simply discarded past the last row
+ * until 4 Sep 2026, so no new data source or persistence was needed to
+ * build this. It is the statistical half only, not the 50/50 blend the
+ * current-day call uses — `IndexHistoryChart`'s own caption says so.
+ *
  * STILL NOT ON THIS SCREEN, named rather than silently omitted: a
  * recommended gross exposure (§31 names exposure-capping but gives no
  * number, and there is no portfolio-sizing layer for one to act on),
  * validation of the classifier against a real historical Sri Lankan
- * regime, regime-shaded bands behind the ASPI chart (needs historical
- * regime classifications stored per period, not just the current read
- * — spec §8 build item 8), the macro variable heatmap, the
- * causality/impulse-response panels, and the national project register.
+ * regime, the macro variable heatmap, the causality/impulse-response
+ * panels, and the national project register.
  */
 export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
   const [market, setMarket] = useState<MarketOverview | null>(null);
@@ -180,7 +185,7 @@ export function MacroScreen({ onOpen }: { onOpen: (ticker: string) => void }) {
           <section aria-labelledby="aspi-history-heading" className="stack-tight">
             <h2 id="aspi-history-heading">ASPI, last 12 months</h2>
             <div className="card">
-              <IndexHistoryChart history={index} />
+              <IndexHistoryChart history={index} regimeHistory={regime?.history} />
             </div>
           </section>
         )}
