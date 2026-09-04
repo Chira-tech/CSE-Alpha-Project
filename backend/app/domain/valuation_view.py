@@ -1720,6 +1720,30 @@ def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Har
         warnings.append("total_equity not available from confirmed fundamentals.")
         return HardBookView(period_end, None, excluded, tuple(warnings))
 
+    # Book value is equity ATTRIBUTABLE TO OWNERS OF THE PARENT — a
+    # consolidated group's `total_equity` also carries non-controlling
+    # interest, which a shareholder does not own (product-owner decision,
+    # 4 Sep 2026; same rule the Justified P/B leg applies in
+    # `_gather_inputs`). Prefer the reported owners'-equity line; else
+    # net NCI out of total equity; else fall back to total equity with a
+    # warning.
+    owners_item = items.get("equity_attributable_to_owners")
+    nci_item = items.get("non_controlling_interest")
+    if owners_item is not None:
+        reported_book_value = owners_item.value
+    elif nci_item is not None:
+        reported_book_value = equity_item.value - nci_item.value
+        warnings.append(
+            "Book value nets non-controlling interest out of total equity "
+            "(no separate owners'-equity line was extracted)."
+        )
+    else:
+        reported_book_value = equity_item.value
+        warnings.append(
+            "Book value uses total_equity, which includes any non-controlling "
+            "interest — no owners'-equity or NCI line was extracted for this period."
+        )
+
     reval_item = items.get("revaluation_reserves")
     if reval_item is None:
         warnings.append(
@@ -1737,7 +1761,7 @@ def hard_book_for(db: Session, ticker: str, as_of: dt.date | None = None) -> Har
         warnings.append("shares_issued not available (no FloatData row on or before this date).")
 
     result = compute_hard_book(
-        reported_book_value=equity_item.value,
+        reported_book_value=reported_book_value,
         revaluation_reserves=reval_item.value if reval_item else Decimal(0),
         diluted_shares_outstanding=Decimal(shares) if shares else None,
     )
