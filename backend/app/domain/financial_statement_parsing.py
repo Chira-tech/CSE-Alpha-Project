@@ -724,7 +724,17 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     # and therefore fair value — the safe direction — and summing across
     # occurrences is deliberately not done here because the same labels
     # reappear on segment-note pages and would double-count.
-    "depreciation_expense": ("depreciation", "depreciation of property, plant and equipment"),  # SWAD
+    # "depreciation on property, plant and equipment" (10 companies) and
+    # its "&" spelling (9) are the same measured sweep as
+    # `capital_expenditure`'s wordings (see that key's comment) — the
+    # "on" preposition instead of "of", the single commonest unmatched
+    # depreciation wording on the cash-flow-statement page.
+    "depreciation_expense": (
+        "depreciation",
+        "depreciation of property, plant and equipment",  # SWAD
+        "depreciation on property, plant and equipment",  # 10 companies
+        "depreciation on property, plant & equipment",  # 9
+    ),
     # "amortisation of intangible assets" verified on JKH.N0000 p13 and
     # KHL.N0000 p6 (both also carry an ROU-amortisation line — same
     # safe-direction note as depreciation_expense above).
@@ -845,6 +855,35 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
     "interest_expense": (
         "finance costs",  # SWAD
         "interest expense",  # JFP — same cash-flow-statement accrual add-back concept
+        "finance cost",  # 45 companies (singular)
+        "finance expenses",  # 18
+    ),
+    # Finance / interest INCOME — the offset to `interest_expense` when
+    # reconstructing operating profit (EBIT) from profit before tax:
+    #   operating_profit = profit_before_tax + interest_expense - finance_income
+    # Measured (`scripts/measure_unmatched_labels.py`, same sweep as
+    # `capital_expenditure`'s): "finance income" prints on 68 distinct
+    # tickers, "interest income" on 39 — between them the single largest
+    # unmatched income-statement concept. Kept as its own key, consumed
+    # only by the operating_profit derivation in
+    # `derive_additional_line_items`; nothing multiplies or divides by it
+    # directly, so adding it cannot move an existing figure.
+    "finance_income": (
+        "finance income",  # 68 companies
+        "interest income",  # 39
+        "finance and other income",
+        "net finance income",
+    ),
+    # A company that nets its finance line to a single "net finance cost"
+    # / "net finance costs" figure — 16 tickers in the measured sweep.
+    # When present it IS profit_before_tax's bridge to operating profit
+    # on its own (operating_profit = profit_before_tax + net_finance_cost),
+    # no separate income leg needed.
+    "net_finance_cost": (
+        "net finance cost",  # 16 companies
+        "net finance costs",
+        "net finance expense",
+        "net finance expenses",
     ),
     # Working-capital STOCK components (§18's `working_capital_pct_
     # revenue`) — verified on BOTH real balance sheets, where "Inventories",
