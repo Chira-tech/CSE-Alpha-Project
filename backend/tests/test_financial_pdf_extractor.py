@@ -829,7 +829,18 @@ def test_paps_real_bare_lkr_balance_sheet_now_produces_drafts():
 
     identities = check_accounting_identities({k: v for k, v in by_line.items() if v is not None})
     assert identities
-    assert all(c.passed for c in identities)
+    # The two balance-sheet footing identities pass — the page extracts
+    # cleanly at scale 1.
+    by_name = {c.name: c for c in identities}
+    assert by_name["assets = equity + liabilities"].passed
+    assert by_name["assets = equity and liabilities"].passed
+    # The "owners equity + NCI = total equity" identity added 4 Sep 2026
+    # correctly FLAGS this fixture: PAP's `equity attributable to owners`
+    # line is mis-read here (2,254,148,208 against a real 3,054,148,208 =
+    # total_equity - NCI), off by exactly 800m. That is the identity
+    # doing its job — the gate drops the bad line and `_gather_inputs`
+    # falls back to total_equity - NCI.
+    assert not by_name["owners equity + NCI = total equity"].passed
 
 
 def test_a_genuinely_scanned_pdf_with_no_text_layer_produces_zero_drafts_not_a_crash():
