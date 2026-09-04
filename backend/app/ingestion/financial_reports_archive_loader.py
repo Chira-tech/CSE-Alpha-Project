@@ -94,7 +94,13 @@ _AMENDED_MARKER = "amended"
 # not a bug this pipeline introduced. One pathological PDF must not be
 # able to block an entire universe-wide sweep indefinitely; see
 # `_extract_with_timeout` below.
-_EXTRACTION_TIMEOUT_SECONDS = 90.0
+#: Raised from 90s (4 Sep 2026) now that `extract_financial_statement_
+#: candidates` bounds its own page scan to the primary-statements block
+#: (`_STATEMENT_BLOCK_END_GAP` / `_MAX_SCAN_PAGES`) instead of calling
+#: `page.extract_text()` on every page of a 300-page annual report. The
+#: bound is the real fix; this is the backstop for a genuinely
+#: pathological single page.
+_EXTRACTION_TIMEOUT_SECONDS = 200.0
 
 
 def _extract_with_timeout(pdf_bytes: bytes) -> list[tuple[int, ExtractedLine]]:

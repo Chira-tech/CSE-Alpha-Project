@@ -135,3 +135,42 @@ def test_a_swing_off_a_near_zero_base_is_not_flagged_on_ratio_alone():
     # value is immaterial vs the series peak.
     out = check_series_trend(_hist(10_000, 10, 11_000, 12_000))
     assert out == {}
+
+
+# --- Phase: NCI tolerance on the balance-sheet composition identity ----
+def test_owners_equity_gap_within_the_nci_band_passes():
+    # assets 63,736M ; liabilities 55,902M ; owners' equity 7,552M.
+    # Gap 282M = 0.4% of the balance sheet — the non-controlling
+    # interest, not a corrupted read.
+    values = {
+        "total_assets": Decimal("63_736_113_749"),
+        "total_liabilities": Decimal("55_902_506_103"),
+        "total_equity": Decimal("7_552_357_713"),
+    }
+    result = validate_filing(values)
+    assert result["total_equity"].passed
+    assert result["total_assets"].passed
+
+
+def test_a_balance_sheet_gap_beyond_the_nci_band_still_fails():
+    # 8% off — far past any plausible NCI share.
+    values = {
+        "total_assets": Decimal("63_736_000_000"),
+        "total_liabilities": Decimal("55_902_000_000"),
+        "total_equity": Decimal("2_800_000_000"),  # ~8% short
+    }
+    result = validate_filing(values)
+    assert not result["total_equity"].passed
+    assert "non-controlling-interest allowance" in result["total_equity"].failures[0].detail
+
+
+def test_the_income_statement_identity_keeps_the_strict_tolerance():
+    # revenue - cost of sales != gross profit by 0.4% must still fail —
+    # the NCI allowance is only for the balance-sheet composition.
+    values = {
+        "revenue": Decimal("10_000_000_000"),
+        "cost_of_sales": Decimal("-6_000_000_000"),
+        "gross_profit": Decimal("3_960_000_000"),  # 40M short
+    }
+    result = validate_filing(values)
+    assert not result["gross_profit"].passed

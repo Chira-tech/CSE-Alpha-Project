@@ -39,7 +39,26 @@ from app.domain.financial_statement_parsing import (
 
 #: Bump when the check battery changes so the nightly job re-sweeps every
 #: row instead of trusting a verdict a weaker version produced.
-VALIDATION_METHOD = "identity+magnitude+trend+majority:v3"
+VALIDATION_METHOD = "identity+magnitude+trend+majority:v4"
+
+#: The two balance-sheet composition identities where the extracted
+#: `total_equity` line is legitimately the "equity attributable to
+#: owners of the parent" figure — it excludes non-controlling interest,
+#: so `assets = equity + liabilities` is off by exactly the NCI. A CSE
+#: group's NCI is almost always a low-single-digit share of the balance
+#: sheet; a real extraction error (a dropped digit, a shifted column) is
+#: an order of magnitude larger. So these two identities pass when the
+#: gap is within `_NCI_RELATIVE_TOLERANCE` of the balance-sheet size,
+#: not just the flat Rs 1,000 rounding tolerance. Every other identity
+#: (revenue - cost of sales = gross profit, and so on) keeps the strict
+#: tolerance — none of them has a legitimate structural gap.
+#: (Product-owner decision, 4 Sep 2026: use owners' equity as book value
+#: and allow the NCI gap.)
+_NCI_TOLERANT_IDENTITIES = frozenset({
+    "assets = equity + liabilities",
+    "assets = equity and liabilities",
+})
+_NCI_RELATIVE_TOLERANCE = Decimal("0.03")
 
 #: A confirmed value that is this many times its own immediately-prior
 #: confirmed value (same company, same line, consecutive periods) — or a
@@ -140,10 +159,24 @@ def validate_filing(values: Mapping[str, Decimal]) -> dict[str, LineValidation]:
     values = {k: v for k, v in values.items()}
     failures_by_line: dict[str, list[FailedCheck]] = defaultdict(list)
 
+    balance_sheet_size = max(
+        (abs(values[k]) for k in ("total_assets", "total_equity_and_liabilities") if k in values),
+        default=Decimal(0),
+    )
     for name, diff in _identity_diffs(values).items():
-        if diff <= _IDENTITY_ROUNDING_TOLERANCE:
+        tolerance = _IDENTITY_ROUNDING_TOLERANCE
+        if name in _NCI_TOLERANT_IDENTITIES and balance_sheet_size > 0:
+            # `total_equity` here is owners' equity; the gap up to the
+            # NCI band is structural, not a corrupted read.
+            tolerance = max(tolerance, balance_sheet_size * _NCI_RELATIVE_TOLERANCE)
+        if diff <= tolerance:
             continue
         detail = f"identity '{name}' is off by {diff:,}"
+        if name in _NCI_TOLERANT_IDENTITIES and balance_sheet_size > 0:
+            detail += (
+                f" ({(diff / balance_sheet_size):.1%} of the balance sheet — beyond the "
+                f"{_NCI_RELATIVE_TOLERANCE:.0%} non-controlling-interest allowance)"
+            )
         for line in _IDENTITY_LINES.get(name, ()):
             if line in values:
                 failures_by_line[line].append(FailedCheck(name, detail))

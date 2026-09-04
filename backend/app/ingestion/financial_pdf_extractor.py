@@ -264,6 +264,23 @@ def _scale_extracted_line(line: ExtractedLine, scale: Decimal) -> ExtractedLine:
 #: section's first page" without reaching a different section.
 _UNIT_INHERIT_WINDOW = 3
 
+#: Once at least one primary-statement page has been seen, stop scanning
+#: after this many CONSECUTIVE non-statement pages — the primary
+#: statements are a contiguous block (with at most a page or two of
+#: accounting policies between them, and the parent-company set right
+#: after the group set), so a run this long means the section is over
+#: and the rest is notes / appendices. Bounds a 300-page annual report's
+#: work to the statements block plus a margin, instead of an
+#: `extract_text()` call on every page (the real cause of the 90s
+#: pdfplumber timeouts on AAIC / AGST / BALA-shaped reports, 4 Sep 2026).
+_STATEMENT_BLOCK_END_GAP = 30
+
+#: A hard cap on how many pages are read at all — if the primary
+#: statements haven't started by here, this is not a filing shape this
+#: extractor can use (or it is pathological), and reading on only risks
+#: the timeout it is meant to avoid.
+_MAX_SCAN_PAGES = 320
+
 
 def _inherited_unit_scale(
     pages: list[tuple[int, str, bool, "Decimal | None"]], idx: int
@@ -324,7 +341,18 @@ def extract_financial_statement_candidates(
     # narrow rules that keep this from guessing.
     pages: list[tuple[int, str, bool, Decimal | None]] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        seen_statement = False
+        consecutive_non_statement = 0
         for page_number, page in enumerate(pdf.pages):
+            if page_number >= _MAX_SCAN_PAGES:
+                logger.warning(
+                    "stopping the page scan at %d pages — primary statements either "
+                    "start later than this extractor reads or the file is pathological",
+                    _MAX_SCAN_PAGES,
+                )
+                break
+            if seen_statement and consecutive_non_statement >= _STATEMENT_BLOCK_END_GAP:
+                break  # past the end of the primary-statements block
             # A real, narrowly-scoped repair for NTB.N0000's real bold-
             # text character-doubling artifact — see app.domain.
             # financial_statement_parsing.repair_character_doubling's own
@@ -334,6 +362,11 @@ def extract_financial_statement_candidates(
             text = repair_character_doubling(page.extract_text() or "")
             is_stmt = _is_primary_statement_page(text)
             pages.append((page_number, text, is_stmt, detect_unit_scale(text) if is_stmt else None))
+            if is_stmt:
+                seen_statement = True
+                consecutive_non_statement = 0
+            else:
+                consecutive_non_statement += 1
 
     results: list[tuple[int, ExtractedLine]] = []
     for idx, (page_number, text, is_stmt, own_scale) in enumerate(pages):
