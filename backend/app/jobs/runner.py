@@ -510,7 +510,8 @@ def _run_auto_confirm_corroborated(db: Session, run: JobRun) -> int:
     _set_progress(db, run, 5, "Scanning the pending queue for corroborated figures…")
     corroborated = list(all_corroborated_pending_ids(db))
     _set_progress(db, run, 15, "Scanning the pending queue for identity-pinned figures…")
-    pinned = [i for i in all_identity_pinned_pending_ids(db) if i not in set(corroborated)]
+    _already = set(corroborated)
+    pinned = [i for i in all_identity_pinned_pending_ids(db) if i not in _already]
 
     plan: list[tuple[int, str]] = (
         [(i, "auto (corroborated)") for i in corroborated]
