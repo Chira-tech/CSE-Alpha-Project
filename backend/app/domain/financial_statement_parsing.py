@@ -556,6 +556,33 @@ CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
         # third wording distinct from both variants above.
         "total shareholders' equity",
     ),
+    # The equity that belongs to the LISTED company's own shareholders —
+    # `total_equity` on a group balance sheet also includes the
+    # non-controlling (minority) interest in partly-owned subsidiaries,
+    # which for a holding company can be a large fraction of the total
+    # (LOLC Holdings: ~40%). Per-share book value for a valuation must sit
+    # on this line, not `total_equity`. Matched by longest phrase first
+    # so "total equity attributable to owners" doesn't fall through to
+    # the bare "total equity" alias above.
+    "equity_attributable_to_owners": (
+        "equity attributable to owners of the company",
+        "equity attributable to owners of the parent",
+        "equity attributable to equity holders of the company",
+        "equity attributable to equity holders of the parent",
+        "equity attributable to shareholders of the company",
+        "total equity attributable to owners of the company",
+        "total equity attributable to equity holders of the parent",
+        "attributable to equity holders of the parent",
+        "attributable to owners of the company",
+    ),
+    "non_controlling_interest": (
+        "non-controlling interest",
+        "non-controlling interests",
+        "non controlling interest",
+        "non controlling interests",
+        "minority interest",
+        "minority interests",
+    ),
     "total_liabilities": ("total liabilities",),
     "total_current_liabilities": ("total current liabilities",),
     "total_non_current_liabilities": ("total non-current liabilities", "total non current liabilities"),
@@ -2000,6 +2027,12 @@ DERIVED_DIFFERENCES: dict[str, tuple[str, str]] = {
     # recovers book value per share for names whose recent filings carry
     # a balance sheet but stopped naming the equity subtotal.
     "total_equity": ("total_assets", "total_liabilities"),
+    # Owners' equity = total equity - non-controlling interest. Derived
+    # only when a filing prints the group total and the NCI line but not
+    # the "attributable to owners" subtotal itself. This is the base a
+    # per-share book value must use — see `equity_attributable_to_owners`
+    # in CANONICAL_LABELS.
+    "equity_attributable_to_owners": ("total_equity", "non_controlling_interest"),
 }
 
 

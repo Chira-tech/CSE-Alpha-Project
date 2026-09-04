@@ -109,6 +109,7 @@ coverage), is separate follow-on work, tracked in ROADMAP.md.
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections import defaultdict
 from dataclasses import dataclass
@@ -826,8 +827,43 @@ def _gather_inputs(
         warnings.append("total_equity not available from confirmed fundamentals.")
     if shares is None:
         warnings.append("shares_issued not available (no FloatData row on or before this date).")
-    if total_equity_value is not None and shares:
-        book_value_per_share = total_equity_value / Decimal(shares)
+
+    # PER-SHARE BOOK VALUE MUST SIT ON OWNERS' EQUITY, NOT THE GROUP
+    # TOTAL. `total_equity` on a consolidated balance sheet also carries
+    # the non-controlling (minority) interest in partly-owned
+    # subsidiaries — for a holding company that can be a large share of
+    # the total (LOLC Holdings: ~40%, found live 4 Sep 2026 against
+    # stockanalysis.com — our book value per share was 1,376 against a
+    # true owners' figure of ~822). Prefer the directly-extracted
+    # "attributable to owners" line; else derive it as
+    # `total_equity - non_controlling_interest`; else fall back to
+    # `total_equity` with the caveat stated. `total_equity` itself stays
+    # the group total for the identity / units-consistency checks that
+    # need the figure that foots against total assets.
+    owners_equity_item = items.get("equity_attributable_to_owners")
+    nci_item = items.get("non_controlling_interest")
+    book_equity_value: Decimal | None
+    if owners_equity_item is not None:
+        book_equity_value = owners_equity_item.value
+    elif total_equity_value is not None and nci_item is not None:
+        book_equity_value = total_equity_value - nci_item.value
+        warnings.append(
+            f"book value uses total_equity - non_controlling_interest "
+            f"({total_equity_value:,} - {nci_item.value:,} = {book_equity_value:,}) — no "
+            "'equity attributable to owners' subtotal was extracted for this filing."
+        )
+    else:
+        book_equity_value = total_equity_value
+        if total_equity_value is not None:
+            warnings.append(
+                "book value uses total_equity, which on a consolidated balance sheet "
+                "includes non-controlling interest — no owners'-equity line was extracted "
+                "for this filing, so the per-share book value may be overstated for a "
+                "group with a material minority interest."
+            )
+
+    if book_equity_value is not None and shares:
+        book_value_per_share = book_equity_value / Decimal(shares)
 
     return LiveValuationInputs(
         period_end=period_end,
@@ -2303,7 +2339,21 @@ def valuation_summary_for(
     # name gets no blended fair value and the decision engine reports
     # "Insufficient data" with the loss-making reason.
     mid_cycle_roe = jpb.inputs.roe
-    book_anchor_suppressed_for_losses = mid_cycle_roe is not None and mid_cycle_roe <= 0
+    # A loss is a loss whether or not there is enough history to
+    # normalise a mid-cycle ROE: a negative single most-recent-period
+    # ROE, or a negative latest confirmed (TTM / annual) net income, is
+    # the same §27 distress signal as a negative mid-cycle figure. Found
+    # live 4 Sep 2026: HDFC and Teejay were both loss-making per
+    # stockanalysis.com yet got a book + peer-multiple "Accumulate"
+    # because `roe` was `None` (no paired annual history) so the old
+    # check couldn't fire.
+    _recent_loss = (
+        (jpb.inputs.roe_single_period is not None and jpb.inputs.roe_single_period <= 0)
+        or (jpb.inputs.net_income is not None and jpb.inputs.net_income < 0)
+    )
+    book_anchor_suppressed_for_losses = (
+        (mid_cycle_roe is not None and mid_cycle_roe <= 0) or _recent_loss
+    )
     if conservative_book_view.value_per_share is not None and not book_anchor_suppressed_for_losses:
         anchors.append(
             ValuationAnchor(
@@ -2372,6 +2422,42 @@ def valuation_summary_for(
             )
 
     triangulation = triangulate(routing, tuple(anchors))
+
+    # NO-EARNINGS-SUPPORT CAP. When nothing establishes that this company
+    # earns an adequate return on its equity — no FCFF DCF, no Justified
+    # P/B, and no positive normalised ROE — the blended fair value is not
+    # allowed to exceed the company's own conservative (haircut) book
+    # value. A peer P/B multiple applied to an earnings-less name claims
+    # the market will re-rate it to book-plus, which is exactly the
+    # value-trap read the peer fallback is prone to (found live 4 Sep
+    # 2026: Teejay's peer-multiple fair value was 1.8x book on a
+    # loss-making company). The peer anchor can still pull the blend
+    # DOWN — peers trading below book — never up.
+    _has_earnings_support = (
+        dcf_view.fair_value_per_share is not None
+        or jpb.fair_value_per_share is not None
+        or (jpb.inputs.roe is not None and jpb.inputs.roe > 0)
+    )
+    _book_floor = next(
+        (a.fair_value_per_share for a in anchors if a.category == "asset_sotp"), None
+    )
+    if (
+        not _has_earnings_support
+        and triangulation.blended_fair_value_per_share is not None
+        and _book_floor is not None
+        and triangulation.blended_fair_value_per_share > _book_floor
+    ):
+        triangulation = dataclasses.replace(
+            triangulation,
+            blended_fair_value_per_share=_book_floor,
+            warnings=triangulation.warnings
+            + (
+                "Blended fair value capped at the conservative book value — no DCF, no "
+                "Justified P/B and no positive normalised ROE, so there is no evidence "
+                "this company earns an adequate return on its equity and it is not "
+                "valued above its own haircut book value on peer multiples alone.",
+            ),
+        )
 
     mos = compute_margin_of_safety(
         dispersion_pct=triangulation.dispersion_pct,

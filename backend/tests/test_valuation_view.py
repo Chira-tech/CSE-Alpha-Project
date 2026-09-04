@@ -1317,3 +1317,62 @@ class TestValuationSummaryForRelativeAnchors:
         assert "relative" in summary.triangulation.category_averages
         assert "Justified P/E" in summary.note
         assert "Justified P/S" in summary.note
+
+
+class TestOwnersEquityBookValue:
+    """4 Sep 2026 — per-share book value must sit on equity attributable
+    to owners, not the consolidated total that also carries NCI."""
+
+    def _seed(self, db, *, total_equity, nci=None, owners=None):
+        _seed_security(db)
+        _seed_shares(db, shares=100)
+        rows = [
+            Fundamental(
+                ticker="COMB.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1,
+                statement_line="total_equity", value=total_equity,
+                provenance_tier=ProvenanceTier.REPORTED,
+            ),
+            Fundamental(
+                ticker="COMB.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1,
+                statement_line="net_income", value=Decimal(50),
+                provenance_tier=ProvenanceTier.REPORTED,
+            ),
+        ]
+        if nci is not None:
+            rows.append(Fundamental(
+                ticker="COMB.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1,
+                statement_line="non_controlling_interest", value=nci,
+                provenance_tier=ProvenanceTier.REPORTED,
+            ))
+        if owners is not None:
+            rows.append(Fundamental(
+                ticker="COMB.N0000", period_end=PERIOD_END, period_type="annual",
+                first_available_date=FIRST_AVAILABLE, version=1,
+                statement_line="equity_attributable_to_owners", value=owners,
+                provenance_tier=ProvenanceTier.REPORTED,
+            ))
+        db.add_all(rows)
+        db.commit()
+
+    def test_owners_line_is_used_directly_when_present(self, db_session, monkeypatch):
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+        self._seed(db_session, total_equity=Decimal(1000), owners=Decimal(600))
+        gi = valuation_view._gather_inputs(db_session, "COMB.N0000", AS_OF)
+        assert gi.book_value_per_share == Decimal(6)  # 600 / 100, not 1000 / 100
+        assert gi.total_equity == Decimal(1000)  # the group total is kept for identity checks
+
+    def test_owners_equity_is_derived_from_total_minus_nci(self, db_session, monkeypatch):
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+        self._seed(db_session, total_equity=Decimal(1000), nci=Decimal(400))
+        gi = valuation_view._gather_inputs(db_session, "COMB.N0000", AS_OF)
+        assert gi.book_value_per_share == Decimal(6)  # (1000 - 400) / 100
+
+    def test_falls_back_to_total_equity_with_a_caveat(self, db_session, monkeypatch):
+        monkeypatch.setattr(valuation_view, "cost_of_equity_for", _fake_ke(Decimal("0.15")))
+        self._seed(db_session, total_equity=Decimal(1000))
+        gi = valuation_view._gather_inputs(db_session, "COMB.N0000", AS_OF)
+        assert gi.book_value_per_share == Decimal(10)
+        assert any("may be overstated" in w for w in gi.warnings)

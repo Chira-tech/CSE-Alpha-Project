@@ -88,7 +88,8 @@ _TREND_MIN_PERIODS = 3
 #: deliberately excluded: a loss year is ordinary and is not something a
 #: human needs to "resolve".
 _NEVER_NEGATIVE_LINES = frozenset({
-    "total_assets", "total_equity", "total_liabilities",
+    "total_assets", "total_equity", "equity_attributable_to_owners",
+    "total_liabilities",
     "total_equity_and_liabilities", "total_current_assets",
     "total_non_current_assets", "total_current_liabilities",
     "total_non_current_liabilities", "revenue", "gross_profit",
