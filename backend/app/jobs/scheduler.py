@@ -22,14 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
-from app.ingestion.corporate_actions_loader import ingest_corporate_actions_for_ticker
-from app.ingestion.cbsl_client import CbslClient
-from app.ingestion.cbsl_loader import ingest_range as ingest_cbsl_range
 from app.ingestion.cse_client import CseClient
-from app.ingestion.financial_pdf_extractor import (
-    ingest_financial_statements_for_known_tickers,
-    sweep_stale_fundamentals,
-)
 from app.ingestion.index_history_loader import ingest_index_history
 from app.ingestion.company_price_history_loader import backfill_company_price_history
 from app.jobs.market_cap_reconciliation import run_nightly_market_cap_check
@@ -37,8 +30,6 @@ from app.jobs.runner import JobConflict, enqueue, poll_and_run_one
 from app.jobs.second_source_reconciliation import StaleComparisonError, check_against_second_source
 from app.ingestion.issuer_registry_loader import ingest_issuer_registry
 from app.ingestion.sector_loader import ingest_sectors
-from app.ingestion.market_internals import ingest_market_internals
-from app.ingestion.bootstrap import bootstrap_securities
 from app.ingestion.price_loader import fetch_eod_prices, infer_session_date, upsert_eod_prices
 from app.jobs.reconciliation import run_nightly_reconciliation
 from app.models.securities import Security
@@ -55,42 +46,24 @@ def _all_tickers(db) -> list[str]:
 def _job_eod_snapshot() -> None:
     """§52: "EOD snapshot + adjustment  15:00 daily".
 
-    The session date comes from the feed's own timestamps, not from
-    `date.today()` — the job is scheduled Mon-Fri after close, but a
-    public holiday, an unscheduled closure, or a late/missed run would
-    otherwise write the previous session's prices under today's date.
-    See `infer_session_date`; §6 depends on this being right.
+    Enqueued as a `JobRun` (trigger="scheduled") rather than run inline —
+    found live (4 Sep 2026): this job and its siblings below used to call
+    their ingestion functions directly, so Data Health's "job last
+    succeeded" stats (`app.api.routes.data_health._last_successful_run`,
+    which reads `job_runs` rows) could NEVER show a real success from the
+    automatic nightly run, only from a manual "Run Capture" click — the
+    exact shape of the "Macro job last succeeded: never" report that
+    found this. `_run_capture_prices` (`app.jobs.runner`) is the same
+    session-date-from-the-feed + `bootstrap_securities` + `upsert_
+    eod_prices` logic this job used to run inline; enqueuing it here
+    keeps the one nightly worker slot honest and gives every automatic
+    run the same audit trail a manual one already gets.
     """
     db = SessionLocal()
     try:
-        with CseClient() as client:
-            rows = fetch_eod_prices(client)
-
-        session_date = infer_session_date(rows)
-        if session_date is None:
-            logger.error("EOD snapshot: could not determine session date from feed; nothing written")
-            return
-
-        # Register any ticker in the feed we don't already know about,
-        # BEFORE writing its prices. Same rows, no extra request, and
-        # `bootstrap_securities` never overwrites an existing row (a
-        # human's hand-set archetype/sector is safe).
-        #
-        # A REAL GAP THIS CLOSES (found in the 29 Aug audit): only
-        # `run_bootstrap` did this, so the daily job happily wrote prices
-        # for tickers with no `securities` row at all — 6 such orphaned
-        # rows across AUTO/BREW/SLND/SWAD, every one a genuinely listed
-        # company that had just started trading again. They were invisible
-        # to the entire product (every screen joins through `securities`)
-        # and silently so: a real company could list, trade, and never be
-        # valued, with nothing anywhere reporting it.
-        new_securities, _known = bootstrap_securities(db, rows)
-        if new_securities:
-            logger.info("EOD snapshot: registered %d newly-seen securities", new_securities)
-        written = upsert_eod_prices(db, session_date, rows)
-        logger.info("EOD snapshot: wrote %d rows for session %s", written, session_date)
-    except Exception:
-        logger.exception("EOD snapshot job failed")
+        enqueue(db, "capture_prices", trigger="scheduled")
+    except JobConflict:
+        logger.info("capture_prices already queued/running — skipping this tick")
     finally:
         db.close()
 
@@ -177,14 +150,15 @@ def _job_capture_market_internals() -> None:
     yield, turnover, foreign net flow. Runs with the EOD snapshot because
     it comes from the same end-of-session publication, and because the
     earnings-yield half of the hero spread is only as current as this job.
+
+    Enqueued as a `JobRun` (trigger="scheduled") — see `_job_eod_snapshot`'s
+    docstring for why this moved off a bare inline call.
     """
     db = SessionLocal()
     try:
-        with CseClient() as client:
-            written = ingest_market_internals(client, db)
-        logger.info("market internals: wrote %d new observation(s)", written)
-    except Exception:
-        logger.exception("market internals capture failed")
+        enqueue(db, "capture_market", trigger="scheduled")
+    except JobConflict:
+        logger.info("capture_market already queued/running — skipping this tick")
     finally:
         db.close()
 
@@ -240,20 +214,15 @@ def _job_refresh_stale_fundamentals() -> None:
     failing since the last run — the backlog this job itself works
     through never grows back on its own.
     """
+    # Enqueued as a `JobRun` (trigger="scheduled") — see
+    # `_job_eod_snapshot`'s docstring for why this moved off a bare
+    # inline call. `_run_refresh_stale_fundamentals` (`app.jobs.runner`)
+    # is the identical sweep, already shared with the manual trigger.
     db = SessionLocal()
     try:
-        tickers = _all_tickers(db)
-        outcomes = sweep_stale_fundamentals(db, tickers)
-        repaired = sum(1 for o in outcomes if o.status == "repaired")
-        still_failing = sum(1 for o in outcomes if o.status == "still_failing")
-        errored = sum(1 for o in outcomes if o.status == "error")
-        logger.info(
-            "weekly stale-fundamentals refresh: %d filing(s) checked, %d repaired, "
-            "%d still fail after re-extraction, %d errored",
-            len(outcomes), repaired, still_failing, errored,
-        )
-    except Exception:
-        logger.exception("weekly stale-fundamentals refresh failed")
+        enqueue(db, "refresh_stale_fundamentals", trigger="scheduled")
+    except JobConflict:
+        logger.info("refresh_stale_fundamentals already queued/running — skipping this tick")
     finally:
         db.close()
 
@@ -336,23 +305,24 @@ def _job_cbsl_indicators() -> None:
     publishes an edition a day AFTER its cover date and this host 404s
     transiently — so a date that failed yesterday gets another go without
     anyone noticing. Re-recording an edition already stored is a no-op
-    beyond the request itself.
+    beyond the request itself. Paced at CBSL's published Crawl-delay of
+    10s, so a 5-weekday window costs about a minute — see `_run_capture_
+    macro` (`app.jobs.runner`), which runs the identical range fetch.
 
-    Paced at CBSL's published Crawl-delay of 10s, so a 5-weekday window
-    costs about a minute.
+    Enqueued as a `JobRun` (trigger="scheduled") rather than run inline —
+    found live (4 Sep 2026, Data Health's "Macro job last succeeded:
+    never"): this job used to call `ingest_cbsl_range` directly, so it
+    never wrote a `job_runs` row and `_last_successful_run(db,
+    "capture_macro")` could never see a real nightly success, only a
+    manual "Run Capture" click — even though the CBSL data itself WAS
+    landing every night. See `_job_eod_snapshot`'s docstring for the same
+    fix applied to its own sibling jobs.
     """
     db = SessionLocal()
     try:
-        end = dt.date.today()
-        start = end - dt.timedelta(days=6)
-        with CbslClient() as client:
-            result = ingest_cbsl_range(client, db, start, end)
-        logger.info(
-            "CBSL: %d edition(s), %d observation(s), %d unavailable",
-            result["editions"], result["observations"], len(result["unavailable"]),
-        )
-    except Exception:
-        logger.exception("CBSL indicator ingestion failed")
+        enqueue(db, "capture_macro", trigger="scheduled")
+    except JobConflict:
+        logger.info("capture_macro already queued/running — skipping this tick")
     finally:
         db.close()
 
@@ -417,17 +387,16 @@ def _job_universe_integrity_checks() -> None:
     fingerprint, price discontinuity, rights-line reaping). Runs after the
     EOD snapshot, the internal reconciliation and the market-cap sweep, so
     it sees today's settled close. Same idempotent `DataAlert` mechanism
-    the two reconciliation jobs above already use."""
-    from app.jobs.universe_integrity_checks import run_nightly_universe_integrity
+    the two reconciliation jobs above already use.
 
+    Enqueued as a `JobRun` (trigger="scheduled") — see `_job_eod_
+    snapshot`'s docstring for why this moved off a bare inline call.
+    """
     db = SessionLocal()
     try:
-        tickers = _all_tickers(db)
-        today = dt.datetime.now(MARKET_TZ).date()
-        results = run_nightly_universe_integrity(db, tickers, today)
-        flagged = [t for t, alerts in results.items() if alerts]
-        if flagged:
-            logger.warning("universe integrity raised alerts for: %s", flagged)
+        enqueue(db, "universe_integrity_checks", trigger="scheduled")
+    except JobConflict:
+        logger.info("universe_integrity_checks already queued/running — skipping this tick")
     finally:
         db.close()
 
@@ -440,19 +409,20 @@ def _job_corporate_actions_scan() -> None:
     simplification — a webhook/push source for CSE announcements wasn't
     identified during API verification (README_ENDPOINTS.md). Every draft
     this writes has confirmed_by=None; nothing here can affect a price.
+
+    Enqueued as a `JobRun` (trigger="scheduled") — see `_job_eod_
+    snapshot`'s docstring for why this moved off a bare inline call.
+    `_run_capture_corporate_actions` (`app.jobs.runner`) is also the
+    BETTER implementation of this same sweep: it skips any ticker already
+    scanned in the last 20 hours, so a killed/resumed run makes permanent
+    progress instead of restarting at ticker #1 — this job's own inline
+    loop had no such resumability.
     """
     db = SessionLocal()
     try:
-        tickers = _all_tickers(db)
-        with CseClient() as client:
-            total_drafted = 0
-            for ticker in tickers:
-                try:
-                    total_drafted += ingest_corporate_actions_for_ticker(client, db, ticker)
-                except Exception:
-                    logger.exception("corporate-actions ingest failed for %s", ticker)
-        if total_drafted:
-            logger.info("corporate actions: drafted %d new rows awaiting human confirmation", total_drafted)
+        enqueue(db, "capture_corporate_actions", trigger="scheduled")
+    except JobConflict:
+        logger.info("capture_corporate_actions already queued/running — skipping this tick")
     finally:
         db.close()
 
@@ -470,21 +440,15 @@ def _job_financial_statement_scan() -> None:
     per-company operation (`python -m app.cli backfill-financials`,
     `app.ingestion.financial_reports_archive_loader`) run explicitly, not
     scheduled.
+
+    Enqueued as a `JobRun` (trigger="scheduled") — see `_job_eod_
+    snapshot`'s docstring for why this moved off a bare inline call.
     """
     db = SessionLocal()
     try:
-        tickers = _all_tickers(db)
-        with CseClient() as client:
-            try:
-                total_drafted = ingest_financial_statements_for_known_tickers(client, db, tickers)
-            except Exception:
-                logger.exception("financial statement scan failed")
-                return
-        if total_drafted:
-            logger.info(
-                "financial statements: drafted %d new AI-assisted fundamentals awaiting confirmation",
-                total_drafted,
-            )
+        enqueue(db, "capture_filings", trigger="scheduled")
+    except JobConflict:
+        logger.info("capture_filings already queued/running — skipping this tick")
     finally:
         db.close()
 

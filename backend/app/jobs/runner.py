@@ -44,6 +44,7 @@ import datetime as dt
 import logging
 import time
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -86,6 +87,12 @@ from app.models.prices import PriceDaily
 from app.models.securities import Security
 
 logger = logging.getLogger("cse_alpha.jobs.runner")
+
+#: Mirrors `app.jobs.scheduler.MARKET_TZ`. A "today" computed off the
+#: host clock instead of Colombo time can land on the wrong calendar
+#: date depending on where this process runs — the same class of bug
+#: `app.jobs.scheduler`'s own dated jobs are already careful about.
+MARKET_TZ = ZoneInfo("Asia/Colombo")
 
 MANUAL_COOLDOWN_SECONDS = 15 * 60
 
@@ -357,7 +364,11 @@ def _run_universe_integrity_checks(db: Session, run: JobRun) -> int:
     from app.jobs.universe_integrity_checks import run_nightly_universe_integrity
 
     tickers = _all_tickers(db)
-    stamp = dt.date.today()
+    # Colombo's calendar date, not the host process's — see this
+    # module's own `MARKET_TZ` note. Previously `dt.date.today()`, a
+    # real bug this manual-trigger path carried independently of the
+    # nightly job's own (correct) Colombo-time stamp.
+    stamp = dt.datetime.now(MARKET_TZ).date()
 
     def on_progress(i: int, total: int, ticker: str) -> bool:
         return _set_progress(db, run, 100 * i / max(total, 1), f"Universe integrity · {i} / {total} ({ticker})")
