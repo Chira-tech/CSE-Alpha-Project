@@ -16,7 +16,9 @@ from decimal import Decimal
 
 from app.domain.corroboration_view import (
     all_identity_pinned_pending_ids,
+    all_validation_clean_pending_ids,
     identity_pinned_ids,
+    validation_clean_ids,
 )
 from app.models.enums import ProvenanceTier
 from app.models.fundamentals import Fundamental
@@ -115,3 +117,83 @@ def test_all_identity_pinned_pending_ids_sweeps_the_queue(db_session):
     nci = _row(db_session, line="non_controlling_interest", value="263433587000")
 
     assert all_identity_pinned_pending_ids(db_session) == sorted([owners.id, nci.id])
+
+
+# --- validation_clean_ids: the broad binary-model signal ------------------
+
+
+def _clean_filing(db) -> list[Fundamental]:
+    """A wholly-consistent balance sheet: foots in four independent
+    directions, nine line items, every value plausible. Magnitudes are
+    real-filing scale so an off-by-one-crore break clears the flat
+    Rs 1,000 identity-rounding tolerance."""
+    return [
+        _row(db, line="total_assets", value="1000000000"),
+        _row(db, line="total_equity", value="400000000"),
+        _row(db, line="total_liabilities", value="600000000"),
+        _row(db, line="total_equity_and_liabilities", value="1000000000"),
+        _row(db, line="total_current_assets", value="300000000"),
+        _row(db, line="total_non_current_assets", value="700000000"),
+        _row(db, line="total_current_liabilities", value="250000000"),
+        _row(db, line="total_non_current_liabilities", value="350000000"),
+        _row(db, line="cash_and_cash_equivalents", value="120000000"),
+    ]
+
+
+def test_whole_clean_filing_is_admitted_line_by_line(db_session):
+    _seed_security(db_session)
+    rows = _clean_filing(db_session)
+    clean = validation_clean_ids(db_session, rows)
+    assert clean == {r.id for r in rows}
+
+
+def test_one_broken_identity_disqualifies_the_whole_filing(db_session):
+    _seed_security(db_session)
+    rows = _clean_filing(db_session)
+    # total_liabilities no longer foots with equity against assets
+    bad = next(r for r in rows if r.statement_line == "total_liabilities")
+    bad.value = Decimal("590000000")
+    db_session.commit()
+    assert validation_clean_ids(db_session, rows) == set()
+
+
+def test_too_few_line_items_is_not_clean_just_unvalidated(db_session):
+    _seed_security(db_session)
+    rows = [
+        _row(db_session, line="total_assets", value="1000"),
+        _row(db_session, line="total_equity", value="400"),
+        _row(db_session, line="total_liabilities", value="600"),
+        _row(db_session, line="total_equity_and_liabilities", value="1000"),
+    ]
+    assert validation_clean_ids(db_session, rows) == set()
+
+
+def test_a_single_computable_identity_is_not_enough(db_session):
+    _seed_security(db_session)
+    rows = [
+        _row(db_session, line="total_assets", value="1000"),
+        _row(db_session, line="total_equity_and_liabilities", value="1000"),
+        _row(db_session, line="revenue", value="800"),
+        _row(db_session, line="net_income", value="90"),
+        _row(db_session, line="cash_and_cash_equivalents", value="120"),
+        _row(db_session, line="property_plant_and_equipment", value="500"),
+    ]
+    # only "assets = equity and liabilities" computes — below the two-identity floor
+    assert validation_clean_ids(db_session, rows) == set()
+
+
+def test_already_reported_rows_are_not_re_promoted(db_session):
+    _seed_security(db_session)
+    rows = _clean_filing(db_session)
+    rows[0].provenance_tier = ProvenanceTier.REPORTED
+    rows[0].confirmed_by = "human"
+    db_session.commit()
+    clean = validation_clean_ids(db_session, rows)
+    assert rows[0].id not in clean
+    assert clean == {r.id for r in rows[1:]}
+
+
+def test_all_validation_clean_pending_ids_sweeps_the_queue(db_session):
+    _seed_security(db_session)
+    rows = _clean_filing(db_session)
+    assert all_validation_clean_pending_ids(db_session) == sorted(r.id for r in rows)

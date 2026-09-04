@@ -57,6 +57,7 @@ from app.domain.composite_ranking_view import (
 from app.domain.corroboration_view import (
     all_corroborated_pending_ids,
     all_identity_pinned_pending_ids,
+    all_validation_clean_pending_ids,
 )
 from app.domain.factor_series_view import rebuild_factor_series
 from app.domain.valuation_quarantine_view import record_sanity_result
@@ -501,24 +502,35 @@ def _run_auto_confirm_corroborated(db: Session, run: JobRun) -> int:
     bulk confirm)"` convention — so an audit never mistakes an unattended
     promotion for a genuine per-row human review.
 
-    A second, independent signal runs in the same job: a row whose value
-    is arithmetically pinned by an accounting identity that already
-    balances against a human-confirmed line on the same filing
-    (`all_identity_pinned_pending_ids`). Those are stamped
-    `"auto (identity-pinned)"`.
+    A second signal runs in the same job: a row whose value is
+    arithmetically pinned by an accounting identity that balances against
+    a human-confirmed line on the same filing
+    (`all_identity_pinned_pending_ids`) — stamped `"auto (identity-pinned)"`.
+
+    A third, broader signal: every unconfirmed row on a filing whose WHOLE
+    extraction passes the data-integrity gate — every line clears
+    `validate_filing`, two or more accounting identities hold, five or
+    more line items (`all_validation_clean_pending_ids`). This is the
+    binary model the product owner set out (3 Sep 2026): a filing that
+    passes goes to the system; one that does not stays in the queue.
+    Stamped `"auto (validation-clean)"`.
     """
     _set_progress(db, run, 5, "Scanning the pending queue for corroborated figures…")
     corroborated = list(all_corroborated_pending_ids(db))
-    _set_progress(db, run, 15, "Scanning the pending queue for identity-pinned figures…")
-    _already = set(corroborated)
-    pinned = [i for i in all_identity_pinned_pending_ids(db) if i not in _already]
+    _set_progress(db, run, 12, "Scanning the pending queue for identity-pinned figures…")
+    seen = set(corroborated)
+    pinned = [i for i in all_identity_pinned_pending_ids(db) if i not in seen]
+    seen.update(pinned)
+    _set_progress(db, run, 20, "Scanning the pending queue for validation-clean filings…")
+    clean = [i for i in all_validation_clean_pending_ids(db) if i not in seen]
 
     plan: list[tuple[int, str]] = (
         [(i, "auto (corroborated)") for i in corroborated]
         + [(i, "auto (identity-pinned)") for i in pinned]
+        + [(i, "auto (validation-clean)") for i in clean]
     )
     if not plan:
-        _set_progress(db, run, 100, "Nothing corroborated or identity-pinned in the pending queue.")
+        _set_progress(db, run, 100, "Nothing corroborated, identity-pinned or validation-clean in the pending queue.")
         return 0
 
     now = dt.datetime.now(dt.timezone.utc)
@@ -540,8 +552,8 @@ def _run_auto_confirm_corroborated(db: Session, run: JobRun) -> int:
     db.commit()
     logger.info(
         "auto_confirm_corroborated_fundamentals: promoted %d figure(s) "
-        "(%d corroborated, %d identity-pinned)",
-        confirmed, len(corroborated), len(pinned),
+        "(%d corroborated, %d identity-pinned, %d validation-clean)",
+        confirmed, len(corroborated), len(pinned), len(clean),
     )
     return confirmed
 

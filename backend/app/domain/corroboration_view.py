@@ -22,6 +22,7 @@ from app.domain.fundamental_validation import (
     _IDENTITY_LINES,
     _NCI_RELATIVE_TOLERANCE,
     _NCI_TOLERANT_IDENTITIES,
+    validate_filing,
 )
 from app.domain.financial_statement_parsing import (
     _IDENTITY_ROUNDING_TOLERANCE,
@@ -191,6 +192,89 @@ def all_identity_pinned_pending_ids(db: Session) -> list[int]:
         ).all()
     )
     return sorted(identity_pinned_ids(db, pending))
+
+
+#: A "validation-clean" filing must carry at least this many distinct
+#: line items and have at least this many accounting identities actually
+#: computable on it. One identity holding could be a coincidence or a
+#: derived line reproducing its own inputs; two independent ones holding
+#: (e.g. assets = equity + liabilities AND assets = current + non-current)
+#: means the extraction is internally consistent in two directions. A
+#: filing with only three or four scattered lines has nothing to check
+#: against and is not "clean", just unvalidated.
+_MIN_LINES_FOR_CLEAN = 5
+_MIN_IDENTITIES_FOR_CLEAN = 2
+
+
+def validation_clean_ids(db: Session, rows: list[Fundamental]) -> set[int]:
+    """AI-assisted rows on a filing whose WHOLE extraction passes the
+    data-integrity gate — every line clears `validate_filing` (identity +
+    magnitude), at least two accounting identities are computable and all
+    hold within tolerance, and the filing carries at least five line
+    items.
+
+    This is the product owner's binary model taken to its conclusion
+    (3 Sep 2026: "just pass to the system; once that doesn't go through
+    it should be in the queue"). Where `identity_pinned_ids` needs a
+    human-confirmed line to anchor an identity, this rule does not — a
+    balance sheet that foots in two independent directions and trips no
+    magnitude flag is trusted as a whole, the same statistical argument
+    the accounting-identity gate rests on everywhere else: independent
+    extraction errors do not coincidentally foot to the rupee. Every
+    unconfirmed line on such a filing is admitted, not only the ones a
+    balancing identity names, because the evidence is about the filing,
+    not the single line.
+
+    The year-on-year trend check is deliberately NOT applied here: a
+    promoted row becomes REPORTED, the nightly `revalidate_all` then runs
+    the full battery (trend included) over it, and
+    `fundamentals_as_of(exclude_validation_failed=True)` drops it from
+    valuation if the trend check later flags it — a post-promotion
+    backstop rather than a gate.
+    """
+    if not rows:
+        return set()
+
+    by_filing: dict[tuple, list[Fundamental]] = defaultdict(list)
+    wanted_ids = {r.id for r in rows}
+    tickers = {r.ticker for r in rows}
+    for r in db.scalars(select(Fundamental).where(Fundamental.ticker.in_(tickers))):
+        by_filing[(r.ticker, r.period_end, r.period_type)].append(r)
+
+    clean: set[int] = set()
+    for filing_rows in by_filing.values():
+        best: dict[str, Fundamental] = {}
+        for r in filing_rows:
+            cur = best.get(r.statement_line)
+            if cur is None or r.version > cur.version:
+                best[r.statement_line] = r
+        values = {ln: r.value for ln, r in best.items()}
+
+        if len(values) < _MIN_LINES_FOR_CLEAN:
+            continue
+        if len(_identity_diffs(values)) < _MIN_IDENTITIES_FOR_CLEAN:
+            continue
+        if not all(v.passed for v in validate_filing(values).values()):
+            continue
+
+        for ln, row in best.items():
+            if row.id in wanted_ids and not can_enter_valuation(row.provenance_tier):
+                clean.add(row.id)
+    return clean
+
+
+def all_validation_clean_pending_ids(db: Session) -> list[int]:
+    """Every pending AI-assisted row `validation_clean_ids` would promote,
+    across the whole queue — mirrors `all_corroborated_pending_ids`."""
+    pending = list(
+        db.scalars(
+            select(Fundamental).where(
+                Fundamental.provenance_tier == ProvenanceTier.AI_ASSISTED,
+                Fundamental.confirmed_by.is_(None),
+            )
+        ).all()
+    )
+    return sorted(validation_clean_ids(db, pending))
 
 
 def _pending_ai_assisted(db: Session, *, limit: int, offset: int) -> list[Fundamental]:
