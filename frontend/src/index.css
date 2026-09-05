@@ -882,6 +882,86 @@ input::placeholder {
   gap: var(--s1);
 }
 
+/* ===================================================================
+   Ticker combobox (components/TickerCombobox.tsx) — the ticker field's
+   suggestion panel. Positioned relative to its own wrapper so it can be
+   dropped into any form without the parent knowing about it.
+   =================================================================== */
+
+.combobox {
+  position: relative;
+}
+
+.combobox-panel {
+  position: absolute;
+  top: calc(100% + var(--s1));
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--e-float);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.combobox-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  color: var(--ink-1);
+}
+
+.combobox-row:last-child {
+  border-bottom: none;
+}
+
+.combobox-row-static {
+  cursor: default;
+  color: var(--ink-3);
+}
+
+.combobox-row-active,
+.combobox-row:hover:not(.combobox-row-static) {
+  /* Same neutral hover token `.data-table tbody tr.selectable` uses —
+     §17 forbids tinting rows by direction/verdict, and this keeps the
+     hover legible in both themes without a dark-mode-only override. */
+  background: var(--canvas-sunken);
+}
+
+.combobox-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.combobox-row-name {
+  font-size: 13px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combobox-row-sector {
+  margin-left: auto;
+  color: var(--ink-3);
+}
+
+.combobox-row-bottom {
+  font-variant-numeric: tabular-nums;
+}
+
 .field-inline {
   display: flex;
   align-items: center;

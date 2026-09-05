@@ -1,9 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { ApiRequestError, createDecision, listDecisions, recordOutcome } from "../api";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { ApiRequestError, createDecision, getCompositeRanking, listDecisions, recordOutcome } from "../api";
 import { Delta } from "../components/Delta";
 import { ErrorState, SkeletonCard } from "../components/states";
+import { TickerCombobox } from "../components/TickerCombobox";
+import { VerdictChip } from "../components/VerdictChip";
 import { formatPercent, formatPrice, UNAVAILABLE } from "../format";
-import type { Decision, DecisionAction } from "../types";
+import type { Decision, DecisionAction, RankedComposite, SecurityListItem } from "../types";
 
 const ACTIONS: DecisionAction[] = ["buy", "watchlist", "pass", "partial", "sell", "trim"];
 
@@ -29,6 +31,7 @@ const ACTIONS: DecisionAction[] = ["buy", "watchlist", "pass", "partial", "sell"
 export function JournalScreen() {
   const [decisions, setDecisions] = useState<Decision[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ranking, setRanking] = useState<RankedComposite[] | null>(null);
 
   function load() {
     listDecisions()
@@ -37,6 +40,32 @@ export function JournalScreen() {
   }
 
   useEffect(load, []);
+  // Independent of the decisions load above — a watched ticker still
+  // shows (with price/verdict unavailable) if this call fails, rather
+  // than the whole screen erroring out over a panel that's secondary to
+  // the journal itself.
+  useEffect(() => {
+    getCompositeRanking()
+      .then((r) => setRanking(r.ranked))
+      .catch(() => setRanking([]));
+  }, []);
+
+  // "Currently watching" = every ticker whose MOST RECENT decision
+  // (any action) is still `watchlist` — a later buy/sell/pass on the
+  // same ticker retires it from here without touching the append-only
+  // history below, exactly the "live view over a frozen log" split
+  // §2.2 of the redesign spec asks for.
+  const watching = useMemo(() => {
+    if (!decisions) return null;
+    const latestByTicker = new Map<string, Decision>();
+    for (const d of decisions) {
+      const prev = latestByTicker.get(d.ticker);
+      if (!prev || new Date(d.timestamp) > new Date(prev.timestamp)) latestByTicker.set(d.ticker, d);
+    }
+    return [...latestByTicker.values()]
+      .filter((d) => d.action === "watchlist")
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [decisions]);
 
   return (
     <div className="route stack">
@@ -59,6 +88,8 @@ export function JournalScreen() {
       </div>
 
       <RecordDecisionForm onRecorded={load} />
+
+      <WatchlistPanel watching={watching} ranking={ranking} />
 
       {error ? (
         <ErrorState
@@ -87,6 +118,12 @@ export function JournalScreen() {
 
 function RecordDecisionForm({ onRecorded }: { onRecorded: () => void }) {
   const [ticker, setTicker] = useState("");
+  // The ticker of the last row actually PICKED from the dropdown. Reset
+  // to null on every keystroke, so editing after a pick un-confirms it —
+  // the point is to stop a typo from ever reaching a frozen record, so
+  // "was once matched" isn't good enough if the text has since changed.
+  const [confirmedTicker, setConfirmedTicker] = useState<string | null>(null);
+  const [confirmedName, setConfirmedName] = useState<string | null>(null);
   const [action, setAction] = useState<DecisionAction>("watchlist");
   const [reasoning, setReasoning] = useState("");
   const [falsification, setFalsification] = useState("");
@@ -94,8 +131,17 @@ function RecordDecisionForm({ onRecorded }: { onRecorded: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const tickerConfirmed = confirmedTicker !== null && confirmedTicker === ticker.trim().toUpperCase();
+
+  function onTickerSelect(item: SecurityListItem) {
+    setTicker(item.ticker);
+    setConfirmedTicker(item.ticker);
+    setConfirmedName(item.name);
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (!tickerConfirmed) return; // belt-and-braces — the button is already disabled for this
     setSubmitting(true);
     setError(null);
     try {
@@ -107,6 +153,8 @@ function RecordDecisionForm({ onRecorded }: { onRecorded: () => void }) {
         conviction_1_5: conviction ? Number(conviction) : undefined,
       });
       setTicker("");
+      setConfirmedTicker(null);
+      setConfirmedName(null);
       setReasoning("");
       setFalsification("");
       setConviction("");
@@ -122,12 +170,29 @@ function RecordDecisionForm({ onRecorded }: { onRecorded: () => void }) {
     <form onSubmit={submit} className="card stack-tight">
       <h2 style={{ margin: 0 }}>Record a decision</h2>
       <div style={{ display: "flex", gap: "var(--s3)", flexWrap: "wrap" }}>
-        <div className="field" style={{ flex: "1 1 160px" }}>
+        <div className="field" style={{ flex: "1 1 220px" }}>
           <label htmlFor="j-ticker" className="t-label">Ticker</label>
-          <input
-            id="j-ticker" type="text" placeholder="e.g. NTB.N0000" value={ticker}
-            onChange={(e) => setTicker(e.target.value)} required
+          <TickerCombobox
+            id="j-ticker"
+            value={ticker}
+            placeholder="Type a ticker or company name…"
+            required
+            onChange={(text) => {
+              setTicker(text);
+              if (confirmedTicker && text.trim().toUpperCase() !== confirmedTicker) {
+                setConfirmedTicker(null);
+                setConfirmedName(null);
+              }
+            }}
+            onSelect={onTickerSelect}
           />
+          <p className="t-caption" style={{ margin: 0, color: tickerConfirmed ? "var(--ink-3)" : "var(--caution)" }}>
+            {tickerConfirmed
+              ? confirmedName
+              : ticker.trim().length > 0
+                ? "Pick a match from the dropdown to enable recording — free text alone can't be saved."
+                : "Start typing to search the confirmed security list."}
+          </p>
         </div>
         <div className="field" style={{ flex: "0 1 160px" }}>
           <label htmlFor="j-action" className="t-label">Action</label>
@@ -173,11 +238,78 @@ function RecordDecisionForm({ onRecorded }: { onRecorded: () => void }) {
         </p>
       )}
       <div>
-        <button type="submit" className="btn-primary" disabled={submitting}>
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={submitting || !tickerConfirmed}
+          title={!tickerConfirmed ? "Pick a ticker from the dropdown first" : undefined}
+        >
           {submitting ? "Recording…" : "Record decision"}
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * §2 of the redesign spec's gap: "the only way to see your watchlist is
+ * to scroll the Journal looking for rows tagged watchlist." This is the
+ * live, quick-glance answer to "what am I currently watching, and how's
+ * it doing" — sourced from the same append-only decisions the Journal
+ * already records, not a new stored list. Deliberately minimal: no
+ * near-buy-zone strip, no quick actions, no alerts — just price, verdict
+ * and score per name, today.
+ */
+function WatchlistPanel({
+  watching,
+  ranking,
+}: {
+  watching: Decision[] | null;
+  ranking: RankedComposite[] | null;
+}) {
+  if (watching === null) return null; // decisions still loading — the list above already shows a skeleton
+  if (watching.length === 0) return null; // nothing watched — no need for an empty card under a form that's right there
+
+  const byTicker = new Map((ranking ?? []).map((r) => [r.ticker, r]));
+
+  return (
+    <div className="card stack-tight">
+      <h2 style={{ margin: 0 }}>Watching ({watching.length})</h2>
+      <p className="prose t-caption" style={{ margin: 0 }}>
+        Tickers whose most recent journal entry is still "watchlist" — a later buy, sell or pass
+        removes a name from here without touching its history below.
+      </p>
+      <div className="table-wrap table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Ticker</th>
+              <th scope="col">Verdict</th>
+              <th scope="col" className="right">Price</th>
+              <th scope="col" className="right">Fair value</th>
+              <th scope="col" className="right">Since watched</th>
+            </tr>
+          </thead>
+          <tbody>
+            {watching.map((d) => {
+              const r = byTicker.get(d.ticker);
+              const days = Math.max(0, Math.floor((Date.now() - new Date(d.timestamp).getTime()) / 86_400_000));
+              return (
+                <tr key={d.ticker}>
+                  <th scope="row" className="mono">{d.ticker}</th>
+                  <td>{r ? <VerdictChip verdict={r.verdict} confidence={r.decision_confidence} /> : <span className="muted">{UNAVAILABLE}</span>}</td>
+                  <td className="right num">{r?.current_price ? formatPrice(r.current_price) : UNAVAILABLE}</td>
+                  <td className="right num">
+                    {r?.blended_fair_value_per_share ? formatPrice(r.blended_fair_value_per_share) : UNAVAILABLE}
+                  </td>
+                  <td className="right t-caption">{days === 0 ? "today" : `${days}d`}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
