@@ -48,10 +48,11 @@ def _clear_process_level_caches():
     from app.domain.opportunity_ranking_view import clear_cache as clear_opportunities
     from app.domain.sector_percentiles_view import clear_cache as clear_sector_pct
     from app.domain.sector_sensitivity_view import clear_cache as clear_sector_sens
+    from app.domain.valuation_view import clear_peer_multiples_cache
 
     clears = (
         clear_opportunities, clear_composite_ranking, clear_liquidity, clear_regime,
-        clear_sector_pct, clear_sector_sens, clear_bulk_line_items,
+        clear_sector_pct, clear_sector_sens, clear_bulk_line_items, clear_peer_multiples_cache,
     )
     for clear in clears:
         clear()

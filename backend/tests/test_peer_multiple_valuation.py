@@ -181,3 +181,64 @@ def test_peer_anchor_is_not_added_when_a_dcf_or_justified_pb_anchor_exists(db_se
 
     assert summary.sector_relative.fair_value_per_share is None
     assert summary.justified_pb.fair_value_per_share is not None
+
+
+class TestPeerMultiplesCache:
+    """Found live 5 Sep 2026: `peer_multiples_for` — a full universe pass,
+    one query per ticker for price/shares/fundamentals — was recomputed
+    from scratch on EVERY `GET /valuation/{ticker}` call, since a
+    single-company page has no batch caller to thread
+    `universe_peer_multiples` through. Measured 20-30s per request.
+    Fixed with the same disclosed-TTL cache `app.domain.macro_engine_
+    view.regime_for` already uses; these tests pin the caching itself,
+    not the peer-multiple math (covered by the rest of this file)."""
+
+    def test_second_call_for_the_same_date_reuses_the_cached_result(self, db_session, monkeypatch):
+        calls = []
+
+        original = valuation_view._peer_multiples_for_uncached
+
+        def _spy(db, as_of):
+            calls.append(as_of)
+            return original(db, as_of)
+
+        monkeypatch.setattr(valuation_view, "_peer_multiples_for_uncached", _spy)
+
+        first = valuation_view.peer_multiples_for(db_session, AS_OF)
+        second = valuation_view.peer_multiples_for(db_session, AS_OF)
+
+        assert len(calls) == 1
+        assert first is second
+
+    def test_a_different_date_computes_independently(self, db_session, monkeypatch):
+        calls = []
+
+        original = valuation_view._peer_multiples_for_uncached
+
+        def _spy(db, as_of):
+            calls.append(as_of)
+            return original(db, as_of)
+
+        monkeypatch.setattr(valuation_view, "_peer_multiples_for_uncached", _spy)
+
+        valuation_view.peer_multiples_for(db_session, AS_OF)
+        valuation_view.peer_multiples_for(db_session, AS_OF + dt.timedelta(days=1))
+
+        assert calls == [AS_OF, AS_OF + dt.timedelta(days=1)]
+
+    def test_clear_cache_forces_a_fresh_computation(self, db_session, monkeypatch):
+        calls = []
+
+        original = valuation_view._peer_multiples_for_uncached
+
+        def _spy(db, as_of):
+            calls.append(as_of)
+            return original(db, as_of)
+
+        monkeypatch.setattr(valuation_view, "_peer_multiples_for_uncached", _spy)
+
+        valuation_view.peer_multiples_for(db_session, AS_OF)
+        valuation_view.clear_peer_multiples_cache()
+        valuation_view.peer_multiples_for(db_session, AS_OF)
+
+        assert len(calls) == 2

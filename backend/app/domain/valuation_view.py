@@ -111,6 +111,8 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -510,7 +512,51 @@ class PeerMultiples:
         return None, "no peer P/S available"
 
 
+# --- Disclosed-TTL cache ------------------------------------------------
+# Found live (5 Sep 2026): `GET /valuation/{ticker}` — a SINGLE-COMPANY
+# page — never has a batch caller to thread `universe_peer_multiples`
+# through, so this docstring's own "a single-company call pays for one
+# universe pass here" was, uncached, the WHOLE universe pass on every
+# page load: one query per ticker for price, shares and confirmable
+# fundamentals, times ~250+ tickers. Measured 20-30s per single-company
+# valuation request. Same disclosed-TTL module-level cache
+# `app.domain.macro_engine_view.regime_for` already uses for exactly
+# this shape of problem (a market-wide read that does not change
+# intraday-fast, shared across many per-ticker callers) — 15 minutes
+# is long enough that a page-to-page click session pays the cost once,
+# short enough that a stale multiple is never trusted past one
+# reasonable browsing session. `PeerMultiples` is a frozen dataclass,
+# safe to share across requests. `clear_cache` is the test escape hatch.
+_PEER_MULTIPLES_TTL_SECONDS = 15 * 60
+_peer_multiples_lock = threading.Lock()
+_peer_multiples_cache: dict[dt.date, tuple[float, "PeerMultiples"]] = {}
+
+
+def clear_peer_multiples_cache() -> None:
+    with _peer_multiples_lock:
+        _peer_multiples_cache.clear()
+
+
 def peer_multiples_for(db: Session, as_of: dt.date) -> PeerMultiples:
+    with _peer_multiples_lock:
+        hit = _peer_multiples_cache.get(as_of)
+        if hit is not None and (time.monotonic() - hit[0]) < _PEER_MULTIPLES_TTL_SECONDS:
+            return hit[1]
+
+    result = _peer_multiples_for_uncached(db, as_of)
+
+    with _peer_multiples_lock:
+        _peer_multiples_cache[as_of] = (time.monotonic(), result)
+        stale = [
+            k for k, v in _peer_multiples_cache.items()
+            if k != as_of and (time.monotonic() - v[0]) >= _PEER_MULTIPLES_TTL_SECONDS
+        ]
+        for k in stale:
+            del _peer_multiples_cache[k]
+    return result
+
+
+def _peer_multiples_for_uncached(db: Session, as_of: dt.date) -> PeerMultiples:
     """One universe-wide pass: for every ticker with confirmable
     fundamentals, a traded price and a published share count, compute its
     own trailing market-cap-to-book and market-cap-to-revenue, then take
