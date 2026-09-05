@@ -1,3 +1,4 @@
+import { TapTip } from "./TapTip";
 import type { PriceLadderZone } from "../types";
 
 /** TASK 0.2: a null zone is a DIFFERENT, higher-stakes kind of missing
@@ -57,43 +58,49 @@ export function ZoneChip({
   compact?: boolean;
 }) {
   if (!zone) {
+    const reason = why || "No triangulated fair value is available for this ticker yet.";
     return (
-      <span
-        className="muted"
-        title={why || "No triangulated fair value is available for this ticker yet."}
-        style={
-          compact
-            ? { display: "inline-block", width: "8.5rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }
-            : undefined
-        }
-      >
-        {NOT_YET_VALUED}
-      </span>
+      <TapTip label={reason}>
+        <span
+          className="muted"
+          title={reason}
+          style={
+            compact
+              ? { display: "inline-block", width: "8.5rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }
+              : undefined
+          }
+        >
+          {NOT_YET_VALUED}
+        </span>
+      </TapTip>
     );
   }
   const token = ZONE_TOKEN[zone];
   const filled = FILLED[zone];
+  const tipLabel = compact ? `${ZONE_LABEL[zone]}${why ? ` — ${why}` : ""}` : why || "";
   return (
-    <span
-      className="chip"
-      title={compact ? `${ZONE_LABEL[zone]}${why ? ` — ${why}` : ""}` : why || undefined}
-      style={{
-        borderColor: token,
-        color: filled ? "var(--surface)" : token,
-        background: filled ? token : "transparent",
-        ...(compact
-          ? {
-              display: "inline-block",
-              width: "8.5rem",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              textAlign: "center",
-            }
-          : {}),
-      }}
-    >
-      {ZONE_LABEL[zone]}
-    </span>
+    <TapTip label={tipLabel}>
+      <span
+        className="chip"
+        title={tipLabel || undefined}
+        style={{
+          borderColor: token,
+          color: filled ? "var(--surface)" : token,
+          background: filled ? token : "transparent",
+          ...(compact
+            ? {
+                display: "inline-block",
+                width: "8.5rem",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                textAlign: "center",
+              }
+            : {}),
+        }}
+      >
+        {ZONE_LABEL[zone]}
+      </span>
+    </TapTip>
   );
 }

@@ -1,3 +1,4 @@
+import { TapTip } from "./TapTip";
 import type { ProvenanceTier } from "../types";
 
 const LABELS: Record<ProvenanceTier, string> = {
@@ -42,18 +43,20 @@ export function ProvenanceDot({
   if (source) parts.push(`source: ${source}`);
   if (asOf) parts.push(`as of ${asOf}`);
   return (
-    <span
-      aria-label={parts.join(", ")}
-      title={parts.join(" — ")}
-      style={{
-        display: "inline-block",
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        backgroundColor: TOKEN[tier],
-        marginLeft: "var(--s1)",
-        verticalAlign: "middle",
-      }}
-    />
+    <TapTip label={parts.join(" — ")} enlargeHitArea>
+      <span
+        aria-label={parts.join(", ")}
+        title={parts.join(" — ")}
+        style={{
+          display: "inline-block",
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          backgroundColor: TOKEN[tier],
+          marginLeft: "var(--s1)",
+          verticalAlign: "middle",
+        }}
+      />
+    </TapTip>
   );
 }

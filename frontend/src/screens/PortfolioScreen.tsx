@@ -258,7 +258,7 @@ function PortfolioBody({ data, onOpen }: { data: ValuedPortfolio; onOpen: (ticke
 
       <section aria-labelledby="positions-heading" className="stack-tight">
         <h2 id="positions-heading">Positions ({data.positions.length})</h2>
-        <div className="table-wrap table-scroll">
+        <div className="table-wrap table-scroll table-scroll--pinned">
           <table className="data-table">
             <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
               As of {data.as_of}. Fair value, zone and the exit plan come from this system's own real
