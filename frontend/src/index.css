@@ -657,12 +657,30 @@ table.data-table {
     scroll-snap-type: x proximity;
   }
 
+  /* `border-collapse: collapse` (the desktop default) breaks a sticky
+     cell's background in Chrome — the scrolled-under column bleeds
+     through instead of being occluded, since collapsed cells don't
+     paint independent boxes. Sticky columns need `separate` to render
+     correctly; `border-spacing: 0` keeps the layout identical to
+     collapsed since every cell here only ever sets its own
+     border-bottom (no shared/double borders to reintroduce). */
+  .table-scroll--pinned table.data-table {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
   .table-scroll--pinned table.data-table th[scope="row"],
   .table-scroll--pinned table.data-table thead th:first-child {
     position: sticky;
     left: 0;
     z-index: 1;
-    background: var(--surface);
+    /* `!important` earns its keep here: every row-header cell across
+       these table components sets `background: none` as an inline
+       style on purpose (so a row header reads as a plain data cell,
+       not a header, on desktop) — inline style beats any class, so
+       without this the sticky column stays fully transparent and the
+       scrolled-under column's text bleeds straight through it. */
+    background: var(--surface) !important;
     box-shadow: 2px 0 4px rgba(0, 0, 0, 0.16);
   }
 
@@ -1170,12 +1188,22 @@ pre.code-block {
 }
 
 /* ===================================================================
-   §4 Responsive — rail collapses to a horizontal scrollable top bar.
-   Mobile spec (docs/mobile-responsive-implementation-spec.md) §2:
-   extends this pattern rather than replacing it with a bottom tab bar,
-   since every destination stays reachable here already (nav.ts's own
-   rule: nothing gets hidden, even unbuilt screens).
+   §4 Responsive — rail becomes a slim bar with a toggle button that
+   opens the full nav as a dropdown (mobile-responsive-implementation-
+   spec.md §2). `.rail-menu` wraps rail-search/rail-nav/rail-foot;
+   `display: contents` at desktop keeps them exactly the direct flex
+   items of `.rail` they always were (same gaps, same order) — the
+   wrapper is invisible to desktop layout, only mobile below overrides
+   it into an actual dropdown panel.
    =================================================================== */
+
+.rail-menu {
+  display: contents;
+}
+
+.rail-toggle {
+  display: none;
+}
 
 @media (max-width: 1439px) {
   .content {
@@ -1189,69 +1217,96 @@ pre.code-block {
   }
 
   .rail {
-    position: static;
+    position: relative;
     height: auto;
+    /* `visible` (not desktop's `auto`) — otherwise this becomes a
+       clipping context and cuts off the absolutely-positioned dropdown
+       panel below. */
+    overflow: visible;
     border-right: none;
     border-bottom: 1px solid var(--border);
     flex-direction: row;
     align-items: center;
+    justify-content: space-between;
     gap: var(--s4);
     padding: var(--s3) var(--s4);
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    /* Edge-fade so a scrollable-further nav row doesn't look like a
-       dead end — §2's "subtle edge-fade to signal there's more." */
-    mask-image: linear-gradient(to right, transparent 0, #000 var(--s4), #000 calc(100% - var(--s4)), transparent 100%);
-    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--s4), #000 calc(100% - var(--s4)), transparent 100%);
   }
 
-  .rail-nav {
-    flex-direction: row;
-    gap: var(--s1);
+  .rail-brand {
+    min-width: 0;
+    flex-shrink: 1;
   }
 
-  .rail-group + .rail-group {
-    margin-top: 0;
-    padding-top: 0;
-    border-top: none;
-    border-left: 1px solid var(--border);
-    padding-left: var(--s2);
-    margin-left: var(--s2);
-  }
-
-  .rail-item {
-    /* §7: 44pt minimum touch target. */
-    min-height: 44px;
-    padding: var(--s2) var(--s3);
-    border-left: none;
-    border-bottom: 2px solid transparent;
+  .rail-brand-name,
+  .rail-brand .t-caption {
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rail-toggle {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
+    gap: var(--s2);
+    background: none;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    padding: var(--s2) var(--s3);
+    min-height: 44px;
+    min-width: 44px;
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-1);
+    cursor: pointer;
   }
 
-  .rail-item[aria-current="page"] {
-    border-left-color: transparent;
-    border-bottom-color: var(--brand-500);
+  .rail-toggle span:first-child {
+    font-size: 16px;
+    line-height: 1;
   }
 
-  .rail-phase,
-  .rail-search,
-  .rail-foot {
+  /* Backdrop: tapping outside the open menu closes it — conditionally
+     rendered by React only while open, so it never exists at desktop. */
+  .rail-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.32);
+    z-index: 30;
+  }
+
+  /* Closed by default; the toggle sets `data-open` on `.rail`. */
+  .rail-menu {
     display: none;
+  }
+
+  .rail[data-open] .rail-menu {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s4);
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 31;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--r-md) var(--r-md);
+    box-shadow: var(--e-raised);
+    padding: var(--s4) 0;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+  }
+
+  .rail-menu .rail-search,
+  .rail-menu .rail-foot {
+    margin: 0 var(--s5);
   }
 
   .evidence-panel {
     width: 100vw;
-  }
-}
-
-@media (max-width: 480px) {
-  /* Narrowest phones: the subtitle line under the product name just
-     wraps and pushes the scrollable nav row down, so it goes first —
-     the brand name itself stays. */
-  .rail-brand .t-caption {
-    display: none;
   }
 }
 

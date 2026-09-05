@@ -69,9 +69,23 @@ export function App() {
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
   }, []);
 
+  // Mobile nav toggle (< 1024px only — the button that opens it is
+  // hidden by CSS at desktop widths, so this never engages there).
+  const [navOpen, setNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (!navOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setNavOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [navOpen]);
+
   function go(next: ScreenId) {
     setScreen(next);
     setOpenTicker(null);
+    setNavOpen(false);
     // Route change moves focus to the main region so keyboard and screen
     // reader users land on the new content rather than staying in the
     // nav (§15.2 logical tab order).
@@ -167,54 +181,82 @@ export function App() {
       </a>
 
       <div className="shell">
-        <nav className="rail" aria-label="Primary">
+        <nav className="rail" aria-label="Primary" data-open={navOpen || undefined}>
           <div className="rail-brand">
             <div className="rail-brand-name">CSE Alpha Engine</div>
             <div className="t-caption">8 of 9 screens built · Lab still open</div>
           </div>
 
-          <div className="rail-search">
-            <button
-              onClick={() => {
-                go("companies");
-                requestAnimationFrame(() => document.getElementById("company-search")?.focus());
-              }}
-              style={{ width: "100%", textAlign: "left", color: "var(--ink-3)" }}
-            >
-              Search companies… <span className="t-caption">⌘K</span>
-            </button>
-          </div>
+          {/* Mobile only (CSS hides this at ≥1024px) — desktop always
+              shows the sections below directly, unchanged. */}
+          <button
+            className="rail-toggle"
+            aria-expanded={navOpen}
+            aria-controls="rail-menu"
+            aria-label={navOpen ? "Close menu" : "Open menu"}
+            onClick={() => setNavOpen((o) => !o)}
+          >
+            <span aria-hidden="true">{navOpen ? "✕" : "☰"}</span>
+            <span>Menu</span>
+          </button>
 
-          <div className="rail-nav">
-            <div className="rail-group">
-              {primary.map((item) => (
-                <RailItem key={item.id} item={item} current={screen} onGo={go} />
-              ))}
-            </div>
-            <div className="rail-group">
-              {advanced.map((item) => (
-                <RailItem key={item.id} item={item} current={screen} onGo={go} />
-              ))}
-              <RailItem item={REVIEW_SCREEN} current={screen} onGo={go} />
-            </div>
-          </div>
+          {navOpen && (
+            <div
+              className="rail-backdrop"
+              onClick={() => setNavOpen(false)}
+              aria-hidden="true"
+            />
+          )}
 
-          <div className="rail-foot">
-            <RunCapture />
-            {auth.required && (
+          {/* `display: contents` at desktop so this wrapper is invisible
+              to `.rail`'s own flex layout — its children stay exactly
+              the direct flex items they always were, same gaps, same
+              order. Only the mobile media query turns it into the
+              dropdown panel `.rail-toggle` opens. */}
+          <div className="rail-menu" id="rail-menu">
+            <div className="rail-search">
               <button
-                className="btn-link t-caption"
                 onClick={() => {
-                  logout().finally(() => setAuth({ required: true, authenticated: false }));
+                  go("companies");
+                  requestAnimationFrame(() => document.getElementById("company-search")?.focus());
                 }}
+                style={{ width: "100%", textAlign: "left", color: "var(--ink-3)" }}
               >
-                Log out
+                Search companies… <span className="t-caption">⌘K</span>
               </button>
-            )}
-            <p className="t-caption prose" style={{ margin: 0 }}>
-              Deterministic code computes; AI explains. There is no BUY button in this product, by
-              design (§4, law 6).
-            </p>
+            </div>
+
+            <div className="rail-nav">
+              <div className="rail-group">
+                {primary.map((item) => (
+                  <RailItem key={item.id} item={item} current={screen} onGo={go} />
+                ))}
+              </div>
+              <div className="rail-group">
+                {advanced.map((item) => (
+                  <RailItem key={item.id} item={item} current={screen} onGo={go} />
+                ))}
+                <RailItem item={REVIEW_SCREEN} current={screen} onGo={go} />
+              </div>
+            </div>
+
+            <div className="rail-foot">
+              <RunCapture />
+              {auth.required && (
+                <button
+                  className="btn-link t-caption"
+                  onClick={() => {
+                    logout().finally(() => setAuth({ required: true, authenticated: false }));
+                  }}
+                >
+                  Log out
+                </button>
+              )}
+              <p className="t-caption prose" style={{ margin: 0 }}>
+                Deterministic code computes; AI explains. There is no BUY button in this product, by
+                design (§4, law 6).
+              </p>
+            </div>
           </div>
         </nav>
 
