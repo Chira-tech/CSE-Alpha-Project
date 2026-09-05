@@ -201,7 +201,7 @@ export function CompaniesScreen({ onOpen }: { onOpen: (ticker: string) => void }
         </EmptyState>
       ) : (
         <>
-          <div className="table-wrap table-scroll">
+          <div className="table-wrap table-scroll table-scroll--pinned">
             <table className="data-table">
               <thead>
                 <tr>

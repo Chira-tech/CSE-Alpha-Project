@@ -4,16 +4,32 @@ import { LoginScreen } from "./components/LoginScreen";
 import { RunCapture } from "./components/RunCapture";
 import { useReviewerName } from "./hooks/useReviewerName";
 import { NAV_ITEMS, REVIEW_SCREEN, type ScreenId } from "./nav";
-import { CompaniesScreen } from "./screens/CompaniesScreen";
-import { CompanyScreen } from "./screens/CompanyScreen";
-import { DataHealthScreen } from "./screens/DataHealthScreen";
-import { JournalScreen } from "./screens/JournalScreen";
-import { MacroScreen } from "./screens/MacroScreen";
 import { NotBuiltScreen } from "./screens/NotBuiltScreen";
-import { OpportunitiesScreen } from "./screens/OpportunitiesScreen";
-import { PortfolioScreen } from "./screens/PortfolioScreen";
-import { ReviewScreen } from "./screens/ReviewScreen";
-import { TodayScreen } from "./screens/TodayScreen";
+
+// Perf pass (mobile-responsive-implementation-spec.md): every screen
+// used to be a single eager import, so opening the app — on a phone or
+// a desktop — downloaded and parsed all 9 screens' JS before showing
+// any of them. Only one route is ever rendered at a time (`renderScreen`
+// below is a plain switch, not a router), so each screen's own bundle
+// is fetched on first visit instead, same lazy/Suspense pattern the
+// M5 Playbooks route already established.
+const TodayScreen = lazy(() => import("./screens/TodayScreen").then((m) => ({ default: m.TodayScreen })));
+const CompaniesScreen = lazy(() =>
+  import("./screens/CompaniesScreen").then((m) => ({ default: m.CompaniesScreen })),
+);
+const CompanyScreen = lazy(() => import("./screens/CompanyScreen").then((m) => ({ default: m.CompanyScreen })));
+const MacroScreen = lazy(() => import("./screens/MacroScreen").then((m) => ({ default: m.MacroScreen })));
+const PortfolioScreen = lazy(() =>
+  import("./screens/PortfolioScreen").then((m) => ({ default: m.PortfolioScreen })),
+);
+const OpportunitiesScreen = lazy(() =>
+  import("./screens/OpportunitiesScreen").then((m) => ({ default: m.OpportunitiesScreen })),
+);
+const JournalScreen = lazy(() => import("./screens/JournalScreen").then((m) => ({ default: m.JournalScreen })));
+const DataHealthScreen = lazy(() =>
+  import("./screens/DataHealthScreen").then((m) => ({ default: m.DataHealthScreen })),
+);
+const ReviewScreen = lazy(() => import("./screens/ReviewScreen").then((m) => ({ default: m.ReviewScreen })));
 
 // M5 — Convergence Engine & Playbook System (docs/CLAUDE_CODE_BRIEF_M5.md
 // §1.3's allowlisted frontend edit — see nav.ts's own comment for why
@@ -25,6 +41,8 @@ import { TodayScreen } from "./screens/TodayScreen";
 // is actually visited — with the flag off, nothing ever navigates here,
 // so this import is simply never triggered.
 const PlaybooksRoute = lazy(() => import("./features/playbooks"));
+
+const SCREEN_FALLBACK = <div className="route stack">Loading…</div>;
 
 export function App() {
   const [screen, setScreen] = useState<ScreenId>("today");
@@ -126,11 +144,7 @@ export function App() {
           />
         );
       case "playbooks":
-        return (
-          <Suspense fallback={<div className="route stack">Loading…</div>}>
-            <PlaybooksRoute />
-          </Suspense>
-        );
+        return <PlaybooksRoute />;
       default: {
         const item = NAV_ITEMS.find((i) => i.id === screen);
         return item ? <NotBuiltScreen item={item} /> : null;
@@ -205,7 +219,7 @@ export function App() {
         </nav>
 
         <main className="content" id="main" tabIndex={-1}>
-          {renderScreen()}
+          <Suspense fallback={SCREEN_FALLBACK}>{renderScreen()}</Suspense>
         </main>
       </div>
     </>

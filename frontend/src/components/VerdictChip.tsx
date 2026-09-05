@@ -9,6 +9,8 @@
  * through from the valuation pass, never a label invented from the 0-100
  * composite score (§38 leaves score→action thresholds open on purpose).
  */
+import { TapTip } from "./TapTip";
+
 const ACTIONABLE = new Set(["Strong Buy", "Buy", "Trim", "Sell"]);
 const NO_CALL = new Set(["Insufficient data", "Withheld"]);
 
@@ -20,7 +22,7 @@ export function VerdictChip({
   confidence?: string;
 }) {
   const muted = NO_CALL.has(verdict);
-  return (
+  const chip = (
     <span
       className="chip"
       title={confidence ? `${confidence} confidence` : undefined}
@@ -34,4 +36,5 @@ export function VerdictChip({
       {verdict}
     </span>
   );
+  return confidence ? <TapTip label={`${confidence} confidence`}>{chip}</TapTip> : chip;
 }

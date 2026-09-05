@@ -1,3 +1,5 @@
+import { TapTip } from "./TapTip";
+
 export type Verdict = "strong" | "adequate" | "weak" | "no_data";
 
 const LABEL: Record<Verdict, string> = {
@@ -31,11 +33,12 @@ const GLYPH: Record<Verdict, string> = {
  * established for direction.
  */
 export function VerdictPill({ verdict, title }: { verdict: Verdict; title?: string }) {
-  return (
+  const pill = (
     <span className="chip" style={{ borderColor: TOKEN[verdict], color: TOKEN[verdict] }} title={title}>
       <span aria-hidden="true">{GLYPH[verdict]}</span> {LABEL[verdict]}
     </span>
   );
+  return title ? <TapTip label={title}>{pill}</TapTip> : pill;
 }
 
 /**

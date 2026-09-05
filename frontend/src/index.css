@@ -640,6 +640,90 @@ table.data-table {
 }
 
 /* ===================================================================
+   Mobile table patterns (mobile-responsive-implementation-spec.md §4).
+   Two opt-in modifiers on `.table-wrap.table-scroll`, applied per table
+   by the component — desktop (≥1024px) is untouched by both.
+
+   `--pinned`: comparison/ranking tables (§4a) — freeze the leading
+   `th[scope="row"]` column, everything else scrolls under it.
+   `--cards`: single-record detail tables (§4b) — each row becomes a
+   label/value card. Needs a `data-label` attribute on every `td` (the
+   column header text) for the mobile-only pseudo-label.
+   =================================================================== */
+
+@media (max-width: 767px) {
+  .table-scroll--pinned {
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+  }
+
+  .table-scroll--pinned table.data-table th[scope="row"],
+  .table-scroll--pinned table.data-table thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--surface);
+    box-shadow: 2px 0 4px rgba(0, 0, 0, 0.16);
+  }
+
+  .table-scroll--pinned table.data-table thead th:first-child {
+    background: var(--canvas-sunken);
+    z-index: 2;
+  }
+
+  .table-scroll--cards table.data-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+
+  .table-scroll--cards table.data-table,
+  .table-scroll--cards table.data-table tbody,
+  .table-scroll--cards table.data-table tr {
+    display: block;
+    width: 100%;
+  }
+
+  .table-scroll--cards table.data-table tr {
+    border-bottom: 1px solid var(--border);
+    padding: var(--s3) 0;
+  }
+
+  .table-scroll--cards table.data-table tr:last-child {
+    border-bottom: none;
+  }
+
+  .table-scroll--cards table.data-table th[scope="row"] {
+    display: block;
+    background: none;
+    border-bottom: none;
+    padding: var(--s2) var(--s4);
+  }
+
+  .table-scroll--cards table.data-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--s3);
+    border-bottom: none;
+    padding: var(--s1) var(--s4);
+    text-align: right;
+  }
+
+  .table-scroll--cards table.data-table td[data-label]::before {
+    content: attr(data-label);
+    color: var(--ink-3);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: left;
+  }
+}
+
+/* ===================================================================
    Controls — §4: no pill buttons, "this is an instrument"
    =================================================================== */
 
@@ -727,6 +811,51 @@ textarea {
 
 input::placeholder {
   color: var(--ink-4);
+}
+
+/* Tap-to-open tooltip bubble (components/TapTip.tsx) — same info a
+   desktop `title` attribute shows on hover, reachable on tap. */
+.tap-tip-bubble {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + var(--s1));
+  left: 0;
+  max-width: 240px;
+  width: max-content;
+  background: var(--ink-1);
+  color: var(--canvas);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  box-shadow: var(--e-raised);
+  white-space: normal;
+}
+
+@media (max-width: 767px) {
+  /* §7: 44×44pt minimum touch target for a chip too visually small to
+     be one on its own (TapTip's `enlargeHitArea`) — equal padding and
+     negative margin, so the visible chip doesn't grow. */
+  .tap-tip-hit {
+    display: inline-block;
+    padding: 18px;
+    margin: -18px;
+  }
+}
+
+@media (max-width: 767px) {
+  /* §6: body/label text stays ≥16px on mobile so iOS Safari doesn't
+     zoom the page on input focus. Desktop's 13px is unchanged. */
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="date"],
+  input[type="password"],
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
 
 .field {
@@ -1041,7 +1170,11 @@ pre.code-block {
 }
 
 /* ===================================================================
-   §4 Responsive — rail collapses, then becomes a bottom tab bar
+   §4 Responsive — rail collapses to a horizontal scrollable top bar.
+   Mobile spec (docs/mobile-responsive-implementation-spec.md) §2:
+   extends this pattern rather than replacing it with a bottom tab bar,
+   since every destination stays reachable here already (nav.ts's own
+   rule: nothing gets hidden, even unbuilt screens).
    =================================================================== */
 
 @media (max-width: 1439px) {
@@ -1065,6 +1198,11 @@ pre.code-block {
     gap: var(--s4);
     padding: var(--s3) var(--s4);
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    /* Edge-fade so a scrollable-further nav row doesn't look like a
+       dead end — §2's "subtle edge-fade to signal there's more." */
+    mask-image: linear-gradient(to right, transparent 0, #000 var(--s4), #000 calc(100% - var(--s4)), transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--s4), #000 calc(100% - var(--s4)), transparent 100%);
   }
 
   .rail-nav {
@@ -1082,10 +1220,14 @@ pre.code-block {
   }
 
   .rail-item {
+    /* §7: 44pt minimum touch target. */
+    min-height: 44px;
     padding: var(--s2) var(--s3);
     border-left: none;
     border-bottom: 2px solid transparent;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
   }
 
   .rail-item[aria-current="page"] {
@@ -1101,6 +1243,15 @@ pre.code-block {
 
   .evidence-panel {
     width: 100vw;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Narrowest phones: the subtitle line under the product name just
+     wraps and pushes the scrollable nav row down, so it goes first —
+     the brand name itself stays. */
+  .rail-brand .t-caption {
+    display: none;
   }
 }
 

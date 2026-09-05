@@ -69,7 +69,7 @@ export function FundamentalsLinesTable({ ticker, fundamentals, onConfirmed }: {
           />
         </div>
       )}
-      <div className="table-wrap table-scroll">
+      <div className="table-wrap table-scroll table-scroll--cards">
         <table className="data-table">
           <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
             {awaitingCount} of {fundamentals.length} line{fundamentals.length === 1 ? "" : "s"} awaiting
@@ -143,10 +143,10 @@ function FundamentalRow({ f, reviewerName, onConfirmed }: {
   return (
     <tr>
       <th scope="row" className="num" style={rowHeadStyle}>{f.period_end}</th>
-      <td>{f.period_type}</td>
-      <td className="mono">{f.statement_line}</td>
-      <td className="right num">{formatPrice(f.value)}</td>
-      <td>
+      <td data-label="Type">{f.period_type}</td>
+      <td className="mono" data-label="Line">{f.statement_line}</td>
+      <td className="right num" data-label="Value (LKR '000)">{formatPrice(f.value)}</td>
+      <td data-label="Provenance">
         <ProvenanceDot tier={f.provenance_tier} />
         {needsConfirm && (
           <>
@@ -155,7 +155,7 @@ function FundamentalRow({ f, reviewerName, onConfirmed }: {
           </>
         )}
       </td>
-      <td>
+      <td data-label="Action">
         {needsConfirm ? (
           <>
             <button className="btn-secondary" disabled={busy} onClick={confirm}>

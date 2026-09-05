@@ -1,3 +1,4 @@
+import { TapTip } from "./TapTip";
 import type { ProvenanceTier } from "../types";
 
 // UI spec §2.3/§5.3 — one token per tier, never a raw hex in a component.
@@ -23,12 +24,14 @@ const TOKEN: Record<ProvenanceTier, string> = {
 
 export function ProvenanceChip({ tier }: { tier: ProvenanceTier }) {
   return (
-    <span
-      className="chip"
-      style={{ borderColor: TOKEN[tier], color: TOKEN[tier] }}
-      title={LABELS[tier]}
-    >
-      {tier}
-    </span>
+    <TapTip label={LABELS[tier]}>
+      <span
+        className="chip"
+        style={{ borderColor: TOKEN[tier], color: TOKEN[tier] }}
+        title={LABELS[tier]}
+      >
+        {tier}
+      </span>
+    </TapTip>
   );
 }

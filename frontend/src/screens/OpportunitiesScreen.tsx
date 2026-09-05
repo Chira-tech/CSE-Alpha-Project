@@ -331,7 +331,7 @@ function CompositeRankedTable({
         )}
       </div>
 
-      <div className="table-wrap table-scroll">
+      <div className="table-wrap table-scroll table-scroll--pinned">
         <table className="data-table">
           <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
             As of {asOf}. Sorted by the blended §38 composite score, highest first. “Basis” is how
@@ -574,7 +574,7 @@ function RankedTable({
   );
   return (
     <div className="stack-tight">
-      <div className="table-wrap table-scroll">
+      <div className="table-wrap table-scroll table-scroll--pinned">
         <table className="data-table">
           <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
             As of {asOf}. Sorted by decision confidence first (high, then medium, then low), gap

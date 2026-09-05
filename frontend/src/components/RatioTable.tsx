@@ -92,7 +92,7 @@ export function RatioTable({
   return (
     <div className="stack-tight">
       {computable.length > 0 && (
-        <div className="table-wrap table-scroll">
+        <div className="table-wrap table-scroll table-scroll--cards">
           <table className="data-table">
             <caption className="t-caption" style={{ captionSide: "bottom", padding: "var(--s3)" }}>
               Computed from the statements for the period ending {periodEnd}. Click any ratio to see
@@ -136,12 +136,15 @@ export function RatioTable({
                     >
                       {r.label}
                     </th>
-                    <td className="right num">{formatRatio(r)}</td>
-                    <td className={percentile?.percentile === null ? "t-caption muted" : "t-caption"}>
+                    <td className="right num" data-label="Value">{formatRatio(r)}</td>
+                    <td
+                      className={percentile?.percentile === null ? "t-caption muted" : "t-caption"}
+                      data-label="Sector percentile"
+                    >
                       {percentileLabel(percentile)}
                     </td>
-                    <td className="t-caption">{trendLabel(trendByKey.get(r.key))}</td>
-                    <td>{r.provenance && <ProvenanceChip tier={r.provenance} />}</td>
+                    <td className="t-caption" data-label="Trend">{trendLabel(trendByKey.get(r.key))}</td>
+                    <td data-label="Provenance">{r.provenance && <ProvenanceChip tier={r.provenance} />}</td>
                   </tr>
                 );
               })}
