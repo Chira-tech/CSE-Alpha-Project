@@ -48,9 +48,23 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** Dispatched on ANY 401 from the API — the access gate (`app.security`
+ * on the backend) rejecting a request, whether the session was never
+ * established or has since expired/been logged out elsewhere. `App`
+ * listens for this and drops back to the login screen instead of every
+ * screen having to know about auth individually. Never fired for a
+ * domain-level "not authenticated" that isn't actually the access gate —
+ * this project has no other source of a bare 401 today. */
+export const AUTH_REQUIRED_EVENT = "cse-alpha:auth-required";
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
+    // The session cookie the login gate sets is httpOnly — invisible to
+    // this code — but still has to be SENT for the gate to see it at
+    // all, which `fetch` only does cross-origin (the Vite dev server and
+    // the API are different ports, i.e. different origins) when asked.
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
@@ -67,9 +81,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // response body wasn't JSON — fall back to statusText, already set
     }
+    if (response.status === 401 && path !== "/auth/login" && path !== "/auth/status") {
+      window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
+    }
     throw new ApiRequestError(message, response.status, detail);
   }
   return response.json() as Promise<T>;
+}
+
+// --- Access gate (app.security) -------------------------------------------
+
+export interface AuthStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
+export function getAuthStatus() {
+  return request<AuthStatus>("/auth/status");
+}
+
+export function login(password: string) {
+  return request<{ ok: true }>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function logout() {
+  return request<{ ok: true }>("/auth/logout", { method: "POST" });
 }
 
 // --- Market / companies / health -----------------------------------------
@@ -345,7 +384,7 @@ export function jobStreamUrl(runId: number): string {
  * Disposition` header when present (it always is here) so the saved
  * file's date matches when the export actually ran, not the click. */
 async function downloadFile(path: string, fallbackFilename: string): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(`${BASE_URL}${path}`);
+  const response = await fetch(`${BASE_URL}${path}`, { credentials: "include" });
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -354,6 +393,7 @@ async function downloadFile(path: string, fallbackFilename: string): Promise<{ b
     } catch {
       // response body wasn't JSON — fall back to statusText
     }
+    if (response.status === 401) window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
     throw new ApiRequestError(detail, response.status);
   }
   const disposition = response.headers.get("Content-Disposition") ?? "";
@@ -372,7 +412,11 @@ export function downloadBackup() {
 export async function uploadPortfolio(file: File): Promise<PortfolioSnapshotDetail> {
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${BASE_URL}/portfolio/upload`, { method: "POST", body: form });
+  const response = await fetch(`${BASE_URL}/portfolio/upload`, {
+    method: "POST",
+    body: form,
+    credentials: "include",
+  });
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -381,6 +425,7 @@ export async function uploadPortfolio(file: File): Promise<PortfolioSnapshotDeta
     } catch {
       // response body wasn't JSON — fall back to statusText
     }
+    if (response.status === 401) window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
     throw new ApiRequestError(detail, response.status);
   }
   return response.json() as Promise<PortfolioSnapshotDetail>;

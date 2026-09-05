@@ -1,4 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from "react";
+import { AUTH_REQUIRED_EVENT, getAuthStatus, logout } from "./api";
+import { LoginScreen } from "./components/LoginScreen";
 import { RunCapture } from "./components/RunCapture";
 import { useReviewerName } from "./hooks/useReviewerName";
 import { NAV_ITEMS, REVIEW_SCREEN, type ScreenId } from "./nav";
@@ -28,6 +30,26 @@ export function App() {
   const [screen, setScreen] = useState<ScreenId>("today");
   const [openTicker, setOpenTicker] = useState<string | null>(null);
   const { name, setName } = useReviewerName();
+
+  // The hosted-deployment access gate (app.security) — `null` while the
+  // one status check is in flight. Left `{required: false, ...}` on a
+  // failed check (rather than getting stuck showing neither the app nor
+  // a login form): a network error here means every other screen is
+  // about to fail exactly the same way and show its own error state,
+  // and a broken auth check must never be the thing that locks a
+  // legitimate, already-logged-in user out.
+  const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
+
+  useEffect(() => {
+    getAuthStatus()
+      .then(setAuth)
+      .catch(() => setAuth({ required: false, authenticated: true }));
+    function onAuthRequired() {
+      setAuth({ required: true, authenticated: false });
+    }
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+  }, []);
 
   function go(next: ScreenId) {
     setScreen(next);
@@ -116,6 +138,14 @@ export function App() {
     }
   }
 
+  // Nothing renders until the one status check resolves, rather than a
+  // flash of the real product before the gate can react — see the
+  // `auth` state's own comment for why a failed check still resolves.
+  if (!auth) return null;
+  if (auth.required && !auth.authenticated) {
+    return <LoginScreen onSuccess={() => setAuth({ required: true, authenticated: true })} />;
+  }
+
   return (
     <>
       <a className="skip-link" href="#main">
@@ -157,6 +187,16 @@ export function App() {
 
           <div className="rail-foot">
             <RunCapture />
+            {auth.required && (
+              <button
+                className="btn-link t-caption"
+                onClick={() => {
+                  logout().finally(() => setAuth({ required: true, authenticated: false }));
+                }}
+              >
+                Log out
+              </button>
+            )}
             <p className="t-caption prose" style={{ margin: 0 }}>
               Deterministic code computes; AI explains. There is no BUY button in this product, by
               design (§4, law 6).

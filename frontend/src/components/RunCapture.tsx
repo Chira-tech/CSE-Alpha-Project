@@ -39,7 +39,11 @@ export function RunCapture() {
   function startWatching(run: JobRun) {
     setActiveRun(run);
     eventSourceRef.current?.close();
-    const es = new EventSource(jobStreamUrl(run.id));
+    // `withCredentials` — an EventSource sends no cookies at all by
+    // default, even same-origin cross-port like the dev server; without
+    // this, the access gate (app.security) would 401 this stream the
+    // moment it's ever turned on, even for an already-logged-in browser.
+    const es = new EventSource(jobStreamUrl(run.id), { withCredentials: true });
     eventSourceRef.current = es;
     es.onmessage = (event) => {
       const payload = JSON.parse(event.data) as JobRun;

@@ -18,6 +18,44 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
 
+    # --- Hosted-deployment access gate --------------------------------------------
+    # This is a personal, single-operator tool with no accounts, roles or
+    # signup — the only real threat model once it leaves localhost is "a
+    # stranger who finds the URL". `admin_password` being SET is the one
+    # switch that turns the whole gate on (`app.security`'s own
+    # `AuthGateMiddleware`) — unset (the default), every request passes
+    # through exactly as it always has, so local dev is byte-identical to
+    # before this existed. Set it only in the hosted environment's own env
+    # vars, never committed, never in `.env.example`-style checked-in
+    # defaults.
+    admin_password: str | None = None
+
+    #: Signs the session cookie (`starlette.middleware.sessions.
+    #: SessionMiddleware`) so a client cannot forge or tamper with it.
+    #: Required (the app refuses to start without one) the moment
+    #: `admin_password` is set — an unset or default signing key would
+    #: make the login gate itself forgeable, worse than no gate advertised
+    #: as real protection. Left `None` in dev, where the gate is off
+    #: anyway.
+    session_secret_key: str | None = None
+
+    #: Extra origins allowed to make credentialed cross-origin requests,
+    #: on top of the local dev ports `app.main` always allows — set to the
+    #: real hosted frontend origin(s). Same env-var convention as
+    #: `excluded_sectors`/`excluded_tickers` above: a JSON array, e.g.
+    #: EXTRA_ALLOWED_ORIGINS=["https://cse.example.com"]. Empty by default
+    #: (dev-only origins).
+    extra_allowed_origins: list[str] = Field(default_factory=list)
+
+    #: `Secure` flag on the session cookie — the browser will not send a
+    #: `Secure` cookie back over plain HTTP at all, so this MUST be true
+    #: behind real HTTPS (every real hosting platform) and MUST be false
+    #: only for a same-origin http-only manual test of the gate itself.
+    #: True by default: the safe default is the one that fails a manual
+    #: http test loudly, not the one that silently ships a cookie in the
+    #: clear.
+    session_cookie_secure: bool = True
+
     database_url: str = "postgresql+psycopg://cse_alpha:cse_alpha@localhost:5432/cse_alpha"
 
     #: When true, `POST /jobs/{job}/run` executes the job in a daemon
