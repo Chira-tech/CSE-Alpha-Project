@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.routes import (
@@ -161,6 +162,16 @@ app.add_middleware(
     # back to a generic filename instead of the server's real one.
     expose_headers=["Content-Disposition"],
 )
+
+# Added last so it's the outermost middleware — it compresses the fully-
+# formed response body (after CORS/security headers are already set) on
+# its way out, whatever produced it. The ranking/screener endpoints
+# return hundreds of rows of JSON; gzip is a real win on a mobile
+# connection and free on any modern client, which always sends
+# `Accept-Encoding: gzip`. `minimum_size` skips compressing tiny
+# responses (health checks, single-record lookups) where the CPU cost
+# isn't worth it.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.include_router(auth.router)
 app.include_router(health.router)
